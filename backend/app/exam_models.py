@@ -214,6 +214,26 @@ class ExamList(ContractModel):
     items: list[Exam]
 
 
+class ExamDocumentReplaceInput(ContractModel):
+    base_version_id: str
+    document: ExamDocument
+    summary: str | None = Field(default=None, max_length=500)
+
+
+class ExamVersion(ContractModel):
+    id: str
+    exam_id: str
+    number: int = Field(ge=1)
+    actor: Literal["user", "ai", "restore", "undo", "redo"]
+    summary: str = Field(min_length=1)
+    model: ModelSnapshot | None = None
+    created_at: int
+
+
+class ExamVersionList(ContractModel):
+    items: list[ExamVersion]
+
+
 class AttemptInput(ContractModel):
     mode: Literal["exam", "practice"]
     show_suggested_score: bool = False
@@ -376,3 +396,64 @@ class ExamRevisionProposal(ContractModel):
 
 class ExamRevisionProposalList(ContractModel):
     items: list[ExamRevisionProposal]
+
+
+ExamEdition = Literal["questions", "solutions"]
+
+
+class QuestionSolution(ContractModel):
+    answer: AnswerKey
+    explanation: list[ContentBlock]
+    knowledge_points: list[str]
+    evidence: QuestionEvidence
+    reliability: Literal["reliable", "needs-review"]
+
+
+class RenderQuestion(ContractModel):
+    question: AttemptQuestion
+    solution: QuestionSolution | None
+
+
+class PageMargins(ContractModel):
+    top: float = Field(ge=0)
+    right: float = Field(ge=0)
+    bottom: float = Field(ge=0)
+    left: float = Field(ge=0)
+
+
+class ExamRenderLayout(ContractModel):
+    paper_size: Literal["A4", "Letter"]
+    margins_mm: PageMargins
+
+
+class ExamRenderDocument(ContractModel):
+    exam_id: str
+    exam_version_id: str
+    edition: ExamEdition
+    title: str
+    instructions: list[ContentBlock]
+    questions: list[RenderQuestion]
+    total_score: float
+    layout: ExamRenderLayout
+
+
+class ExamExportInput(ContractModel):
+    format: Literal["pdf", "markdown"]
+    edition: ExamEdition
+    attempt_id: str | None = None
+
+
+class ExamExport(ContractModel):
+    id: str
+    exam_id: str
+    exam_version_id: str
+    format: Literal["pdf", "markdown"]
+    edition: ExamEdition
+    status: Literal["queued", "rendering", "ready", "failed"]
+    file_name: str
+    mime_type: Literal["application/pdf", "text/markdown"]
+    size_bytes: int | None = None
+    download_url: str | None = None
+    failure: ApiError | None = None
+    created_at: int
+    updated_at: int

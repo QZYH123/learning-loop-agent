@@ -20,8 +20,12 @@ from .exam_models import (
     ExamDraft,
     ExamDraftList,
     ExamDraftPatch,
+    ExamDocumentReplaceInput,
     ExamList,
+    ExamRevisionProposal,
     ExamRevisionProposalInput,
+    ExamRevisionProposalList,
+    ExamVersionList,
     FeedbackInput,
     PublishExamInput,
     QuestionInput,
@@ -198,6 +202,15 @@ def create_exam_router(exams) -> APIRouter:
     def get_exam(exam_id: str):
         return exams.get_exam(exam_id)
 
+    @router.put(
+        "/api/exams/{exam_id}",
+        operation_id="replaceExamDocument",
+        response_model=Exam,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    def replace_exam(exam_id: str, payload: ExamDocumentReplaceInput):
+        return exams.replace_exam_document(exam_id, payload.model_dump(exclude_none=True))
+
     @router.delete(
         "/api/exams/{exam_id}",
         operation_id="deleteExam",
@@ -208,6 +221,51 @@ def create_exam_router(exams) -> APIRouter:
         exams.delete_exam(exam_id)
         return Response(status_code=204)
 
+    @router.get(
+        "/api/exams/{exam_id}/versions",
+        operation_id="listExamVersions",
+        response_model=ExamVersionList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_exam_versions(exam_id: str):
+        return {"items": exams.list_exam_versions(exam_id)}
+
+    @router.post(
+        "/api/exams/{exam_id}/versions/{version_id}/restore",
+        operation_id="restoreExamVersion",
+        response_model=Exam,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def restore_exam_version(exam_id: str, version_id: str):
+        return exams.restore_exam_version(exam_id, version_id)
+
+    @router.post(
+        "/api/exams/{exam_id}/undo",
+        operation_id="undoExamChange",
+        response_model=Exam,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def undo_exam_change(exam_id: str):
+        return exams.undo_exam_change(exam_id)
+
+    @router.post(
+        "/api/exams/{exam_id}/redo",
+        operation_id="redoExamChange",
+        response_model=Exam,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def redo_exam_change(exam_id: str):
+        return exams.redo_exam_change(exam_id)
+
+    @router.get(
+        "/api/exams/{exam_id}/revision-proposals",
+        operation_id="listExamRevisionProposals",
+        response_model=ExamRevisionProposalList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_revision_proposals(exam_id: str):
+        return {"items": exams.list_revision_proposals(exam_id)}
+
     @router.post(
         "/api/exams/{exam_id}/revision-proposals",
         operation_id="createExamRevisionProposal",
@@ -217,6 +275,34 @@ def create_exam_router(exams) -> APIRouter:
     )
     async def create_revision_proposal(exam_id: str, payload: ExamRevisionProposalInput):
         return exams.create_revision_proposal(exam_id, payload.model_dump(exclude_none=True))
+
+    @router.get(
+        "/api/revision-proposals/{proposal_id}",
+        operation_id="getExamRevisionProposal",
+        response_model=ExamRevisionProposal,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_revision_proposal(proposal_id: str):
+        return exams.get_revision_proposal(proposal_id)
+
+    @router.post(
+        "/api/revision-proposals/{proposal_id}/apply",
+        operation_id="applyExamRevisionProposal",
+        response_model=Exam,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def apply_revision_proposal(proposal_id: str):
+        return exams.apply_revision_proposal(proposal_id)
+
+    @router.post(
+        "/api/revision-proposals/{proposal_id}/discard",
+        operation_id="discardExamRevisionProposal",
+        status_code=204,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def discard_revision_proposal(proposal_id: str):
+        exams.discard_revision_proposal(proposal_id)
+        return Response(status_code=204)
 
     @router.post(
         "/api/exams/{exam_id}/attempts",

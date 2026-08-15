@@ -25,8 +25,12 @@ from .core_api import create_core_router
 from .exam_api import create_exam_router
 from .exams import ExamService
 from .learning import LearningError, LearningService
-from .model_client import OpenAiCompatibleModelClient
+from .model_client import ObservedModelClient, OpenAiCompatibleModelClient
+from .observability import EvaluationService, ObservabilityService
+from .observability_api import create_observability_router
 from .operations import OperationFailure, OperationManager
+from .rendering import ExamRenderingService
+from .rendering_api import create_rendering_router
 from .sources import MAX_SOURCE_BYTES, SourceLibrary, SourceLibraryError
 from .store import WorkspaceService, WorkspaceStore
 
@@ -61,11 +65,15 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     data_path = Path(data_dir or os.environ.get("LEARNING_LOOP_DATA_DIR") or DEFAULT_DATA_DIR)
     store = WorkspaceStore(data_path / "workspace.json")
     workspace = WorkspaceService(store)
-    client = model_client or OpenAiCompatibleModelClient()
     operations = OperationManager(storage_path=data_path / "operations.json")
+    observability = ObservabilityService(data_path / "observability.json")
+    operations.set_observer(observability)
+    client = ObservedModelClient(model_client or OpenAiCompatibleModelClient(), observability)
     sources = SourceLibrary(workspace, operations, data_path)
     learning = LearningService(workspace, sources, operations, client)
     exams = ExamService(learning)
+    rendering = ExamRenderingService(exams, data_path)
+    evaluations = EvaluationService(learning, observability)
     learning.selection_resolver = exams.resolve_selection
 
     @asynccontextmanager
@@ -80,6 +88,9 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     app.state.source_library = sources
     app.state.learning_service = learning
     app.state.exam_service = exams
+    app.state.rendering_service = rendering
+    app.state.observability_service = observability
+    app.state.evaluation_service = evaluations
     app.state.store = store
 
     @app.exception_handler(LearningError)
@@ -114,6 +125,8 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
 
     app.include_router(create_core_router(learning))
     app.include_router(create_exam_router(exams))
+    app.include_router(create_rendering_router(rendering))
+    app.include_router(create_observability_router(observability, evaluations))
 
     @app.get(
         "/api/subjects/{subject_id}/sources",

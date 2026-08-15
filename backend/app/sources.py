@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -118,6 +119,8 @@ class SourceLibrary:
         return path.read_bytes(), asset["mime_type"]
 
     def retrieve(self, query: str, version_ids: list[str], limit: int = 5) -> list[dict]:
+        retrieve_started_at = int(time.time() * 1000)
+        retrieve_started = time.perf_counter()
         scored = []
         image_anchors = []
         terms = self._query_terms(query)
@@ -137,6 +140,13 @@ class SourceLibrary:
         matches = [anchor for _, anchor in scored[:limit]]
         if not matches:
             matches = image_anchors[:limit]
+        self.operations.record_stage(
+            "retrieve",
+            started_at=retrieve_started_at,
+            completed_at=int(time.time() * 1000),
+            outer_elapsed_ms=max(0, round((time.perf_counter() - retrieve_started) * 1000)),
+            counters={"retrieval_hits": len(matches)},
+        )
         return matches
 
     def create_citation(self, anchor: dict) -> dict:
@@ -213,7 +223,16 @@ class SourceLibrary:
             await asyncio.sleep(0)
             try:
                 self._write_atomic(self.files_dir / f"{version['id']}.bin", content)
+                parse_started_at = int(time.time() * 1000)
+                parse_started = time.perf_counter()
                 cached, parsed = self._parse_with_cache(version["content_hash"], content, media_kind)
+                self.operations.record_stage(
+                    "parse",
+                    started_at=parse_started_at,
+                    completed_at=int(time.time() * 1000),
+                    outer_elapsed_ms=max(0, round((time.perf_counter() - parse_started) * 1000)),
+                    counters={"cache_hits": int(cached), "cache_misses": int(not cached)},
+                )
                 index = self._materialize_version_index(source, version, parsed)
                 result = self.workspace_service.dispatch(
                     {

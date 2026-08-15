@@ -8,9 +8,11 @@ import math
 import time
 import uuid
 
+from jsonpatch import JsonPatch, JsonPatchException
+from jsonpointer import JsonPointerException, resolve_pointer
 from pydantic import ValidationError
 
-from .exam_models import QuestionInput
+from .exam_models import ExamChange, ExamDocument, QuestionInput
 from .learning import LearningError
 from .model_client import ModelClientError
 from .operations import OperationFailure
@@ -388,12 +390,19 @@ class ExamService:
             "document": copy.deepcopy(document),
             "created_at": timestamp,
         }
+        history = {
+            "id": exam_id,
+            "exam_id": exam_id,
+            "undo_version_ids": [],
+            "redo_version_ids": [],
+        }
 
         def update(data):
             return {
                 **data,
                 "exams": [*data.get("exams", []), exam],
                 "exam_versions": [*data.get("exam_versions", []), version],
+                "exam_histories": [*data.get("exam_histories", []), history],
                 "exam_drafts": [
                     {**item, "status": "published", "updated_at": timestamp} if item["id"] == draft_id else item
                     for item in data.get("exam_drafts", [])
@@ -410,11 +419,68 @@ class ExamService:
     def get_exam(self, exam_id: str) -> dict:
         return self.learning._find_owned("exams", exam_id)[1]
 
+    def replace_exam_document(self, exam_id: str, payload: dict) -> dict:
+        document = self._validate_exam_document(payload["document"])
+        return self._commit_exam_document(
+            exam_id,
+            document,
+            actor="user",
+            summary=payload.get("summary") or "人工编辑试卷",
+            expected_version_id=payload["base_version_id"],
+        )
+
+    def list_exam_versions(self, exam_id: str) -> list[dict]:
+        subject, _ = self.learning._find_owned("exams", exam_id)
+        return [
+            self._version_view(item)
+            for item in subject.get("data", {}).get("exam_versions", [])
+            if item["exam_id"] == exam_id
+        ]
+
+    def restore_exam_version(self, exam_id: str, version_id: str) -> dict:
+        subject, _ = self.learning._find_owned("exams", exam_id)
+        document = self._version_document(subject, exam_id, version_id)
+        version = next(
+            item
+            for item in subject.get("data", {}).get("exam_versions", [])
+            if item["exam_id"] == exam_id and item["id"] == version_id
+        )
+        return self._commit_exam_document(
+            exam_id,
+            document,
+            actor="restore",
+            summary=f"恢复到版本 {version['number']}",
+        )
+
+    def undo_exam_change(self, exam_id: str) -> dict:
+        return self._commit_exam_document(exam_id, None, actor="undo", summary="撤销最近一次修改", history_action="undo")
+
+    def redo_exam_change(self, exam_id: str) -> dict:
+        return self._commit_exam_document(exam_id, None, actor="redo", summary="重做最近一次撤销", history_action="redo")
+
     def delete_exam(self, exam_id: str) -> None:
         subject, _ = self.learning._find_owned("exams", exam_id)
+        if any(
+            item.get("exam_id") == exam_id and item.get("status") == "generating"
+            for item in subject.get("data", {}).get("revision_proposals", [])
+        ) or any(
+            item.get("exam_id") == exam_id and item.get("status") in {"queued", "rendering"}
+            for item in subject.get("data", {}).get("exam_exports", [])
+        ):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "试卷仍有修改或导出任务正在执行")
         if any(item.get("exam_id") == exam_id for item in subject.get("data", {}).get("attempts", [])):
             raise LearningError(409, "RESOURCE_CONFLICT", "试卷已有作答记录，不能删除")
-        self._remove(subject["id"], "exams", exam_id)
+
+        def update(data):
+            return {
+                **data,
+                "exams": [item for item in data.get("exams", []) if item["id"] != exam_id],
+                "exam_versions": [item for item in data.get("exam_versions", []) if item["exam_id"] != exam_id],
+                "exam_histories": [item for item in data.get("exam_histories", []) if item["exam_id"] != exam_id],
+                "revision_proposals": [item for item in data.get("revision_proposals", []) if item["exam_id"] != exam_id],
+            }
+
+        self.learning._mutate(subject["id"], update)
 
     def create_attempt(self, exam_id: str, payload: dict) -> dict:
         subject, exam = self.learning._find_owned("exams", exam_id)
@@ -611,11 +677,37 @@ class ExamService:
             "total_suggested_score": sum(scores) if scores and attempt["show_suggested_score"] else None,
         }
 
+    def list_revision_proposals(self, exam_id: str) -> list[dict]:
+        subject, _ = self.learning._find_owned("exams", exam_id)
+        return [
+            item
+            for item in subject.get("data", {}).get("revision_proposals", [])
+            if item["exam_id"] == exam_id
+        ]
+
+    def get_revision_proposal(self, proposal_id: str) -> dict:
+        return self.learning._find_owned("revision_proposals", proposal_id)[1]
+
     def create_revision_proposal(self, exam_id: str, payload: dict) -> dict:
         subject, exam = self.learning._find_owned("exams", exam_id)
         if payload["base_version_id"] != exam["current_version_id"]:
-            raise LearningError(409, "EXAM_VERSION_CONFLICT", "试卷版本已变化，请基于最新版本重试")
+            raise LearningError(
+                409,
+                "EXAM_VERSION_CONFLICT",
+                "试卷版本已变化，请基于最新版本重试",
+                retryable=True,
+                details={"current_version_id": exam["current_version_id"]},
+            )
+        base_document = self._version_document(subject, exam_id, payload["base_version_id"])
+        self._validate_revision_scope(base_document, payload["scope"])
         if payload.get("selection"):
+            selection = payload["selection"]
+            if (
+                selection["document_kind"] != "exam"
+                or selection["document_id"] != exam_id
+                or selection["version_id"] != payload["base_version_id"]
+            ):
+                raise LearningError(422, "VALIDATION_FAILED", "修改选区必须属于当前试卷版本")
             self.resolve_selection(payload["selection"])
         profile = self._selected_model(subject["id"], payload.get("model_id"))
         timestamp = self._now()
@@ -643,17 +735,32 @@ class ExamService:
                     "content": (
                         "根据修改指令生成结构化差异预览，只返回 JSON："
                         '{"changes":[{"path":"/title","operation":"replace","summary":"...","before":"...","after":"..."}]}。'
-                        "不要直接应用修改。\n\n"
-                        f"试卷：{json.dumps(exam['document'], ensure_ascii=False)}\n\n指令：{payload['instruction']}"
+                        "path 使用 JSON Pointer；move 操作的 before 填源路径，path 填目标路径。不要直接应用修改。\n\n"
+                        f"修改范围：{json.dumps(payload['scope'], ensure_ascii=False)}\n"
+                        f"选区上下文：{json.dumps(payload.get('selection'), ensure_ascii=False)}\n"
+                        f"试卷：{json.dumps(base_document, ensure_ascii=False)}\n\n指令：{payload['instruction']}"
                     ),
                 }])
-                changes = json.loads(response["text"])["changes"]
+                raw_changes = json.loads(response["text"])["changes"]
+                changes = [ExamChange.model_validate(item).model_dump() for item in raw_changes]
                 if not isinstance(changes, list) or not changes:
                     raise ValueError("changes is required")
+                self._validate_revision_changes(base_document, payload["scope"], changes)
+                self._apply_revision_changes(base_document, changes)
                 ready = {**proposal, "status": "ready", "changes": changes, "updated_at": self._now()}
                 self._replace(subject["id"], "revision_proposals", proposal_id, ready)
                 return resource
-            except (ModelClientError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            except (
+                LearningError,
+                ModelClientError,
+                ValidationError,
+                JsonPatchException,
+                JsonPointerException,
+                ValueError,
+                KeyError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as exc:
                 failed = {
                     **proposal,
                     "status": "failed",
@@ -665,6 +772,254 @@ class ExamService:
 
         operation = self.operations.start("exam-revision", worker, subject_id=subject["id"], resource=resource)
         return {"operation": operation, "resource": resource}
+
+    def apply_revision_proposal(self, proposal_id: str) -> dict:
+        subject, proposal = self.learning._find_owned("revision_proposals", proposal_id)
+        if proposal["status"] != "ready":
+            raise LearningError(409, "REVISION_PROPOSAL_INVALID", "当前修改提案不能应用")
+        _, exam = self.learning._find_owned("exams", proposal["exam_id"])
+        if exam["current_version_id"] != proposal["base_version_id"]:
+            raise LearningError(
+                409,
+                "REVISION_PROPOSAL_STALE",
+                "试卷已更新，该修改提案不再适用",
+                details={"current_version_id": exam["current_version_id"]},
+            )
+        base_document = self._version_document(subject, exam["id"], proposal["base_version_id"])
+        try:
+            document = self._apply_revision_changes(base_document, proposal["changes"])
+        except (LearningError, ValidationError, JsonPatchException, JsonPointerException, ValueError, KeyError, TypeError) as exc:
+            raise LearningError(409, "REVISION_PROPOSAL_INVALID", "修改后的试卷结构无效") from exc
+        return self._commit_exam_document(
+            exam["id"],
+            document,
+            actor="ai",
+            summary=proposal["instruction"][:500],
+            model=proposal.get("model"),
+            expected_version_id=proposal["base_version_id"],
+            applied_proposal_id=proposal_id,
+        )
+
+    def discard_revision_proposal(self, proposal_id: str) -> None:
+        subject, proposal = self.learning._find_owned("revision_proposals", proposal_id)
+        if proposal["status"] not in {"ready", "failed"}:
+            raise LearningError(409, "REVISION_PROPOSAL_INVALID", "当前修改提案不能放弃")
+        discarded = {**proposal, "status": "discarded", "updated_at": self._now()}
+        self._replace(subject["id"], "revision_proposals", proposal_id, discarded)
+
+    def _commit_exam_document(
+        self,
+        exam_id: str,
+        document: dict | None,
+        *,
+        actor: str,
+        summary: str,
+        model: dict | None = None,
+        expected_version_id: str | None = None,
+        history_action: str = "push",
+        applied_proposal_id: str | None = None,
+    ) -> dict:
+        subject, _ = self.learning._find_owned("exams", exam_id)
+        normalized = self._validate_exam_document(document) if document is not None else None
+        version_id = self._ids("exam-version")
+        timestamp = self._now()
+        committed: dict[str, dict] = {}
+
+        def update(data):
+            current_exam = next((item for item in data.get("exams", []) if item["id"] == exam_id), None)
+            if current_exam is None:
+                raise LearningError(404, "RESOURCE_NOT_FOUND", "试卷不存在")
+            if expected_version_id and current_exam["current_version_id"] != expected_version_id:
+                raise LearningError(
+                    409,
+                    "EXAM_VERSION_CONFLICT",
+                    "试卷版本已变化，请基于最新版本重试",
+                    retryable=True,
+                    details={"current_version_id": current_exam["current_version_id"]},
+                )
+
+            versions = [item for item in data.get("exam_versions", []) if item["exam_id"] == exam_id]
+            history = next(
+                (item for item in data.get("exam_histories", []) if item["exam_id"] == exam_id),
+                self._rebuild_exam_history(current_exam, versions),
+            )
+            undo_ids = list(history.get("undo_version_ids", []))
+            redo_ids = list(history.get("redo_version_ids", []))
+            current_version_id = current_exam["current_version_id"]
+
+            if history_action == "undo":
+                if not undo_ids:
+                    raise LearningError(409, "RESOURCE_CONFLICT", "没有可撤销的试卷修改")
+                target_version_id = undo_ids.pop()
+                redo_ids.append(current_version_id)
+                target_document = self._document_from_versions(versions, target_version_id)
+            elif history_action == "redo":
+                if not redo_ids:
+                    raise LearningError(409, "RESOURCE_CONFLICT", "没有可重做的试卷修改")
+                target_version_id = redo_ids.pop()
+                undo_ids.append(current_version_id)
+                target_document = self._document_from_versions(versions, target_version_id)
+            else:
+                undo_ids.append(current_version_id)
+                redo_ids = []
+                target_document = copy.deepcopy(normalized)
+
+            version = {
+                "id": version_id,
+                "exam_id": exam_id,
+                "number": max((item["number"] for item in versions), default=0) + 1,
+                "actor": actor,
+                "summary": summary,
+                "model": copy.deepcopy(model),
+                "document": target_document,
+                "created_at": timestamp,
+            }
+            updated_exam = {
+                **current_exam,
+                "current_version_id": version_id,
+                "document": copy.deepcopy(target_document),
+                "total_score": sum(item["score"] for item in target_document["questions"]),
+                "can_undo": bool(undo_ids),
+                "can_redo": bool(redo_ids),
+                "updated_at": timestamp,
+            }
+            updated_history = {
+                "id": exam_id,
+                "exam_id": exam_id,
+                "undo_version_ids": undo_ids,
+                "redo_version_ids": redo_ids,
+            }
+            histories = [
+                updated_history if item["exam_id"] == exam_id else item
+                for item in data.get("exam_histories", [])
+            ]
+            if not any(item["exam_id"] == exam_id for item in data.get("exam_histories", [])):
+                histories.append(updated_history)
+            proposals = [
+                {**item, "status": "applied", "updated_at": timestamp}
+                if item["id"] == applied_proposal_id else item
+                for item in data.get("revision_proposals", [])
+            ]
+            committed["exam"] = copy.deepcopy(updated_exam)
+            return {
+                **data,
+                "exams": [updated_exam if item["id"] == exam_id else item for item in data.get("exams", [])],
+                "exam_versions": [*data.get("exam_versions", []), version],
+                "exam_histories": histories,
+                "revision_proposals": proposals,
+            }
+
+        self.learning._mutate(subject["id"], update)
+        self.operations.record_action(
+            "exam-revision",
+            subject_id=subject["id"],
+            resource={"type": "exam", "id": exam_id},
+            stage="undo" if actor == "undo" else "apply-change",
+            attributes={"actor": actor},
+        )
+        return committed["exam"]
+
+    def _validate_exam_document(self, document: dict) -> dict:
+        validated = ExamDocument.model_validate(document).model_dump()
+        question_ids = [item["id"] for item in validated["questions"]]
+        if len(question_ids) != len(set(question_ids)):
+            raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "试卷题目 ID 不能重复")
+        return {
+            **validated,
+            "questions": [self._validate_manual_question(item, item["id"]) for item in validated["questions"]],
+        }
+
+    def _validate_revision_scope(self, document: dict, scope: dict) -> None:
+        question_ids = {item["id"] for item in document["questions"]}
+        block_ids = set(self._block_paths(document))
+        if scope["kind"] == "questions":
+            if not scope["question_ids"] or not set(scope["question_ids"]) <= question_ids:
+                raise LearningError(422, "VALIDATION_FAILED", "修改范围包含不存在的题目")
+        if scope["kind"] == "blocks":
+            if not scope["block_ids"] or not set(scope["block_ids"]) <= block_ids:
+                raise LearningError(422, "VALIDATION_FAILED", "修改范围包含不存在的内容块")
+
+    def _validate_revision_changes(self, document: dict, scope: dict, changes: list[dict]) -> None:
+        if any(not item["path"].startswith("/") for item in changes):
+            raise ValueError("change path must be a JSON Pointer")
+        if scope["kind"] == "whole-exam":
+            return
+        allowed_paths = []
+        if scope["kind"] == "questions":
+            allowed_ids = set(scope["question_ids"])
+            allowed_paths = [
+                f"/questions/{index}"
+                for index, question in enumerate(document["questions"])
+                if question["id"] in allowed_ids
+            ]
+        elif scope["kind"] == "blocks":
+            paths = self._block_paths(document)
+            allowed_paths = [paths[block_id] for block_id in scope["block_ids"]]
+        for change in changes:
+            paths = [change["path"]]
+            if change["operation"] == "move" and isinstance(change["before"], str):
+                paths.append(change["before"])
+            if any(not any(path == allowed or path.startswith(f"{allowed}/") for allowed in allowed_paths) for path in paths):
+                raise ValueError("change exceeds the requested scope")
+
+    def _apply_revision_changes(self, document: dict, changes: list[dict]) -> dict:
+        patch = []
+        for change in changes:
+            operation = change["operation"]
+            path = change["path"]
+            if operation in {"replace", "remove"}:
+                current = resolve_pointer(document, path)
+                if current != change["before"]:
+                    raise ValueError("change preview does not match the base document")
+            if operation == "move":
+                if not isinstance(change["before"], str) or not change["before"].startswith("/"):
+                    raise ValueError("move change requires a source JSON Pointer in before")
+                patch.append({"op": "move", "from": change["before"], "path": path})
+            elif operation == "remove":
+                patch.append({"op": "remove", "path": path})
+            else:
+                patch.append({"op": operation, "path": path, "value": copy.deepcopy(change["after"])})
+        candidate = JsonPatch(patch).apply(copy.deepcopy(document), in_place=False)
+        return self._validate_exam_document(candidate)
+
+    @staticmethod
+    def _block_paths(value, path: str = "") -> dict[str, str]:
+        paths = {}
+        if isinstance(value, dict):
+            if isinstance(value.get("id"), str) and value.get("type") in {"markdown", "latex", "table", "image"}:
+                paths[value["id"]] = path
+            for key, child in value.items():
+                escaped = key.replace("~", "~0").replace("/", "~1")
+                paths.update(ExamService._block_paths(child, f"{path}/{escaped}"))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                paths.update(ExamService._block_paths(child, f"{path}/{index}"))
+        return paths
+
+    @staticmethod
+    def _version_view(version: dict) -> dict:
+        return {key: version.get(key) for key in ("id", "exam_id", "number", "actor", "summary", "model", "created_at")}
+
+    @staticmethod
+    def _document_from_versions(versions: list[dict], version_id: str) -> dict:
+        version = next((item for item in versions if item["id"] == version_id), None)
+        if not version:
+            raise LearningError(409, "RESOURCE_CONFLICT", "撤销历史引用的试卷版本不存在")
+        return copy.deepcopy(version["document"])
+
+    @staticmethod
+    def _rebuild_exam_history(exam: dict, versions: list[dict]) -> dict:
+        ordered = sorted(versions, key=lambda item: item["number"])
+        current_index = next(
+            (index for index, item in enumerate(ordered) if item["id"] == exam["current_version_id"]),
+            len(ordered) - 1,
+        )
+        return {
+            "id": exam["id"],
+            "exam_id": exam["id"],
+            "undo_version_ids": [item["id"] for item in ordered[:current_index]],
+            "redo_version_ids": [],
+        }
 
     # Selection -----------------------------------------------------------
 

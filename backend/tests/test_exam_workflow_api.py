@@ -16,6 +16,45 @@ class ExamFakeModel(ImmediateFakeModelClient):
         content = messages[-1]["content"]
         if not isinstance(content, str):
             return {"text": "选区解释", "provider": profile["provider"], "model": profile["model"]}
+        if "回答 2 + 2" in content:
+            return {"text": json.dumps({"answer": "4"}), "provider": profile["provider"], "model": profile["model"]}
+        if "资料 [source-limit]" in content:
+            return {
+                "text": json.dumps({"answer": "极限描述附近行为", "citation_ids": ["source-limit"]}),
+                "provider": profile["provider"],
+                "model": profile["model"],
+            }
+        if "题目版选择题" in content:
+            return {
+                "text": json.dumps({
+                    "type": "single-choice",
+                    "stem": "2 + 2 = ?",
+                    "options": ["3", "4"],
+                    "score": 2,
+                    "answer_area": {"lines": 0},
+                }),
+                "provider": profile["provider"],
+                "model": profile["model"],
+            }
+        if "完整选择题" in content:
+            return {
+                "text": json.dumps({
+                    "type": "single-choice",
+                    "stem": "2 + 2 = ?",
+                    "options": ["3", "4"],
+                    "answer": "4",
+                    "explanation": "基础加法",
+                    "knowledge_points": ["加法"],
+                }),
+                "provider": profile["provider"],
+                "model": profile["model"],
+            }
+        if "评分点 point-nearby" in content:
+            return {
+                "text": json.dumps({"matched_point_ids": ["point-nearby"], "missed_point_ids": []}),
+                "provider": profile["provider"],
+                "model": profile["model"],
+            }
         if "把组卷要求解析为 JSON" in content:
             result = {
                 "title": "极限综合练习",
@@ -88,11 +127,12 @@ class ExamFakeModel(ImmediateFakeModelClient):
                 "suggested_score": 5,
             }
         elif "结构化差异预览" in content:
+            document = json.loads(content.split("试卷：", 1)[1].split("\n\n指令：", 1)[0])
             result = {"changes": [{
                 "path": "/title",
                 "operation": "replace",
                 "summary": "调整标题",
-                "before": "极限综合练习",
+                "before": document["title"],
                 "after": "极限复习卷",
             }]}
         else:

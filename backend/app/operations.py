@@ -10,10 +10,12 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from pathlib import Path
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
+CURRENT_OPERATION_ID: ContextVar[str | None] = ContextVar("current_operation_id", default=None)
 
 
 class OperationFailure(Exception):
@@ -32,8 +34,12 @@ class OperationManager:
         self._records: dict[str, dict] = self._load_records()
         self._tasks: dict[str, asyncio.Task] = {}
         self._lock = threading.RLock()
+        self._observer = None
         self.last_storage_error: str | None = None
         self._recover_interrupted()
+
+    def set_observer(self, observer) -> None:
+        self._observer = observer
 
     def start(
         self,
@@ -64,6 +70,7 @@ class OperationManager:
         with self._lock:
             self._records[operation_id] = record
             self._persist_locked()
+            self._notify("operation_created", copy.deepcopy(record))
             self._tasks[operation_id] = asyncio.create_task(self._run(operation_id, worker))
         return copy.deepcopy(record)
 
@@ -127,6 +134,41 @@ class OperationManager:
                     progress={"completed": completed, "total": total, "message": message},
                 )
 
+    def record_stage(
+        self,
+        name: str,
+        *,
+        status: str = "succeeded",
+        started_at: int | None = None,
+        completed_at: int | None = None,
+        outer_elapsed_ms: int = 0,
+        model_wait_ms: int = 0,
+        counters: dict | None = None,
+    ) -> None:
+        operation_id = CURRENT_OPERATION_ID.get()
+        if operation_id:
+            self._notify(
+                "stage_recorded",
+                operation_id,
+                name=name,
+                status=status,
+                started_at=started_at,
+                completed_at=completed_at,
+                outer_elapsed_ms=outer_elapsed_ms,
+                model_wait_ms=model_wait_ms,
+                counters=counters or {},
+            )
+
+    def record_action(self, category: str, *, subject_id: str | None, resource: dict | None, stage: str, attributes: dict | None = None) -> None:
+        self._notify(
+            "action_recorded",
+            category=category,
+            subject_id=subject_id,
+            resource=copy.deepcopy(resource),
+            stage=stage,
+            attributes=attributes or {},
+        )
+
     async def _run(self, operation_id: str, worker: Callable[[], Awaitable[dict | None]]) -> None:
         timestamp = self._now()
         with self._lock:
@@ -137,6 +179,9 @@ class OperationManager:
                 started_at=timestamp,
                 progress={**record["progress"], "message": "正在执行"},
             )
+            running_record = copy.deepcopy(self._records[operation_id])
+        self._notify("operation_started", running_record)
+        context_token = CURRENT_OPERATION_ID.set(operation_id)
         try:
             result = await worker()
             timestamp = self._now()
@@ -167,8 +212,11 @@ class OperationManager:
         except Exception:
             self._fail(operation_id, OperationFailure("INTERNAL_ERROR", "异步任务执行失败"))
         finally:
+            CURRENT_OPERATION_ID.reset(context_token)
             with self._lock:
                 self._tasks.pop(operation_id, None)
+                completed_record = copy.deepcopy(self._records[operation_id])
+            self._notify("operation_finished", completed_record)
 
     def _fail(self, operation_id: str, failure: OperationFailure) -> None:
         timestamp = self._now()
@@ -264,6 +312,17 @@ class OperationManager:
                     os.unlink(temp_name)
         except OSError as exc:
             self.last_storage_error = str(exc)
+
+    def _notify(self, method: str, *args, **kwargs) -> None:
+        observer = self._observer
+        callback = getattr(observer, method, None) if observer is not None else None
+        if callback is None:
+            return
+        try:
+            callback(*args, **kwargs)
+        except Exception:
+            # Observability must never change the outcome of the operation it observes.
+            return
 
     async def shutdown(self) -> None:
         with self._lock:
