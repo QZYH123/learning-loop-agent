@@ -6,6 +6,7 @@
 - `02-basic-chat-and-model-switching.md`：基础问答、模型服务配置/验证、停止生成和模型切换
 - `03-basic-source-library.md` 后端：Markdown/TXT 资料上传、异步解析、版本、缓存和删除；前端入口尚未实现
 - `04`–`07` 后端：富文档与图片解析、来源检索和引用、契约版学习会话、苏格拉底状态及章节速成产物
+- `08`–`12` 后端：组卷蓝图、增量试卷、发布、考试/练习作答、主观反馈和固定版本选区问答
 
 ## 技术栈
 
@@ -39,8 +40,8 @@ pytest -q
 ## API 契约
 
 项目采用契约先行。Ticket 01–15 的目标 HTTP 契约见 [`docs/api.md`](docs/api.md)，
-机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 01–07 后端已按目标
-契约实现；Ticket 08–15 仍待实现。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
+机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 01–12 后端已按目标
+契约实现；Ticket 13–15 仍待实现。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
 
 ## 结构
 
@@ -54,6 +55,9 @@ backend/app/sources.py        资料上传、解析缓存和文件持久化
 backend/app/source_parsers.py PDF、DOCX、PPTX、文本和图片解析
 backend/app/learning.py       契约版科目、模型、依据会话和学习产物服务
 backend/app/core_api.py       科目、模型、会话和学习产物路由
+backend/app/exams.py          蓝图、试卷草稿、试卷、作答和反馈状态机
+backend/app/exam_api.py       组卷、试卷和作答路由
+backend/app/exam_models.py    题目、试卷和作答契约模型
 backend/app/api_models.py     契约响应模型
 backend/tests/                pytest 领域、API、模型客户端测试
 frontend/                     浏览器前端（静态托管）

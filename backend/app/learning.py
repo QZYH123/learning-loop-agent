@@ -41,6 +41,7 @@ class LearningService:
         self.model_client = model_client
         self._now = now or (lambda: int(time.time() * 1000))
         self._ids = id_factory or (lambda prefix: f"{prefix}-{uuid.uuid4().hex}")
+        self.selection_resolver = None
 
     # Subjects and models -------------------------------------------------
 
@@ -207,6 +208,11 @@ class LearningService:
         grounding_mode = payload.get("grounding_mode", chat["grounding_mode"])
         self._validate_source_scope(subject_id, source_ids, grounding_mode)
         selection = payload.get("selection")
+        if selection:
+            if self.selection_resolver is None:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选区问答服务尚未就绪")
+            selection = self.selection_resolver(selection)
+            payload = {**payload, "selection": selection}
         if selection and selection.get("image_asset") and not profile.get("capabilities", {}).get("vision"):
             raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入，请更换具备视觉能力的模型")
         if not profile.get("capabilities", {}).get("vision") and any(
@@ -263,7 +269,12 @@ class LearningService:
             query = payload.get("content") or chat.get("goal") or "学习目标"
             try:
                 anchors = [] if grounding_mode == "general-knowledge" else self.source_library.retrieve(query, source_ids)
-                if grounding_mode == "strict" and not anchors:
+                selected_citations = [
+                    self.source_library.get_citation(citation_id)
+                    for citation_id in (selection or {}).get("citation_ids", [])
+                ]
+                has_selection_context = bool((selection or {}).get("selected_text") or (selection or {}).get("image_asset"))
+                if grounding_mode == "strict" and not anchors and not selected_citations and not has_selection_context:
                     self._complete_message(
                         subject_id,
                         assistant_id,
@@ -273,7 +284,7 @@ class LearningService:
                         intent,
                     )
                     return {"type": "chat-message", "id": assistant_id}
-                citations = [self.source_library.create_citation(anchor) for anchor in anchors]
+                citations = [*selected_citations, *[self.source_library.create_citation(anchor) for anchor in anchors]]
                 messages = self._grounded_messages(chat, payload, anchors, grounding_mode, profile)
                 response = await self.model_client.chat(profile, messages)
                 result = (
@@ -545,7 +556,18 @@ class LearningService:
             instruction += self._socratic_instruction(intent, chat.get("socratic_state"))
         context = self._anchors_text(anchors)
         question = payload.get("content") or self._intent_label(intent)
-        text = f"{instruction}\n\n资料片段：\n{context or '无'}\n\n用户输入：{question}"
+        selection = payload.get("selection") or {}
+        selection_context = selection.get("selected_text") or ""
+        citation_context = []
+        for citation_id in selection.get("citation_ids", []):
+            citation = self.source_library.get_citation(citation_id)
+            citation_context.append(f"[{citation['location']['label']}] {citation.get('excerpt') or ''}")
+        text = (
+            f"{instruction}\n\n资料片段：\n{context or '无'}"
+            f"\n\n选区：\n{selection_context or '无'}"
+            f"\n\n选区来源：\n{'\n'.join(citation_context) or '无'}"
+            f"\n\n用户输入：{question}"
+        )
         content: str | list[dict] = text
         image_blocks = [
             block
@@ -553,7 +575,6 @@ class LearningService:
             for block in anchor.get("content", [])
             if block.get("type") == "image"
         ]
-        selection = payload.get("selection") or {}
         if selection.get("image_asset"):
             image_blocks.append({"asset": selection["image_asset"]})
         if image_blocks:

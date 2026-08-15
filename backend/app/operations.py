@@ -119,6 +119,14 @@ class OperationManager:
             )
             return copy.deepcopy(record) if record else None
 
+    def update_progress(self, operation_id: str, completed: int, total: int | None, message: str) -> None:
+        with self._lock:
+            if operation_id in self._records and self._records[operation_id]["status"] not in TERMINAL_STATUSES:
+                self._update_locked(
+                    operation_id,
+                    progress={"completed": completed, "total": total, "message": message},
+                )
+
     async def _run(self, operation_id: str, worker: Callable[[], Awaitable[dict | None]]) -> None:
         timestamp = self._now()
         with self._lock:

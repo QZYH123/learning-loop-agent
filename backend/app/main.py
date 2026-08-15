@@ -22,6 +22,8 @@ from .api_models import (
     SourceVersionList,
 )
 from .core_api import create_core_router
+from .exam_api import create_exam_router
+from .exams import ExamService
 from .learning import LearningError, LearningService
 from .model_client import OpenAiCompatibleModelClient
 from .operations import OperationFailure, OperationManager
@@ -63,6 +65,8 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     operations = OperationManager(storage_path=data_path / "operations.json")
     sources = SourceLibrary(workspace, operations, data_path)
     learning = LearningService(workspace, sources, operations, client)
+    exams = ExamService(learning)
+    learning.selection_resolver = exams.resolve_selection
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -75,6 +79,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     app.state.operations = operations
     app.state.source_library = sources
     app.state.learning_service = learning
+    app.state.exam_service = exams
     app.state.store = store
 
     @app.exception_handler(LearningError)
@@ -108,6 +113,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
         return _error_response(422, "VALIDATION_FAILED", "请求参数不符合 API 契约", details=details)
 
     app.include_router(create_core_router(learning))
+    app.include_router(create_exam_router(exams))
 
     @app.get(
         "/api/subjects/{subject_id}/sources",

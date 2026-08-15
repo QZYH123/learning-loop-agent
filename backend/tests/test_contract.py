@@ -156,7 +156,7 @@ def test_implemented_backend_operations_match_target_contract(tmp_path):
     implemented = create_app(data_dir=tmp_path).openapi()
 
     for path, method, target_operation in iter_operations(target):
-        if not set(target_operation["x-tickets"]) & {"01", "02", "03", "04", "05", "06", "07"}:
+        if not set(target_operation["x-tickets"]) & {f"{number:02d}" for number in range(1, 13)}:
             continue
         actual_operation = implemented["paths"][path][method]
         assert actual_operation["operationId"] == target_operation["operationId"]
