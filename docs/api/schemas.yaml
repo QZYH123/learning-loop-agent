@@ -1,0 +1,1785 @@
+components:
+  schemas:
+    Identifier:
+      type: string
+      minLength: 1
+      maxLength: 200
+      description: 不透明、稳定的资源 ID；客户端不得解析其格式。
+
+    Timestamp:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Unix 毫秒时间戳。
+
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, const: ok}
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok: {type: boolean, const: false}
+        error:
+          $ref: '#/components/schemas/ApiError'
+
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code: {$ref: '#/components/schemas/ErrorCode'}
+        message:
+          type: string
+          minLength: 1
+          description: 面向用户的中文错误说明。
+        retryable:
+          type: boolean
+        details:
+          type: object
+          additionalProperties: true
+          description: 只包含安全、结构化的诊断信息，不包含凭据或完整资料。
+
+    ErrorCode:
+      type: string
+      description: 稳定、可供客户端分支处理的错误码。
+      enum:
+        - VALIDATION_FAILED
+        - RESOURCE_NOT_FOUND
+        - RESOURCE_CONFLICT
+        - STORAGE_WRITE_FAILED
+        - INTERNAL_ERROR
+        - SUBJECT_NAME_DUPLICATE
+        - SUBJECT_DELETE_BLOCKED
+        - MODEL_SERVICE_DUPLICATE
+        - MODEL_CAPABILITY_UNSUPPORTED
+        - MODEL_VERIFICATION_FAILED
+        - MODEL_CONNECTION_FAILED
+        - MODEL_HTTP_ERROR
+        - MODEL_INVALID_RESPONSE
+        - SOURCE_TYPE_UNSUPPORTED
+        - SOURCE_TOO_LARGE
+        - SOURCE_PROCESSING_FAILED
+        - SOURCE_UNAVAILABLE
+        - SOURCE_VERSION_MISMATCH
+        - CHAT_GENERATION_IN_PROGRESS
+        - CHAT_MODEL_NOT_SELECTED
+        - CHAT_SELECTION_INVALID
+        - GROUNDING_SOURCE_REQUIRED
+        - IMAGE_INPUT_UNSUPPORTED
+        - BLUEPRINT_CONSTRAINT_CONFLICT
+        - BLUEPRINT_NOT_CONFIRMED
+        - QUESTION_STRUCTURE_INVALID
+        - QUESTION_EVIDENCE_INCOMPLETE
+        - QUESTION_GENERATION_FAILED
+        - EXAM_VERSION_CONFLICT
+        - REVISION_PROPOSAL_INVALID
+        - REVISION_PROPOSAL_STALE
+        - ATTEMPT_STATE_CONFLICT
+        - ANSWER_TYPE_MISMATCH
+        - ANSWER_NOT_AVAILABLE
+        - FEEDBACK_UNAVAILABLE
+        - EXPORT_ANSWER_NOT_ALLOWED
+        - EXPORT_NOT_READY
+        - OPERATION_IN_PROGRESS
+        - OPERATION_NOT_CANCELABLE
+        - EVALUATION_ALREADY_RUNNING
+
+    ResourceRef:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          enum: [model, source, source-version, chat-message, learning-artifact, exam-blueprint, exam-draft, question, exam, attempt, feedback, revision-proposal, export, evaluation-run]
+        id: {$ref: '#/components/schemas/Identifier'}
+
+    OperationKind:
+      type: string
+      enum:
+        - model-verification
+        - source-parsing
+        - chat-generation
+        - crash-course-generation
+        - blueprint-parsing
+        - exam-generation
+        - question-retry
+        - subjective-feedback
+        - attempt-grading
+        - exam-revision
+        - exam-export
+        - evaluation
+
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [id, kind, status, cancelable, progress, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        kind: {$ref: '#/components/schemas/OperationKind'}
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, canceling, canceled]
+        cancelable: {type: boolean}
+        progress:
+          type: object
+          additionalProperties: false
+          required: [completed, total]
+          properties:
+            completed: {type: integer, minimum: 0}
+            total: {type: [integer, 'null'], minimum: 0}
+            message: {type: [string, 'null']}
+        subject_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceRef'
+            - type: 'null'
+        result:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceRef'
+            - type: 'null'
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        started_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        completed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+
+    OperationAccepted:
+      type: object
+      additionalProperties: false
+      required: [operation]
+      properties:
+        operation: {$ref: '#/components/schemas/Operation'}
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceRef'
+            - type: 'null'
+
+    SubjectInput:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+
+    Subject:
+      type: object
+      additionalProperties: false
+      required: [id, name, active, counts, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        name: {type: string, minLength: 1, maxLength: 80}
+        active: {type: boolean}
+        counts:
+          type: object
+          additionalProperties: false
+          required: [sources, artifacts, exam_blueprints, exam_drafts, exams]
+          properties:
+            sources: {type: integer, minimum: 0}
+            artifacts: {type: integer, minimum: 0}
+            exam_blueprints: {type: integer, minimum: 0}
+            exam_drafts: {type: integer, minimum: 0}
+            exams: {type: integer, minimum: 0}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    SubjectList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Subject'}
+
+    Workspace:
+      type: object
+      additionalProperties: false
+      required: [schema_version, active_subject_id, subjects, models]
+      properties:
+        schema_version: {type: integer, minimum: 1}
+        active_subject_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        subjects:
+          type: array
+          items: {$ref: '#/components/schemas/Subject'}
+        models:
+          type: array
+          items: {$ref: '#/components/schemas/ModelService'}
+        load_issue: {type: [string, 'null']}
+
+    ModelCapabilities:
+      type: object
+      additionalProperties: false
+      required: [text, vision, source]
+      properties:
+        text: {type: boolean}
+        vision: {type: boolean}
+        source:
+          type: string
+          enum: [configured, verified]
+
+    ModelValidation:
+      type: object
+      additionalProperties: false
+      required: [status, checked_at]
+      properties:
+        status:
+          type: string
+          enum: [unknown, checking, ok, error]
+        checked_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        message: {type: [string, 'null']}
+
+    ModelServiceInput:
+      type: object
+      additionalProperties: false
+      required: [provider, model, base_url]
+      properties:
+        provider: {type: string, minLength: 1, maxLength: 60}
+        model: {type: string, minLength: 1, maxLength: 120}
+        base_url: {type: string, format: uri, minLength: 1, maxLength: 500}
+        api_key:
+          type: string
+          maxLength: 2000
+          writeOnly: true
+        capabilities: {$ref: '#/components/schemas/ModelCapabilitiesInput'}
+
+    ModelServicePatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        provider: {type: string, minLength: 1, maxLength: 60}
+        model: {type: string, minLength: 1, maxLength: 120}
+        base_url: {type: string, format: uri, minLength: 1, maxLength: 500}
+        api_key:
+          type: [string, 'null']
+          maxLength: 2000
+          writeOnly: true
+          description: null 表示清除，省略表示保持不变。
+        capabilities: {$ref: '#/components/schemas/ModelCapabilitiesInput'}
+
+    ModelCapabilitiesInput:
+      type: object
+      additionalProperties: false
+      required: [text, vision]
+      properties:
+        text: {type: boolean, const: true}
+        vision: {type: boolean}
+
+    ModelService:
+      type: object
+      additionalProperties: false
+      required: [id, provider, model, base_url, has_api_key, capabilities, validation, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        provider: {type: string}
+        model: {type: string}
+        base_url: {type: string, format: uri}
+        has_api_key: {type: boolean}
+        capabilities: {$ref: '#/components/schemas/ModelCapabilities'}
+        validation: {$ref: '#/components/schemas/ModelValidation'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ModelServiceList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ModelService'}
+
+    SourceStatus:
+      type: string
+      enum: [processing, ready, failed, unavailable]
+
+    SourceUpload:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file: {type: string, format: binary}
+        display_name: {type: string, minLength: 1, maxLength: 255}
+
+    SourceVersionUpload:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file: {type: string, format: binary}
+
+    Source:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, display_name, media_kind, status, current_version, version_count, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        display_name: {type: string}
+        media_kind:
+          type: string
+          enum: [markdown, text, pdf, docx, pptx, image]
+        status: {$ref: '#/components/schemas/SourceStatus'}
+        current_version:
+          anyOf:
+            - $ref: '#/components/schemas/SourceVersionSummary'
+            - type: 'null'
+        version_count: {type: integer, minimum: 0}
+        failure:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    SourceList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Source'}
+
+    SourceVersionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, number, status, content_hash, mime_type, size_bytes, anchor_count, cache_hit, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        number: {type: integer, minimum: 1}
+        status: {$ref: '#/components/schemas/SourceStatus'}
+        content_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        mime_type: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        anchor_count: {type: integer, minimum: 0}
+        cache_hit: {type: boolean}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        processed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+
+    SourceVersion:
+      type: object
+      additionalProperties: false
+      required: [id, source_id, number, status, content_hash, mime_type, size_bytes, anchor_count, cache_hit, assets, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        source_id: {$ref: '#/components/schemas/Identifier'}
+        number: {type: integer, minimum: 1}
+        status: {$ref: '#/components/schemas/SourceStatus'}
+        content_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        mime_type: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        anchor_count: {type: integer, minimum: 0}
+        cache_hit: {type: boolean}
+        assets:
+          type: array
+          items: {$ref: '#/components/schemas/SourceAsset'}
+        failure:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        processed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+
+    SourceVersionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SourceVersionSummary'}
+
+    SourceAsset:
+      type: object
+      additionalProperties: false
+      required: [id, kind, mime_type]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        kind: {type: string, enum: [image, attachment]}
+        mime_type: {type: string}
+        width: {type: [integer, 'null'], minimum: 1}
+        height: {type: [integer, 'null'], minimum: 1}
+        alt: {type: [string, 'null']}
+
+    SourceLocation:
+      type: object
+      additionalProperties: false
+      required: [kind, label]
+      properties:
+        kind:
+          type: string
+          enum: [section, paragraph, page, table, slide, image]
+        label: {type: string, minLength: 1}
+        section_path:
+          type: array
+          items: {type: string}
+        page: {type: [integer, 'null'], minimum: 1}
+        slide: {type: [integer, 'null'], minimum: 1}
+        block_index: {type: [integer, 'null'], minimum: 0}
+        asset_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
+    SourceAnchor:
+      type: object
+      additionalProperties: false
+      required: [id, source_id, source_version_id, location, content, available]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        source_id: {$ref: '#/components/schemas/Identifier'}
+        source_version_id: {$ref: '#/components/schemas/Identifier'}
+        location: {$ref: '#/components/schemas/SourceLocation'}
+        content:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        available: {type: boolean}
+
+    Citation:
+      type: object
+      additionalProperties: false
+      required: [id, source_id, source_version_id, anchor_id, source_name, location, available]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        source_id: {$ref: '#/components/schemas/Identifier'}
+        source_version_id: {$ref: '#/components/schemas/Identifier'}
+        anchor_id: {$ref: '#/components/schemas/Identifier'}
+        source_name: {type: string}
+        location: {$ref: '#/components/schemas/SourceLocation'}
+        excerpt: {type: [string, 'null'], maxLength: 1000}
+        available: {type: boolean}
+
+    ContentBlock:
+      oneOf:
+        - $ref: '#/components/schemas/MarkdownBlock'
+        - $ref: '#/components/schemas/LatexBlock'
+        - $ref: '#/components/schemas/TableBlock'
+        - $ref: '#/components/schemas/ImageBlock'
+      discriminator:
+        propertyName: type
+        mapping:
+          markdown: '#/components/schemas/MarkdownBlock'
+          latex: '#/components/schemas/LatexBlock'
+          table: '#/components/schemas/TableBlock'
+          image: '#/components/schemas/ImageBlock'
+
+    MarkdownBlock:
+      type: object
+      additionalProperties: false
+      required: [id, type, text]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        type: {type: string, const: markdown}
+        text: {type: string}
+
+    LatexBlock:
+      type: object
+      additionalProperties: false
+      required: [id, type, latex, display]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        type: {type: string, const: latex}
+        latex: {type: string}
+        display: {type: boolean}
+
+    TableBlock:
+      type: object
+      additionalProperties: false
+      required: [id, type, columns, rows]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        type: {type: string, const: table}
+        columns:
+          type: array
+          items: {type: string}
+        rows:
+          type: array
+          items:
+            type: array
+            items: {type: string}
+
+    ImageBlock:
+      type: object
+      additionalProperties: false
+      required: [id, type, asset]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        type: {type: string, const: image}
+        asset: {$ref: '#/components/schemas/AssetReference'}
+        alt: {type: [string, 'null']}
+        caption: {type: [string, 'null']}
+
+    AssetReference:
+      type: object
+      additionalProperties: false
+      required: [source_version_id, asset_id]
+      properties:
+        source_version_id: {$ref: '#/components/schemas/Identifier'}
+        asset_id: {$ref: '#/components/schemas/Identifier'}
+
+    GroundingMode:
+      type: string
+      enum: [strict, general-knowledge, supplemental]
+
+    LearningMode:
+      type: string
+      enum: [chat, socratic, crash-course]
+
+    ModelSnapshot:
+      type: object
+      additionalProperties: false
+      required: [model_id, provider, model, base_url, capabilities]
+      properties:
+        model_id: {$ref: '#/components/schemas/Identifier'}
+        provider: {type: string}
+        model: {type: string}
+        base_url: {type: string, format: uri}
+        capabilities: {$ref: '#/components/schemas/ModelCapabilities'}
+
+    ChatConfigPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        learning_mode: {$ref: '#/components/schemas/LearningMode'}
+        goal: {type: [string, 'null'], maxLength: 2000}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+
+    ChatModelInput:
+      type: object
+      additionalProperties: false
+      required: [model_id]
+      properties:
+        model_id: {$ref: '#/components/schemas/Identifier'}
+
+    SelectionContext:
+      type: object
+      additionalProperties: false
+      required: [document_kind, document_id, version_id]
+      properties:
+        document_kind:
+          type: string
+          enum: [exam-draft, exam, learning-artifact]
+        document_id: {$ref: '#/components/schemas/Identifier'}
+        version_id: {$ref: '#/components/schemas/Identifier'}
+        question_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        block_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        citation_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        selected_text: {type: string, minLength: 1, maxLength: 20000}
+        image_asset: {$ref: '#/components/schemas/AssetReference'}
+      oneOf:
+        - required: [selected_text]
+          not: {required: [image_asset]}
+        - required: [image_asset]
+          not: {required: [selected_text]}
+
+    ChatMessageIntent:
+      type: string
+      enum: [start, ask, attempt, request-hint, request-explanation, restate, request-self-test, self-test-answer]
+
+    ChatMessageInput:
+      type: object
+      additionalProperties: false
+      required: [intent]
+      properties:
+        intent: {$ref: '#/components/schemas/ChatMessageIntent'}
+        content: {type: string, minLength: 1, maxLength: 20000}
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        selection: {$ref: '#/components/schemas/SelectionContext'}
+      allOf:
+        - if:
+            properties:
+              intent: {enum: [ask, attempt, restate, self-test-answer]}
+          then:
+            required: [content]
+
+    ChatMessage:
+      type: object
+      additionalProperties: false
+      required: [id, role, intent, content, status, citations, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        role: {type: string, enum: [user, assistant, system]}
+        intent: {$ref: '#/components/schemas/ChatMessageIntent'}
+        content:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        status: {type: string, enum: [queued, generating, complete, stopped, error]}
+        grounding_mode:
+          anyOf:
+            - $ref: '#/components/schemas/GroundingMode'
+            - type: 'null'
+        grounding_result:
+          type: [string, 'null']
+          enum: [covered, not-covered, general-knowledge, supplemental, null]
+        citations:
+          type: array
+          items: {$ref: '#/components/schemas/Citation'}
+        selection:
+          anyOf:
+            - $ref: '#/components/schemas/SelectionContext'
+            - type: 'null'
+        model:
+          anyOf:
+            - $ref: '#/components/schemas/ModelSnapshot'
+            - type: 'null'
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        completed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+
+    SocraticState:
+      type: object
+      additionalProperties: false
+      required: [stage, hint_level, answer_revealed]
+      properties:
+        stage:
+          type: string
+          enum: [awaiting-attempt, hinting, correcting, awaiting-restate, self-testing, completed]
+        hint_level: {type: integer, minimum: 0, maximum: 3}
+        answer_revealed: {type: boolean}
+
+    Chat:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, learning_mode, grounding_mode, source_version_ids, active_model_id, messages, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        learning_mode: {$ref: '#/components/schemas/LearningMode'}
+        goal: {type: [string, 'null']}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        source_version_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Identifier'}
+        active_model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        socratic_state:
+          anyOf:
+            - $ref: '#/components/schemas/SocraticState'
+            - type: 'null'
+        messages:
+          type: array
+          items: {$ref: '#/components/schemas/ChatMessage'}
+        artifact_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Identifier'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    CrashCourseInput:
+      type: object
+      additionalProperties: false
+      required: [goal, source_version_ids, grounding_mode]
+      properties:
+        goal: {type: string, minLength: 1, maxLength: 2000}
+        source_version_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
+    SelfTest:
+      type: object
+      additionalProperties: false
+      required: [prompt, answer]
+      properties:
+        prompt:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        answer:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+
+    KnowledgePoint:
+      type: object
+      additionalProperties: false
+      required: [id, title, explanation, key_points, citations, self_test]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        title: {type: string, minLength: 1}
+        explanation:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        key_points:
+          type: array
+          items: {type: string}
+        citations:
+          type: array
+          items: {$ref: '#/components/schemas/Citation'}
+        self_test: {$ref: '#/components/schemas/SelfTest'}
+
+    LearningArtifact:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, type, title, chat_id, source_version_ids, grounding_mode, knowledge_points, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        type: {type: string, enum: [crash-course-outline, note, chapter-outline, review-material]}
+        title: {type: string}
+        chat_id: {$ref: '#/components/schemas/Identifier'}
+        source_version_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Identifier'}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        knowledge_points:
+          type: array
+          items: {$ref: '#/components/schemas/KnowledgePoint'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    LearningArtifactList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/LearningArtifact'}
+
+    QuestionType:
+      type: string
+      enum: [single-choice, multiple-choice, fill-blank, true-false, short-answer, argumentation, extended-response]
+
+    Difficulty:
+      type: string
+      enum: [easy, medium, hard]
+
+    BlueprintQuestionPlan:
+      type: object
+      additionalProperties: false
+      required: [type, count, difficulty, score_each]
+      properties:
+        type: {$ref: '#/components/schemas/QuestionType'}
+        count: {type: integer, minimum: 1}
+        difficulty: {$ref: '#/components/schemas/Difficulty'}
+        score_each: {type: number, exclusiveMinimum: 0}
+
+    BlueprintIssue:
+      type: object
+      additionalProperties: false
+      required: [code, severity, path, message]
+      properties:
+        code: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+        severity: {type: string, enum: [warning, error]}
+        path: {type: string}
+        message: {type: string}
+
+    ExamBlueprintPromptInput:
+      type: object
+      additionalProperties: false
+      required: [prompt, grounding_mode]
+      properties:
+        prompt: {type: string, minLength: 1, maxLength: 10000}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
+    ExamBlueprintPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        syllabus:
+          type: array
+          items: {type: string, minLength: 1}
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        question_plan:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/BlueprintQuestionPlan'}
+        total_score: {type: number, exclusiveMinimum: 0}
+        duration_minutes: {type: [integer, 'null'], minimum: 1}
+
+    ExamBlueprint:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, prompt, title, status, syllabus, source_version_ids, grounding_mode, question_plan, total_score, issues, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        prompt: {type: string}
+        title: {type: string}
+        status: {type: string, enum: [parsing, draft, confirmed, failed]}
+        syllabus:
+          type: array
+          items: {type: string}
+        source_version_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Identifier'}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        question_plan:
+          type: array
+          items: {$ref: '#/components/schemas/BlueprintQuestionPlan'}
+        total_score: {type: number, exclusiveMinimum: 0}
+        duration_minutes: {type: [integer, 'null'], minimum: 1}
+        issues:
+          type: array
+          items: {$ref: '#/components/schemas/BlueprintIssue'}
+        confirmed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ExamBlueprintList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ExamBlueprint'}
+
+    AnswerArea:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines: {type: integer, minimum: 0, maximum: 100}
+
+    QuestionEvidence:
+      type: object
+      additionalProperties: false
+      required: [basis, citations, status]
+      properties:
+        basis: {$ref: '#/components/schemas/GroundingMode'}
+        citations:
+          type: array
+          items: {$ref: '#/components/schemas/Citation'}
+        status: {type: string, enum: [complete, needs-review]}
+        note: {type: [string, 'null']}
+
+    ChoiceOption:
+      type: object
+      additionalProperties: false
+      required: [id, content]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        content:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ContentBlock'}
+
+    ChoiceAnswerKey:
+      type: object
+      additionalProperties: false
+      required: [kind, option_ids]
+      properties:
+        kind: {type: string, const: choice}
+        option_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+
+    FillBlankDefinition:
+      type: object
+      additionalProperties: false
+      required: [id, acceptable_answers, normalization]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        acceptable_answers:
+          type: array
+          minItems: 1
+          items: {type: string}
+        normalization:
+          type: object
+          additionalProperties: false
+          required: [trim, case_sensitive, collapse_whitespace]
+          properties:
+            trim: {type: boolean}
+            case_sensitive: {type: boolean}
+            collapse_whitespace: {type: boolean}
+
+    FillBlankAnswerKey:
+      type: object
+      additionalProperties: false
+      required: [kind, blanks]
+      properties:
+        kind: {type: string, const: fill-blank}
+        blanks:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/FillBlankDefinition'}
+
+    TrueFalseAnswerKey:
+      type: object
+      additionalProperties: false
+      required: [kind, value]
+      properties:
+        kind: {type: string, const: true-false}
+        value: {type: boolean}
+
+    ScoringPoint:
+      type: object
+      additionalProperties: false
+      required: [id, description, score]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        description: {type: string, minLength: 1}
+        score: {type: number, minimum: 0}
+
+    SubjectiveAnswerKey:
+      type: object
+      additionalProperties: false
+      required: [kind, reference_answer, scoring_points]
+      properties:
+        kind: {type: string, const: subjective}
+        reference_answer:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        scoring_points:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ScoringPoint'}
+
+    AnswerKey:
+      oneOf:
+        - $ref: '#/components/schemas/ChoiceAnswerKey'
+        - $ref: '#/components/schemas/FillBlankAnswerKey'
+        - $ref: '#/components/schemas/TrueFalseAnswerKey'
+        - $ref: '#/components/schemas/SubjectiveAnswerKey'
+      discriminator:
+        propertyName: kind
+
+    QuestionInput:
+      type: object
+      additionalProperties: false
+      required: [id, type, stem, score, answer_area, answer, explanation, knowledge_points, evidence, reliability]
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        type: {$ref: '#/components/schemas/QuestionType'}
+        stem:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        options:
+          type: array
+          minItems: 2
+          items: {$ref: '#/components/schemas/ChoiceOption'}
+        score: {type: number, exclusiveMinimum: 0}
+        answer_area: {$ref: '#/components/schemas/AnswerArea'}
+        answer: {$ref: '#/components/schemas/AnswerKey'}
+        explanation:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        knowledge_points:
+          type: array
+          minItems: 1
+          items: {type: string, minLength: 1}
+        evidence: {$ref: '#/components/schemas/QuestionEvidence'}
+        reliability: {type: string, enum: [reliable, needs-review]}
+      allOf:
+        - if:
+            properties:
+              type: {enum: [single-choice, multiple-choice]}
+          then:
+            required: [options]
+            properties:
+              answer: {$ref: '#/components/schemas/ChoiceAnswerKey'}
+        - if:
+            properties:
+              type: {const: fill-blank}
+          then:
+            properties:
+              answer: {$ref: '#/components/schemas/FillBlankAnswerKey'}
+        - if:
+            properties:
+              type: {const: true-false}
+          then:
+            properties:
+              answer: {$ref: '#/components/schemas/TrueFalseAnswerKey'}
+        - if:
+            properties:
+              type: {enum: [short-answer, argumentation, extended-response]}
+          then:
+            properties:
+              answer: {$ref: '#/components/schemas/SubjectiveAnswerKey'}
+
+    Question:
+      $ref: '#/components/schemas/QuestionInput'
+
+    DraftQuestion:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, planned_type, status, question, error, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        ordinal: {type: integer, minimum: 1}
+        planned_type: {$ref: '#/components/schemas/QuestionType'}
+        status: {type: string, enum: [queued, generating, complete, failed, needs-review]}
+        question:
+          anyOf:
+            - $ref: '#/components/schemas/Question'
+            - type: 'null'
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ExamDraftPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        instructions:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        question_order:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+
+    ExamDraft:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, blueprint_id, title, instructions, status, questions, total_score, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        blueprint_id: {$ref: '#/components/schemas/Identifier'}
+        title: {type: string}
+        instructions:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        status: {type: string, enum: [generating, editable, failed, published]}
+        questions:
+          type: array
+          items: {$ref: '#/components/schemas/DraftQuestion'}
+        total_score: {type: number, minimum: 0}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ExamDraftList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ExamDraft'}
+
+    PublishExamInput:
+      type: object
+      additionalProperties: false
+      properties:
+        accept_needs_review: {type: boolean, default: false}
+
+    ExamDocument:
+      type: object
+      additionalProperties: false
+      required: [title, instructions, questions]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        instructions:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        questions:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/Question'}
+
+    Exam:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, source_blueprint_id, current_version_id, document, total_score, can_undo, can_redo, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        source_blueprint_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        current_version_id: {$ref: '#/components/schemas/Identifier'}
+        document: {$ref: '#/components/schemas/ExamDocument'}
+        total_score: {type: number, minimum: 0}
+        can_undo: {type: boolean}
+        can_redo: {type: boolean}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ExamList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Exam'}
+
+    ExamDocumentReplaceInput:
+      type: object
+      additionalProperties: false
+      required: [base_version_id, document]
+      properties:
+        base_version_id: {$ref: '#/components/schemas/Identifier'}
+        document: {$ref: '#/components/schemas/ExamDocument'}
+        summary: {type: string, maxLength: 500}
+
+    ExamVersion:
+      type: object
+      additionalProperties: false
+      required: [id, exam_id, number, actor, summary, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        number: {type: integer, minimum: 1}
+        actor: {type: string, enum: [user, ai, restore, undo, redo]}
+        summary: {type: string, minLength: 1}
+        model:
+          anyOf:
+            - $ref: '#/components/schemas/ModelSnapshot'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ExamVersionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ExamVersion'}
+
+    RevisionScope:
+      type: object
+      additionalProperties: false
+      required: [kind, question_ids, block_ids]
+      properties:
+        kind: {type: string, enum: [whole-exam, questions, blocks]}
+        question_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        block_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+
+    ExamRevisionProposalInput:
+      type: object
+      additionalProperties: false
+      required: [base_version_id, instruction, scope]
+      properties:
+        base_version_id: {$ref: '#/components/schemas/Identifier'}
+        instruction: {type: string, minLength: 1, maxLength: 10000}
+        scope: {$ref: '#/components/schemas/RevisionScope'}
+        selection: {$ref: '#/components/schemas/SelectionContext'}
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
+    ExamChange:
+      type: object
+      additionalProperties: false
+      required: [path, operation, summary, before, after]
+      properties:
+        path: {type: string, minLength: 1}
+        operation: {type: string, enum: [add, replace, remove, move]}
+        summary: {type: string, minLength: 1}
+        before: {}
+        after: {}
+
+    ExamRevisionProposal:
+      type: object
+      additionalProperties: false
+      required: [id, exam_id, base_version_id, instruction, scope, status, changes, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        base_version_id: {$ref: '#/components/schemas/Identifier'}
+        instruction: {type: string}
+        scope: {$ref: '#/components/schemas/RevisionScope'}
+        status: {type: string, enum: [generating, ready, applied, discarded, failed]}
+        changes:
+          type: array
+          items: {$ref: '#/components/schemas/ExamChange'}
+        model:
+          anyOf:
+            - $ref: '#/components/schemas/ModelSnapshot'
+            - type: 'null'
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ExamRevisionProposalList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ExamRevisionProposal'}
+
+    AttemptMode:
+      type: string
+      enum: [exam, practice]
+
+    ExamEdition:
+      type: string
+      enum: [questions, solutions]
+
+    AttemptInput:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: {$ref: '#/components/schemas/AttemptMode'}
+        show_suggested_score: {type: boolean, default: false}
+
+    AttemptPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        mode: {$ref: '#/components/schemas/AttemptMode'}
+        show_suggested_score: {type: boolean}
+
+    AttemptQuestion:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, type, stem, score, answer_area]
+      description: 面向作答者的题目视图，不包含答案、解析或题目依据。
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        ordinal: {type: integer, minimum: 1}
+        type: {$ref: '#/components/schemas/QuestionType'}
+        stem:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        options:
+          type: array
+          items: {$ref: '#/components/schemas/ChoiceOption'}
+        score: {type: number, exclusiveMinimum: 0}
+        answer_area: {$ref: '#/components/schemas/AnswerArea'}
+
+    AttemptPaper:
+      type: object
+      additionalProperties: false
+      required: [exam_id, exam_version_id, title, instructions, questions, total_score]
+      properties:
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        exam_version_id: {$ref: '#/components/schemas/Identifier'}
+        title: {type: string}
+        instructions:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        questions:
+          type: array
+          items: {$ref: '#/components/schemas/AttemptQuestion'}
+        total_score: {type: number, minimum: 0}
+
+    ChoiceAnswerInput:
+      type: object
+      additionalProperties: false
+      required: [kind, option_ids]
+      properties:
+        kind: {type: string, const: choice}
+        option_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+
+    BlankAnswer:
+      type: object
+      additionalProperties: false
+      required: [blank_id, value]
+      properties:
+        blank_id: {$ref: '#/components/schemas/Identifier'}
+        value: {type: string}
+
+    FillBlankAnswerInput:
+      type: object
+      additionalProperties: false
+      required: [kind, blanks]
+      properties:
+        kind: {type: string, const: fill-blank}
+        blanks:
+          type: array
+          items: {$ref: '#/components/schemas/BlankAnswer'}
+
+    TrueFalseAnswerInput:
+      type: object
+      additionalProperties: false
+      required: [kind, value]
+      properties:
+        kind: {type: string, const: true-false}
+        value: {type: boolean}
+
+    TextAnswerInput:
+      type: object
+      additionalProperties: false
+      required: [kind, text]
+      properties:
+        kind: {type: string, const: text}
+        text: {type: string, maxLength: 50000}
+
+    AttemptAnswerValue:
+      oneOf:
+        - $ref: '#/components/schemas/ChoiceAnswerInput'
+        - $ref: '#/components/schemas/FillBlankAnswerInput'
+        - $ref: '#/components/schemas/TrueFalseAnswerInput'
+        - $ref: '#/components/schemas/TextAnswerInput'
+      discriminator:
+        propertyName: kind
+
+    AttemptAnswerInput:
+      type: object
+      additionalProperties: false
+      required: [answer]
+      properties:
+        answer: {$ref: '#/components/schemas/AttemptAnswerValue'}
+
+    AttemptAnswer:
+      type: object
+      additionalProperties: false
+      required: [id, attempt_id, question_id, answer, saved_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        attempt_id: {$ref: '#/components/schemas/Identifier'}
+        question_id: {$ref: '#/components/schemas/Identifier'}
+        answer: {$ref: '#/components/schemas/AttemptAnswerValue'}
+        saved_at: {$ref: '#/components/schemas/Timestamp'}
+
+    FeedbackInput:
+      type: object
+      additionalProperties: false
+      properties:
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        show_suggested_score: {type: boolean}
+
+    QuestionFeedback:
+      type: object
+      additionalProperties: false
+      required: [id, attempt_id, question_id, answer_snapshot, status, matched_points, missed_points, reasoning_issues, suggestions, suggested_score, evidence, model, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        attempt_id: {$ref: '#/components/schemas/Identifier'}
+        question_id: {$ref: '#/components/schemas/Identifier'}
+        answer_snapshot: {$ref: '#/components/schemas/AttemptAnswerValue'}
+        status: {type: string, enum: [complete, needs-review, unable-to-assess]}
+        correct: {type: [boolean, 'null']}
+        matched_points:
+          type: array
+          items: {$ref: '#/components/schemas/ScoringPoint'}
+        missed_points:
+          type: array
+          items: {$ref: '#/components/schemas/ScoringPoint'}
+        reasoning_issues:
+          type: array
+          items: {type: string}
+        suggestions:
+          type: array
+          items: {type: string}
+        suggested_score:
+          type: [number, 'null']
+          minimum: 0
+          description: 用户关闭建议分数或无法可靠评估时为 null。
+        reference_answer:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        evidence: {$ref: '#/components/schemas/QuestionEvidence'}
+        model:
+          anyOf:
+            - $ref: '#/components/schemas/ModelSnapshot'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+
+    Attempt:
+      type: object
+      additionalProperties: false
+      required: [id, exam_id, exam_version_id, mode, status, show_suggested_score, paper, answers, feedback, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        exam_version_id: {$ref: '#/components/schemas/Identifier'}
+        mode: {$ref: '#/components/schemas/AttemptMode'}
+        status: {type: string, enum: [in-progress, paused, grading, submitted]}
+        show_suggested_score: {type: boolean}
+        paper: {$ref: '#/components/schemas/AttemptPaper'}
+        answers:
+          type: array
+          items: {$ref: '#/components/schemas/AttemptAnswer'}
+        feedback:
+          type: array
+          description: 考试模式提交前必须为空。
+          items: {$ref: '#/components/schemas/QuestionFeedback'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        submitted_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+
+    AttemptReviewItem:
+      type: object
+      additionalProperties: false
+      required: [question, answer, feedback]
+      properties:
+        question: {$ref: '#/components/schemas/Question'}
+        answer:
+          anyOf:
+            - $ref: '#/components/schemas/AttemptAnswer'
+            - type: 'null'
+        feedback:
+          anyOf:
+            - $ref: '#/components/schemas/QuestionFeedback'
+            - type: 'null'
+
+    AttemptReview:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, mode, status, items, total_suggested_score]
+      properties:
+        attempt_id: {$ref: '#/components/schemas/Identifier'}
+        mode: {$ref: '#/components/schemas/AttemptMode'}
+        status: {type: string, enum: [in-progress, paused, grading, submitted]}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AttemptReviewItem'}
+        total_suggested_score:
+          type: [number, 'null']
+          minimum: 0
+
+    QuestionSolution:
+      type: object
+      additionalProperties: false
+      required: [answer, explanation, knowledge_points, evidence, reliability]
+      properties:
+        answer: {$ref: '#/components/schemas/AnswerKey'}
+        explanation:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        knowledge_points:
+          type: array
+          items: {type: string}
+        evidence: {$ref: '#/components/schemas/QuestionEvidence'}
+        reliability: {type: string, enum: [reliable, needs-review]}
+
+    RenderQuestion:
+      type: object
+      additionalProperties: false
+      required: [question, solution]
+      properties:
+        question: {$ref: '#/components/schemas/AttemptQuestion'}
+        solution:
+          anyOf:
+            - $ref: '#/components/schemas/QuestionSolution'
+            - type: 'null'
+          description: edition=questions 时必须为 null。
+
+    ExamRenderDocument:
+      type: object
+      additionalProperties: false
+      required: [exam_id, exam_version_id, edition, title, instructions, questions, total_score, layout]
+      properties:
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        exam_version_id: {$ref: '#/components/schemas/Identifier'}
+        edition: {$ref: '#/components/schemas/ExamEdition'}
+        title: {type: string}
+        instructions:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        questions:
+          type: array
+          items: {$ref: '#/components/schemas/RenderQuestion'}
+        total_score: {type: number, minimum: 0}
+        layout:
+          type: object
+          additionalProperties: false
+          required: [paper_size, margins_mm]
+          properties:
+            paper_size: {type: string, enum: [A4, Letter]}
+            margins_mm:
+              type: object
+              additionalProperties: false
+              required: [top, right, bottom, left]
+              properties:
+                top: {type: number, minimum: 0}
+                right: {type: number, minimum: 0}
+                bottom: {type: number, minimum: 0}
+                left: {type: number, minimum: 0}
+
+    ExamExportInput:
+      type: object
+      additionalProperties: false
+      required: [format, edition]
+      properties:
+        format: {type: string, enum: [pdf, markdown]}
+        edition: {$ref: '#/components/schemas/ExamEdition'}
+        attempt_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+          description: 从一次试卷作答导出时提供，用于执行答案可见性规则。
+
+    ExamExport:
+      type: object
+      additionalProperties: false
+      required: [id, exam_id, exam_version_id, format, edition, status, file_name, mime_type, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        exam_version_id: {$ref: '#/components/schemas/Identifier'}
+        format: {type: string, enum: [pdf, markdown]}
+        edition: {$ref: '#/components/schemas/ExamEdition'}
+        status: {type: string, enum: [queued, rendering, ready, failed]}
+        file_name: {type: string}
+        mime_type: {type: string, enum: [application/pdf, text/markdown]}
+        size_bytes: {type: [integer, 'null'], minimum: 0}
+        download_url: {type: [string, 'null']}
+        failure:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    OrchestrationStage:
+      type: object
+      additionalProperties: false
+      required: [name, status, started_at, completed_at, outer_elapsed_ms, model_wait_ms, counters]
+      properties:
+        name:
+          type: string
+          enum: [parse, retrieve, model-call, structure-validation, retry, apply-change, undo, render, export]
+        status: {type: string, enum: [succeeded, failed, canceled, skipped]}
+        started_at: {$ref: '#/components/schemas/Timestamp'}
+        completed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        outer_elapsed_ms: {type: integer, minimum: 0}
+        model_wait_ms: {type: integer, minimum: 0}
+        counters:
+          type: object
+          additionalProperties: false
+          properties:
+            cache_hits: {type: integer, minimum: 0}
+            cache_misses: {type: integer, minimum: 0}
+            retrieval_hits: {type: integer, minimum: 0}
+            model_calls: {type: integer, minimum: 0}
+            validation_failures: {type: integer, minimum: 0}
+            retries: {type: integer, minimum: 0}
+
+    OrchestrationEvent:
+      type: object
+      additionalProperties: false
+      required: [id, type, timestamp, attributes]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        type: {type: string, pattern: '^[a-z][a-z0-9.-]+$'}
+        timestamp: {$ref: '#/components/schemas/Timestamp'}
+        attributes:
+          type: object
+          additionalProperties:
+            type: [string, number, integer, boolean, 'null']
+          description: 脱敏元数据；禁止完整资料、API Key 和完整提示词。
+
+    OrchestrationRun:
+      type: object
+      additionalProperties: false
+      required: [id, operation_id, category, status, resource, stages, events, outer_elapsed_ms, model_wait_ms, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        operation_id: {$ref: '#/components/schemas/Identifier'}
+        category: {$ref: '#/components/schemas/OperationKind'}
+        status: {type: string, enum: [running, succeeded, failed, canceled]}
+        subject_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceRef'
+            - type: 'null'
+        stages:
+          type: array
+          items: {$ref: '#/components/schemas/OrchestrationStage'}
+        events:
+          type: array
+          items: {$ref: '#/components/schemas/OrchestrationEvent'}
+        outer_elapsed_ms: {type: integer, minimum: 0}
+        model_wait_ms: {type: integer, minimum: 0}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    OrchestrationRunList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/OrchestrationRun'}
+
+    EvaluationSuite:
+      type: object
+      additionalProperties: false
+      required: [id, name, version, sample_count, checks]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        name: {type: string}
+        version: {type: string}
+        sample_count: {type: integer, minimum: 1}
+        checks:
+          type: array
+          items:
+            type: string
+            enum: [citation-accuracy, answer-correctness, answer-leakage, question-structure, scoring-point-coverage]
+
+    EvaluationSuiteList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/EvaluationSuite'}
+
+    EvaluationRunInput:
+      type: object
+      additionalProperties: false
+      required: [model_id]
+      properties:
+        model_id: {$ref: '#/components/schemas/Identifier'}
+        sample_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+
+    AggregateOrchestrationMetrics:
+      type: object
+      additionalProperties: false
+      required: [sample_count, duplicate_parses, duplicate_model_calls, cache_hit_rate, structure_validation_failure_rate, outer_elapsed_ms, model_wait_ms]
+      properties:
+        sample_count: {type: integer, minimum: 0}
+        duplicate_parses: {type: integer, minimum: 0}
+        duplicate_model_calls: {type: integer, minimum: 0}
+        cache_hit_rate: {type: [number, 'null'], minimum: 0, maximum: 1}
+        structure_validation_failure_rate: {type: [number, 'null'], minimum: 0, maximum: 1}
+        outer_elapsed_ms: {type: integer, minimum: 0}
+        model_wait_ms: {type: integer, minimum: 0}
+
+    ModelResultObservations:
+      type: object
+      additionalProperties: false
+      required: [answer_accuracy, citation_accuracy, scoring_point_coverage, answer_leakage_rate, user_modification_rate]
+      description: 模型结果观测，不作为编排层硬指标。
+      properties:
+        answer_accuracy: {type: [number, 'null'], minimum: 0, maximum: 1}
+        citation_accuracy: {type: [number, 'null'], minimum: 0, maximum: 1}
+        scoring_point_coverage: {type: [number, 'null'], minimum: 0, maximum: 1}
+        answer_leakage_rate: {type: [number, 'null'], minimum: 0, maximum: 1}
+        user_modification_rate: {type: [number, 'null'], minimum: 0, maximum: 1}
+
+    EvaluationRun:
+      type: object
+      additionalProperties: false
+      required: [id, suite_id, suite_version, model, status, orchestration_metrics, model_observations, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        suite_id: {$ref: '#/components/schemas/Identifier'}
+        suite_version: {type: string}
+        model: {$ref: '#/components/schemas/ModelSnapshot'}
+        status: {type: string, enum: [queued, running, complete, failed, canceled]}
+        orchestration_metrics: {$ref: '#/components/schemas/AggregateOrchestrationMetrics'}
+        model_observations: {$ref: '#/components/schemas/ModelResultObservations'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}

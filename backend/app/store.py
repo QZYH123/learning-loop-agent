@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+from copy import deepcopy
 from pathlib import Path
 
 from .domain import apply_action, initial_workspace, normalize_workspace
@@ -91,3 +92,7 @@ class WorkspaceService:
             if not subject:
                 return None
             return subject.get("data", {}).get("chat", {"active_model_id": None, "messages": []})
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return deepcopy(self.workspace)

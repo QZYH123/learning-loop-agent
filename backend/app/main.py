@@ -6,11 +6,20 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .api_models import (
+    ErrorResponse,
+    Operation,
+    OperationAccepted,
+    Source,
+    SourceList,
+    SourceVersion,
+    SourceVersionList,
+)
 from .domain import (
     CHAT_CLEAR,
     CHAT_SEND,
@@ -28,6 +37,8 @@ from .domain import (
 )
 from .generation import GenerationManager
 from .model_client import OpenAiCompatibleModelClient
+from .operations import OperationFailure, OperationManager
+from .sources import MAX_SOURCE_BYTES, SourceLibrary, SourceLibraryError
 from .store import WorkspaceService, WorkspaceStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -72,22 +83,49 @@ def _workspace_response(result: dict, status_code: int = 200, **extra) -> JSONRe
     return JSONResponse(status_code=status_code, content=payload)
 
 
+def _contract_error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    details: dict | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+                "details": details or {},
+            },
+        },
+    )
+
+
 def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> FastAPI:
     data_path = Path(data_dir or os.environ.get("LEARNING_LOOP_DATA_DIR") or DEFAULT_DATA_DIR)
     store = WorkspaceStore(data_path / "workspace.json")
     service = WorkspaceService(store)
     client = model_client or OpenAiCompatibleModelClient()
     generations = GenerationManager(service, client)
+    operations = OperationManager(storage_path=data_path / "operations.json")
+    source_library = SourceLibrary(service, operations, data_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
+        await operations.shutdown()
         await generations.shutdown()
 
     app = FastAPI(title="Learning Loop Agent", lifespan=lifespan)
     app.state.workspace_service = service
     app.state.model_client = client
     app.state.generations = generations
+    app.state.operations = operations
+    app.state.source_library = source_library
     app.state.store = store
 
     def result_or_error(result: dict, status_code: int = 400):
@@ -99,6 +137,15 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
                 result.get("workspace"),
             )
         return _workspace_response(result)
+
+    def source_error(error: SourceLibraryError):
+        return _contract_error_response(
+            error.status_code,
+            error.code,
+            str(error),
+            retryable=error.retryable,
+            details=error.details,
+        )
 
     @app.get("/api/health")
     def health():
@@ -126,7 +173,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
 
     @app.delete("/api/subjects/{subject_id}")
     def delete_subject(subject_id: str):
-        if generations.has_active_for_subject(subject_id):
+        if generations.has_active_for_subject(subject_id) or operations.has_active_for_subject(subject_id):
             return _error_response(409, "CHAT_GENERATION_IN_PROGRESS", "该科目有回答正在生成，请先停止生成", service.workspace)
         return result_or_error(service.dispatch({"type": SUBJECT_DELETE, "subject_id": subject_id}))
 
@@ -235,6 +282,147 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
         if chat is not None and not any(m.get("status") == "generating" for m in chat.get("messages", [])):
             return {"ok": True, "workspace": service.workspace, "message": "生成已结束", "tone": "warning"}
         return _error_response(404, "NO_ACTIVE_GENERATION", "当前没有正在生成的回答", service.workspace)
+
+    @app.get(
+        "/api/subjects/{subject_id}/sources",
+        operation_id="listSources",
+        response_model=SourceList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_sources(subject_id: str):
+        try:
+            return {"items": source_library.list_sources(subject_id)}
+        except SourceLibraryError as exc:
+            return source_error(exc)
+
+    @app.post(
+        "/api/subjects/{subject_id}/sources",
+        operation_id="uploadSource",
+        status_code=202,
+        response_model=OperationAccepted,
+        responses={
+            404: {"model": ErrorResponse},
+            413: {"model": ErrorResponse},
+            415: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+        },
+    )
+    async def upload_source(
+        subject_id: str,
+        file: UploadFile = File(...),
+        display_name: str | None = Form(default=None, max_length=255),
+    ):
+        try:
+            content = await file.read(MAX_SOURCE_BYTES + 1)
+            return source_library.create_source(subject_id, file.filename, display_name, content)
+        except SourceLibraryError as exc:
+            return source_error(exc)
+        finally:
+            await file.close()
+
+    @app.get(
+        "/api/sources/{source_id}",
+        operation_id="getSource",
+        response_model=Source,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_source(source_id: str):
+        try:
+            return source_library.get_source(source_id)
+        except SourceLibraryError as exc:
+            return source_error(exc)
+
+    @app.delete(
+        "/api/sources/{source_id}",
+        operation_id="deleteSource",
+        status_code=204,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def delete_source(source_id: str):
+        try:
+            source_library.delete_source(source_id)
+            return Response(status_code=204)
+        except SourceLibraryError as exc:
+            return source_error(exc)
+
+    @app.get(
+        "/api/sources/{source_id}/versions",
+        operation_id="listSourceVersions",
+        response_model=SourceVersionList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_source_versions(source_id: str):
+        try:
+            return {"items": source_library.list_versions(source_id)}
+        except SourceLibraryError as exc:
+            return source_error(exc)
+
+    @app.post(
+        "/api/sources/{source_id}/versions",
+        operation_id="createSourceVersion",
+        status_code=202,
+        response_model=OperationAccepted,
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+            413: {"model": ErrorResponse},
+            415: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+        },
+    )
+    async def create_source_version(source_id: str, file: UploadFile = File(...)):
+        try:
+            content = await file.read(MAX_SOURCE_BYTES + 1)
+            return source_library.create_version(source_id, file.filename, content)
+        except SourceLibraryError as exc:
+            return source_error(exc)
+        finally:
+            await file.close()
+
+    @app.get(
+        "/api/source-versions/{version_id}",
+        operation_id="getSourceVersion",
+        response_model=SourceVersion,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_source_version(version_id: str):
+        try:
+            return source_library.get_version(version_id)
+        except SourceLibraryError as exc:
+            return source_error(exc)
+
+    @app.get(
+        "/api/operations/{operation_id}",
+        operation_id="getOperation",
+        response_model=Operation,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_operation(operation_id: str):
+        operation = operations.get(operation_id)
+        if not operation:
+            return _contract_error_response(404, "RESOURCE_NOT_FOUND", "异步任务不存在")
+        return operation
+
+    @app.post(
+        "/api/operations/{operation_id}/cancel",
+        operation_id="cancelOperation",
+        status_code=202,
+        response_model=OperationAccepted,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def cancel_operation(operation_id: str):
+        try:
+            operation = operations.cancel(operation_id)
+            return {"operation": operation, "resource": operation.get("resource")}
+        except OperationFailure as exc:
+            status_code = 404 if exc.code == "RESOURCE_NOT_FOUND" else 409
+            return _contract_error_response(
+                status_code,
+                exc.code,
+                str(exc),
+                retryable=exc.retryable,
+                details=exc.details,
+            )
 
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
     return app

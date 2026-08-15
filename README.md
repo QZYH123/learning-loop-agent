@@ -4,6 +4,7 @@
 
 - `01-app-shell-and-subject-spaces.md`：应用壳、科目空间和本地恢复
 - `02-basic-chat-and-model-switching.md`：基础问答、模型服务配置/验证、停止生成和模型切换
+- `03-basic-source-library.md` 后端：Markdown/TXT 资料上传、异步解析、版本、缓存和删除；前端入口尚未实现
 
 ## 技术栈
 
@@ -34,6 +35,12 @@ OpenAI-compatible 模型服务（服务商、模型、Base URL、可选 API Key�
 pytest -q
 ```
 
+## API 契约
+
+项目采用契约先行。Ticket 01–15 的目标 HTTP 契约见 [`docs/api.md`](docs/api.md)，
+机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 03 后端已按目标
+契约实现；Ticket 01、02 的旧接口仍有部分差异。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
+
 ## 结构
 
 ```
@@ -42,6 +49,9 @@ backend/app/domain.py        纯领域规则：科目、模型服务、会话状
 backend/app/store.py          工作区文件持久化
 backend/app/model_client.py   OpenAI-compatible 模型客户端
 backend/app/generation.py     异步生成任务和停止编排
+backend/app/operations.py     可持久化的通用异步任务生命周期
+backend/app/sources.py        资料上传、解析缓存和文件持久化
+backend/app/api_models.py     契约响应模型
 backend/tests/                pytest 领域、API、模型客户端测试
 frontend/                     浏览器前端（静态托管）
 ```

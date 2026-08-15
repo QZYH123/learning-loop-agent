@@ -38,6 +38,12 @@ CHAT_STOP = "chat/stop"
 CHAT_CLEAR = "chat/clear"
 CHAT_SWITCH_MODEL = "chat/switch-model"
 
+SOURCE_CREATE = "source/create"
+SOURCE_ADD_VERSION = "source/add-version"
+SOURCE_COMPLETE_VERSION = "source/complete-version"
+SOURCE_FAIL_VERSION = "source/fail-version"
+SOURCE_DELETE = "source/delete"
+
 MESSAGE_GENERATING = "generating"
 MESSAGE_COMPLETE = "complete"
 MESSAGE_STOPPED = "stopped"
@@ -194,6 +200,56 @@ def _set_chat(workspace: dict, subject: dict, chat: dict, timestamp: int) -> dic
     return {**workspace, "subjects": subjects, "updated_at": timestamp}
 
 
+def _set_subject_data(workspace: dict, subject: dict, data: dict, timestamp: int) -> dict:
+    updated = {**subject, "data": data, "updated_at": timestamp}
+    subjects = [updated if candidate["id"] == subject["id"] else candidate for candidate in workspace.get("subjects", [])]
+    return {**workspace, "subjects": subjects, "updated_at": timestamp}
+
+
+def _find_source(workspace: dict, source_id: str) -> tuple[dict | None, dict | None]:
+    for subject in workspace.get("subjects", []):
+        source = next(
+            (candidate for candidate in subject.get("data", {}).get("sources", []) if candidate.get("id") == source_id),
+            None,
+        )
+        if source:
+            return subject, source
+    return None, None
+
+
+def _find_source_version(workspace: dict, version_id: str) -> tuple[dict | None, dict | None]:
+    for subject in workspace.get("subjects", []):
+        version = next(
+            (
+                candidate
+                for candidate in subject.get("data", {}).get("source_versions", [])
+                if candidate.get("id") == version_id
+            ),
+            None,
+        )
+        if version:
+            return subject, version
+    return None, None
+
+
+def _source_version_summary(version: dict) -> dict:
+    return {
+        key: version.get(key)
+        for key in (
+            "id",
+            "number",
+            "status",
+            "content_hash",
+            "mime_type",
+            "size_bytes",
+            "anchor_count",
+            "cache_hit",
+            "created_at",
+            "processed_at",
+        )
+    }
+
+
 def _empty_chat() -> dict:
     return {"active_model_id": None, "messages": []}
 
@@ -270,6 +326,16 @@ def apply_action(workspace: dict, action: dict, now=None, id_factory=None) -> di
         return _clear_chat(workspace, action, now_fn)
     if action_type == CHAT_SWITCH_MODEL:
         return _switch_chat_model(workspace, action, now_fn)
+    if action_type == SOURCE_CREATE:
+        return _create_source(workspace, action, now_fn, ids)
+    if action_type == SOURCE_ADD_VERSION:
+        return _add_source_version(workspace, action, now_fn, ids)
+    if action_type == SOURCE_COMPLETE_VERSION:
+        return _complete_source_version(workspace, action, now_fn)
+    if action_type == SOURCE_FAIL_VERSION:
+        return _fail_source_version(workspace, action, now_fn)
+    if action_type == SOURCE_DELETE:
+        return _delete_source(workspace, action, now_fn)
     return _fail(workspace, "INVALID_APP_ACTION", f"不支持的应用操作：{action_type}")
 
 
@@ -604,6 +670,187 @@ def _switch_chat_model(workspace: dict, action: dict, now) -> dict:
     )
 
 
+# --- source library -----------------------------------------------------------
+
+
+def _new_source_version(source_id: str, number: int, action: dict, timestamp: int, version_id: str) -> dict:
+    return {
+        "id": version_id,
+        "source_id": source_id,
+        "number": number,
+        "status": "processing",
+        "content_hash": action["content_hash"],
+        "mime_type": action["mime_type"],
+        "size_bytes": action["size_bytes"],
+        "anchor_count": 0,
+        "cache_hit": False,
+        "assets": [],
+        "failure": None,
+        "created_at": timestamp,
+        "processed_at": None,
+    }
+
+
+def _create_source(workspace: dict, action: dict, now, ids) -> dict:
+    subject = _find_subject(workspace, action.get("subject_id"))
+    if not subject:
+        return _fail(workspace, "RESOURCE_NOT_FOUND", "科目空间不存在")
+    timestamp = _now_ms(now())
+    source_id = ids()
+    version = _new_source_version(source_id, 1, action, timestamp, ids())
+    source = {
+        "id": source_id,
+        "subject_id": subject["id"],
+        "display_name": action["display_name"],
+        "media_kind": action["media_kind"],
+        "status": "processing",
+        "current_version": _source_version_summary(version),
+        "version_count": 1,
+        "failure": None,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    data = {**subject.get("data", {})}
+    data["sources"] = [*data.get("sources", []), source]
+    data["source_versions"] = [*data.get("source_versions", []), version]
+    return _ok(
+        _set_subject_data(workspace, subject, data, timestamp),
+        source=source,
+        version=version,
+        message=f"已上传用户资料「{source['display_name']}」",
+    )
+
+
+def _add_source_version(workspace: dict, action: dict, now, ids) -> dict:
+    subject, source = _find_source(workspace, action.get("source_id"))
+    if not source:
+        return _fail(workspace, "RESOURCE_NOT_FOUND", "用户资料不存在")
+    data = {**subject.get("data", {})}
+    versions = [candidate for candidate in data.get("source_versions", []) if candidate.get("source_id") == source["id"]]
+    if any(version.get("status") == "processing" for version in versions):
+        return _fail(workspace, "OPERATION_IN_PROGRESS", "该资料已有版本正在处理")
+    timestamp = _now_ms(now())
+    version = _new_source_version(source["id"], max((item["number"] for item in versions), default=0) + 1, action, timestamp, ids())
+    updated_source = {
+        **source,
+        "status": "processing",
+        "current_version": _source_version_summary(version),
+        "version_count": source.get("version_count", len(versions)) + 1,
+        "failure": None,
+        "updated_at": timestamp,
+    }
+    data["sources"] = [updated_source if candidate.get("id") == source["id"] else candidate for candidate in data.get("sources", [])]
+    data["source_versions"] = [*data.get("source_versions", []), version]
+    return _ok(
+        _set_subject_data(workspace, subject, data, timestamp),
+        source=updated_source,
+        version=version,
+        message=f"已创建资料版本 {version['number']}",
+    )
+
+
+def _complete_source_version(workspace: dict, action: dict, now) -> dict:
+    subject, version = _find_source_version(workspace, action.get("version_id"))
+    if not version:
+        return _fail(workspace, "RESOURCE_NOT_FOUND", "资料版本不存在")
+    if version.get("status") != "processing":
+        return _fail(workspace, "RESOURCE_CONFLICT", "资料版本已不在处理中")
+    timestamp = _now_ms(now())
+    updated_version = {
+        **version,
+        "status": "ready",
+        "anchor_count": int(action.get("anchor_count") or 0),
+        "cache_hit": bool(action.get("cache_hit")),
+        "failure": None,
+        "processed_at": timestamp,
+    }
+    data = {**subject.get("data", {})}
+    data["source_versions"] = [
+        updated_version if candidate.get("id") == version["id"] else candidate
+        for candidate in data.get("source_versions", [])
+    ]
+    source = next((candidate for candidate in data.get("sources", []) if candidate.get("id") == version["source_id"]), None)
+    updated_source = source
+    if source and (source.get("current_version") or {}).get("id") == version["id"]:
+        updated_source = {
+            **source,
+            "status": "ready",
+            "current_version": _source_version_summary(updated_version),
+            "failure": None,
+            "updated_at": timestamp,
+        }
+        data["sources"] = [
+            updated_source if candidate.get("id") == source["id"] else candidate for candidate in data.get("sources", [])
+        ]
+    return _ok(
+        _set_subject_data(workspace, subject, data, timestamp),
+        source=updated_source,
+        version=updated_version,
+    )
+
+
+def _fail_source_version(workspace: dict, action: dict, now) -> dict:
+    subject, version = _find_source_version(workspace, action.get("version_id"))
+    if not version:
+        return _fail(workspace, "RESOURCE_NOT_FOUND", "资料版本不存在")
+    if version.get("status") != "processing":
+        return _ok(workspace, version=version)
+    timestamp = _now_ms(now())
+    failure = {
+        "code": action.get("error_code") or "SOURCE_PROCESSING_FAILED",
+        "message": action.get("error_message") or "资料解析失败",
+        "retryable": bool(action.get("retryable")),
+        "details": action.get("details") or {},
+    }
+    updated_version = {
+        **version,
+        "status": "failed",
+        "failure": failure,
+        "processed_at": timestamp,
+    }
+    data = {**subject.get("data", {})}
+    data["source_versions"] = [
+        updated_version if candidate.get("id") == version["id"] else candidate
+        for candidate in data.get("source_versions", [])
+    ]
+    source = next((candidate for candidate in data.get("sources", []) if candidate.get("id") == version["source_id"]), None)
+    updated_source = source
+    if source and (source.get("current_version") or {}).get("id") == version["id"]:
+        updated_source = {
+            **source,
+            "status": "failed",
+            "current_version": _source_version_summary(updated_version),
+            "failure": failure,
+            "updated_at": timestamp,
+        }
+        data["sources"] = [
+            updated_source if candidate.get("id") == source["id"] else candidate for candidate in data.get("sources", [])
+        ]
+    return _ok(
+        _set_subject_data(workspace, subject, data, timestamp),
+        source=updated_source,
+        version=updated_version,
+    )
+
+
+def _delete_source(workspace: dict, action: dict, now) -> dict:
+    subject, source = _find_source(workspace, action.get("source_id"))
+    if not source:
+        return _fail(workspace, "RESOURCE_NOT_FOUND", "用户资料不存在")
+    timestamp = _now_ms(now())
+    data = {**subject.get("data", {})}
+    data["sources"] = [candidate for candidate in data.get("sources", []) if candidate.get("id") != source["id"]]
+    data["source_versions"] = [
+        {**version, "status": "unavailable"} if version.get("source_id") == source["id"] else version
+        for version in data.get("source_versions", [])
+    ]
+    return _ok(
+        _set_subject_data(workspace, subject, data, timestamp),
+        source_id=source["id"],
+        message=f"已从资料库删除「{source['display_name']}」",
+    )
+
+
 # --- restore / sanitize -------------------------------------------------------
 
 
@@ -664,6 +911,7 @@ def _normalize_subjects(raw_subjects, timestamp: int, model_ids: set[str]) -> tu
             data["chat"] = _normalize_chat(data["chat"], timestamp)
             if data["chat"].get("active_model_id") and data["chat"]["active_model_id"] not in model_ids:
                 data["chat"] = {**data["chat"], "active_model_id": None}
+        data = _recover_processing_sources(data, timestamp)
         subjects.append(
             {
                 "id": subject_id,
@@ -674,6 +922,54 @@ def _normalize_subjects(raw_subjects, timestamp: int, model_ids: set[str]) -> tu
             }
         )
     return subjects, dropped
+
+
+def _recover_processing_sources(data: dict, timestamp: int) -> dict:
+    versions = data.get("source_versions")
+    if not isinstance(versions, list):
+        return data
+
+    failure = {
+        "code": "SOURCE_PROCESSING_FAILED",
+        "message": "资料解析因服务重启中断，请重新上传该版本",
+        "retryable": True,
+        "details": {},
+    }
+    recovered_versions = {}
+    normalized_versions = []
+    for version in versions:
+        if isinstance(version, dict) and version.get("status") == "processing":
+            version = {
+                **version,
+                "status": "failed",
+                "failure": failure,
+                "processed_at": timestamp,
+            }
+            if isinstance(version.get("id"), str):
+                recovered_versions[version["id"]] = version
+        normalized_versions.append(version)
+    if not recovered_versions:
+        return data
+
+    normalized = {**data, "source_versions": normalized_versions}
+    sources = data.get("sources")
+    if not isinstance(sources, list):
+        return normalized
+
+    normalized["sources"] = []
+    for source in sources:
+        current = source.get("current_version") if isinstance(source, dict) else None
+        recovered = recovered_versions.get(current.get("id")) if isinstance(current, dict) else None
+        if recovered:
+            source = {
+                **source,
+                "status": "failed",
+                "current_version": _source_version_summary(recovered),
+                "failure": failure,
+                "updated_at": timestamp,
+            }
+        normalized["sources"].append(source)
+    return normalized
 
 
 def _normalize_models(raw_models, timestamp: int) -> list[dict]:

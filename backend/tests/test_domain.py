@@ -126,3 +126,59 @@ def test_normalize_workspace_recovers_generating_message_as_stopped():
     assert chat["active_model_id"] is None
     assert chat["messages"][1]["status"] == "stopped"
     assert chat["messages"][1]["content"] == "半截"
+
+
+def test_normalize_workspace_recovers_processing_source_as_retryable_failure():
+    raw = {
+        "schema_version": 1,
+        "active_subject_id": "s1",
+        "models": [],
+        "subjects": [{
+            "id": "s1",
+            "name": "数学",
+            "created_at": 1,
+            "updated_at": 2,
+            "data": {
+                "sources": [{
+                    "id": "source-1",
+                    "subject_id": "s1",
+                    "display_name": "notes.md",
+                    "media_kind": "markdown",
+                    "status": "processing",
+                    "current_version": {"id": "version-1", "status": "processing"},
+                    "version_count": 1,
+                    "failure": None,
+                    "created_at": 1,
+                    "updated_at": 2,
+                }],
+                "source_versions": [{
+                    "id": "version-1",
+                    "source_id": "source-1",
+                    "number": 1,
+                    "status": "processing",
+                    "content_hash": "abc",
+                    "mime_type": "text/markdown",
+                    "size_bytes": 10,
+                    "anchor_count": 0,
+                    "cache_hit": False,
+                    "assets": [],
+                    "failure": None,
+                    "created_at": 2,
+                    "processed_at": None,
+                }],
+            },
+        }],
+    }
+
+    workspace, issue = normalize_workspace(raw, now=1000)
+
+    assert issue is None
+    data = workspace["subjects"][0]["data"]
+    source = data["sources"][0]
+    version = data["source_versions"][0]
+    assert source["status"] == "failed"
+    assert source["current_version"]["status"] == "failed"
+    assert source["failure"]["retryable"] is True
+    assert version["status"] == "failed"
+    assert version["failure"]["code"] == "SOURCE_PROCESSING_FAILED"
+    assert version["processed_at"] == 1000

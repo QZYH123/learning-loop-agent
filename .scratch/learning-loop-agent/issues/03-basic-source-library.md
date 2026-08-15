@@ -13,3 +13,8 @@
 - [ ] 资料失败或不可用时显示明确状态，不影响其他资料
 - [ ] 不同科目默认不能看到或使用彼此的资料
 - [ ] 自动化测试覆盖上传、解析缓存、版本变化和删除行为
+
+## Comments
+
+- Ticket 03 后端已按静态 OpenAPI 契约实现：支持 Markdown/TXT 上传、异步解析与取消、任务结果持久化、SHA-256 内容缓存、资料版本、科目隔离和保留历史版本身份的删除行为。
+- 资料卡片以及上传、查看、删除的浏览器入口尚未实现，因此验收项暂不勾选。后端行为和契约一致性由 `backend/tests/test_sources_api.py`、`backend/tests/test_domain.py` 和 `backend/tests/test_contract.py` 覆盖。

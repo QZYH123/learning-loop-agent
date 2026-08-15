@@ -1,0 +1,1472 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+
+info:
+  title: Learning Loop Agent API
+  version: 0.1.0
+  description: |
+    AI 学习工具的目标 HTTP 契约。它覆盖 Ticket 01-15，是后端实现和前端集成的共同输入，
+    不表示当前后端已经完成。除文件上传与下载外，请求和响应均使用 application/json。
+  x-contract-status: target
+
+servers:
+  - url: http://127.0.0.1:4173
+    description: 本地开发服务
+
+security: []
+
+tags:
+  - name: System
+  - name: Subjects
+  - name: Models
+  - name: Sources
+  - name: Chat
+  - name: Artifacts
+  - name: Blueprints
+  - name: ExamDrafts
+  - name: Exams
+  - name: Attempts
+  - name: Rendering
+  - name: Operations
+  - name: Observability
+  - name: Evaluations
+
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [System]
+      summary: 存活检查
+      x-tickets: ['01']
+      responses:
+        '200':
+          description: 服务可用
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Health
+
+  /api/workspace:
+    get:
+      operationId: getWorkspace
+      tags: [System]
+      summary: 读取工作区导航状态
+      description: 返回科目空间和模型服务摘要，不内嵌资料、会话、试卷或 API Key。
+      x-tickets: ['01', '02']
+      responses:
+        '200':
+          description: 当前工作区
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Workspace
+
+  /api/subjects:
+    get:
+      operationId: listSubjects
+      tags: [Subjects]
+      summary: 列出科目空间
+      x-tickets: ['01']
+      responses:
+        '200':
+          description: 科目空间列表
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/SubjectList
+    post:
+      operationId: createSubject
+      tags: [Subjects]
+      summary: 创建并激活科目空间
+      x-tickets: ['01']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/SubjectInput
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Subject
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/{subject_id}:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: getSubject
+      tags: [Subjects]
+      summary: 读取科目空间
+      x-tickets: ['01']
+      responses:
+        '200':
+          description: 科目空间
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Subject
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateSubject
+      tags: [Subjects]
+      summary: 重命名科目空间
+      x-tickets: ['01']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/SubjectInput
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Subject
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteSubject
+      tags: [Subjects]
+      summary: 删除科目空间
+      description: 删除其当前数据；已导出的副本不受影响。存在运行中任务时拒绝删除。
+      x-tickets: ['01']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/subjects/{subject_id}/activate:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    post:
+      operationId: activateSubject
+      tags: [Subjects]
+      summary: 激活科目空间
+      x-tickets: ['01']
+      responses:
+        '200':
+          description: 已激活
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Workspace
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/models:
+    get:
+      operationId: listModels
+      tags: [Models]
+      summary: 列出模型服务
+      x-tickets: ['02', '05']
+      responses:
+        '200':
+          description: 模型服务列表
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/ModelServiceList
+    post:
+      operationId: createModel
+      tags: [Models]
+      summary: 添加模型服务
+      x-tickets: ['02', '05']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/ModelServiceInput
+      responses:
+        '201':
+          description: 已添加；响应不返回 API Key
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/ModelService
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/models/{model_id}:
+    parameters:
+      - $ref: '#/components/parameters/ModelId'
+    get:
+      operationId: getModel
+      tags: [Models]
+      summary: 读取模型服务
+      x-tickets: ['02', '05']
+      responses:
+        '200':
+          description: 模型服务；不返回 API Key
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/ModelService
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateModel
+      tags: [Models]
+      summary: 更新模型服务
+      x-tickets: ['02', '05']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/ModelServicePatch
+      responses:
+        '200':
+          description: 已更新；验证状态被重置
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/ModelService
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteModel
+      tags: [Models]
+      summary: 删除模型服务
+      description: 历史 AI 消息和批改结果中的模型快照保持不变。
+      x-tickets: ['02']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/models/{model_id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/ModelId'
+    post:
+      operationId: verifyModel
+      tags: [Models, Operations]
+      summary: 验证模型服务和能力
+      description: 验证文本输入，并按配置或能力探测记录是否支持图片；不按服务商名称推断能力。
+      x-tickets: ['02', '05']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/subjects/{subject_id}/sources:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listSources
+      tags: [Sources]
+      summary: 列出资料库中的用户资料
+      x-tickets: ['03', '05']
+      responses:
+        '200':
+          description: 用户资料列表
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/SourceList
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: uploadSource
+      tags: [Sources, Operations]
+      summary: 上传用户资料并开始解析
+      description: 支持 Markdown、TXT、PDF、DOCX、PPTX 和常见图片。相同内容复用解析缓存。
+      x-tickets: ['03', '05']
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/SourceUpload
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413':
+          description: 文件超过允许大小
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+        '415':
+          description: 不支持的文件类型
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/sources/{source_id}:
+    parameters:
+      - $ref: '#/components/parameters/SourceId'
+    get:
+      operationId: getSource
+      tags: [Sources]
+      summary: 读取用户资料
+      x-tickets: ['03', '05']
+      responses:
+        '200':
+          description: 用户资料
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Source}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      operationId: deleteSource
+      tags: [Sources]
+      summary: 从资料库删除用户资料
+      description: 停止后续检索；已被会话、试卷或学习产物引用的资料版本和来源引用仍可识别。
+      x-tickets: ['03', '04']
+      responses:
+        '204': {description: 已从资料库删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/sources/{source_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/SourceId'
+    get:
+      operationId: listSourceVersions
+      tags: [Sources]
+      summary: 列出资料版本
+      x-tickets: ['03', '05']
+      responses:
+        '200':
+          description: 资料版本列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SourceVersionList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createSourceVersion
+      tags: [Sources, Operations]
+      summary: 上传变更内容并创建资料版本
+      x-tickets: ['03', '05']
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: {$ref: ./schemas.yaml#/components/schemas/SourceVersionUpload}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413':
+          description: 文件超过允许大小
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+        '415':
+          description: 不支持的文件类型
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/source-versions/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/SourceVersionId'
+    get:
+      operationId: getSourceVersion
+      tags: [Sources]
+      summary: 读取资料版本及处理状态
+      x-tickets: ['03', '05']
+      responses:
+        '200':
+          description: 资料版本
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SourceVersion}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/source-versions/{version_id}/anchors/{anchor_id}:
+    parameters:
+      - $ref: '#/components/parameters/SourceVersionId'
+      - $ref: '#/components/parameters/AnchorId'
+    get:
+      operationId: getSourceAnchor
+      tags: [Sources]
+      summary: 读取稳定来源位置及上下文
+      x-tickets: ['04', '05']
+      responses:
+        '200':
+          description: 来源位置
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SourceAnchor}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410':
+          description: 资料不可用，但历史引用仍存在
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+
+  /api/source-versions/{version_id}/assets/{asset_id}:
+    parameters:
+      - $ref: '#/components/parameters/SourceVersionId'
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      operationId: getSourceAsset
+      tags: [Sources]
+      summary: 读取资料版本中的图片或二进制资源
+      x-tickets: ['05', '12']
+      responses:
+        '200':
+          description: 原始资源字节
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410':
+          description: 资料不可用
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+
+  /api/citations/{citation_id}:
+    parameters:
+      - $ref: '#/components/parameters/CitationId'
+    get:
+      operationId: getCitation
+      tags: [Sources]
+      summary: 解析来源引用并返回可复查上下文
+      x-tickets: ['04', '05']
+      responses:
+        '200':
+          description: 来源引用；资料不可用时 available=false，身份和位置仍保留
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Citation}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/subjects/{subject_id}/chat:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: getChat
+      tags: [Chat]
+      summary: 读取完整会话记录
+      x-tickets: ['02', '04', '06', '07', '12']
+      responses:
+        '200':
+          description: 当前科目的会话记录
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Chat}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: configureChat
+      tags: [Chat]
+      summary: 配置学习方式、资料范围和依据模式
+      description: 切换学习方式不删除已有会话记录，也不隐式切换模型。
+      x-tickets: ['04', '06', '07']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ChatConfigPatch}
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Chat}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: clearChat
+      tags: [Chat]
+      summary: 删除当前科目的会话记录
+      x-tickets: ['02']
+      responses:
+        '204': {description: 已删除会话消息，保留会话配置}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/subjects/{subject_id}/chat/model:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    post:
+      operationId: switchChatModel
+      tags: [Chat]
+      summary: 主动切换当前会话使用的模型
+      x-tickets: ['02']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ChatModelInput}
+      responses:
+        '200':
+          description: 已切换；历史消息模型快照不变
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Chat}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/{subject_id}/chat/messages:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    post:
+      operationId: createChatMessage
+      tags: [Chat, Operations]
+      summary: 发送问题、学习尝试或学习动作
+      description: |
+        依据 ChatMessageInput.intent 推进自由问答或苏格拉底式学习。选区问答把选区、所在题目和来源引用一起提交。
+        响应只创建会话消息与异步任务，不会修改右侧试卷或学习产物。
+      x-tickets: ['02', '04', '06', '12']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ChatMessageInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/{subject_id}/chat/crash-course:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    post:
+      operationId: generateCrashCourse
+      tags: [Chat, Artifacts, Operations]
+      summary: 生成章节速成学习产物
+      x-tickets: ['07']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/CrashCourseInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/{subject_id}/chat/stop:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    post:
+      operationId: stopSubjectChatGeneration
+      tags: [Chat, Operations]
+      summary: 停止当前科目的会话生成
+      x-tickets: ['02']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/generations/{generation_id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/GenerationId'
+    post:
+      operationId: stopGeneration
+      tags: [Chat, Operations]
+      summary: 按兼容任务 ID 停止会话生成
+      description: generation_id 与对应异步任务的 operation_id 相同；新客户端优先使用 operations 取消接口。
+      deprecated: true
+      x-tickets: ['02']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/subjects/{subject_id}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listArtifacts
+      tags: [Artifacts]
+      summary: 列出学习产物
+      x-tickets: ['07']
+      responses:
+        '200':
+          description: 学习产物列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/LearningArtifactList}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/artifacts/{artifact_id}:
+    parameters:
+      - $ref: '#/components/parameters/ArtifactId'
+    get:
+      operationId: getArtifact
+      tags: [Artifacts]
+      summary: 读取学习产物
+      x-tickets: ['07']
+      responses:
+        '200':
+          description: 学习产物
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/LearningArtifact}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      operationId: deleteArtifact
+      tags: [Artifacts]
+      summary: 删除学习产物
+      x-tickets: ['07']
+      responses:
+        '204': {description: 已删除；会话记录保留不可用的产物引用}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/subjects/{subject_id}/exam-blueprints:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listExamBlueprints
+      tags: [Blueprints]
+      summary: 列出组卷蓝图
+      x-tickets: ['08']
+      responses:
+        '200':
+          description: 组卷蓝图列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamBlueprintList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: parseExamBlueprint
+      tags: [Blueprints, Operations]
+      summary: 把自然语言要求解析为组卷蓝图
+      description: 只创建蓝图，不生成题目。
+      x-tickets: ['08']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamBlueprintPromptInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/exam-blueprints/{blueprint_id}:
+    parameters:
+      - $ref: '#/components/parameters/BlueprintId'
+    get:
+      operationId: getExamBlueprint
+      tags: [Blueprints]
+      summary: 读取组卷蓝图
+      x-tickets: ['08']
+      responses:
+        '200':
+          description: 组卷蓝图
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamBlueprint}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateExamBlueprint
+      tags: [Blueprints]
+      summary: 修改组卷蓝图
+      description: 修改已确认蓝图会把状态恢复为 draft，必须重新确认。
+      x-tickets: ['08']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamBlueprintPatch}
+      responses:
+        '200':
+          description: 已修改并重新校验约束
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamBlueprint}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteExamBlueprint
+      tags: [Blueprints]
+      summary: 删除未被试卷草稿引用的组卷蓝图
+      x-tickets: ['08']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exam-blueprints/{blueprint_id}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/BlueprintId'
+    post:
+      operationId: confirmExamBlueprint
+      tags: [Blueprints]
+      summary: 确认组卷蓝图
+      description: 有 error 级约束冲突时返回 409，不触发题目生成。
+      x-tickets: ['08']
+      responses:
+        '200':
+          description: 已确认
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamBlueprint}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exam-blueprints/{blueprint_id}/generate:
+    parameters:
+      - $ref: '#/components/parameters/BlueprintId'
+    post:
+      operationId: generateExamDraft
+      tags: [Blueprints, ExamDrafts, Operations]
+      summary: 从已确认蓝图开始增量组卷
+      description: 立即创建带题目槽位的试卷草稿，再逐题更新状态。
+      x-tickets: ['09']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/subjects/{subject_id}/exam-drafts:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listExamDrafts
+      tags: [ExamDrafts]
+      summary: 列出试卷草稿
+      x-tickets: ['09']
+      responses:
+        '200':
+          description: 试卷草稿列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamDraftList}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/exam-drafts/{draft_id}:
+    parameters:
+      - $ref: '#/components/parameters/DraftId'
+    get:
+      operationId: getExamDraft
+      tags: [ExamDrafts]
+      summary: 读取试卷草稿和逐题状态
+      x-tickets: ['09']
+      responses:
+        '200':
+          description: 试卷草稿
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamDraft}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateExamDraft
+      tags: [ExamDrafts]
+      summary: 修改试卷标题、说明或题目顺序
+      x-tickets: ['09']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamDraftPatch}
+      responses:
+        '200':
+          description: 已修改
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamDraft}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteExamDraft
+      tags: [ExamDrafts]
+      summary: 删除试卷草稿
+      x-tickets: ['09']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exam-drafts/{draft_id}/questions/{question_id}:
+    parameters:
+      - $ref: '#/components/parameters/DraftId'
+      - $ref: '#/components/parameters/QuestionId'
+    put:
+      operationId: replaceDraftQuestion
+      tags: [ExamDrafts]
+      summary: 人工替换一道题
+      x-tickets: ['09']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/QuestionInput}
+      responses:
+        '200':
+          description: 已替换并重新校验题目依据
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/DraftQuestion}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteDraftQuestion
+      tags: [ExamDrafts]
+      summary: 删除一道题
+      x-tickets: ['09']
+      responses:
+        '204': {description: 已删除，不影响其他题目}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exam-drafts/{draft_id}/questions/{question_id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/DraftId'
+      - $ref: '#/components/parameters/QuestionId'
+    post:
+      operationId: retryDraftQuestion
+      tags: [ExamDrafts, Operations]
+      summary: 单独重试一道题
+      x-tickets: ['09']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exam-drafts/{draft_id}/publish:
+    parameters:
+      - $ref: '#/components/parameters/DraftId'
+    post:
+      operationId: publishExamDraft
+      tags: [ExamDrafts, Exams]
+      summary: 确认并保存为试卷
+      description: 含 failed 或 needs-review 题目时必须显式确认；不会静默保存为可靠题目。
+      x-tickets: ['09']
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/PublishExamInput}
+      responses:
+        '201':
+          description: 已保存试卷
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/{subject_id}/exams:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listExams
+      tags: [Exams]
+      summary: 列出试卷
+      x-tickets: ['09', '10']
+      responses:
+        '200':
+          description: 试卷列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamList}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/exams/{exam_id}:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    get:
+      operationId: getExam
+      tags: [Exams]
+      summary: 读取用于编辑的完整试卷
+      description: 包含答案和解析；答题界面必须使用 Attempt.paper，不能用本接口构造考试模式页面。
+      x-tickets: ['09', '13']
+      responses:
+        '200':
+          description: 完整试卷
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: replaceExamDocument
+      tags: [Exams]
+      summary: 保存人工编辑后的结构化试卷
+      description: base_version_id 必须等于当前版本；成功后创建新版本。
+      x-tickets: ['13']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamDocumentReplaceInput}
+      responses:
+        '200':
+          description: 已创建新版本
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteExam
+      tags: [Exams]
+      summary: 删除试卷
+      x-tickets: ['09']
+      responses:
+        '204': {description: 已删除；导出副本不受影响}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    get:
+      operationId: listExamVersions
+      tags: [Exams]
+      summary: 列出试卷版本
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamVersionList}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/exams/{exam_id}/versions/{version_id}/restore:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+      - $ref: '#/components/parameters/ExamVersionId'
+    post:
+      operationId: restoreExamVersion
+      tags: [Exams]
+      summary: 从旧版本恢复为一个新版本
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 已恢复
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/undo:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    post:
+      operationId: undoExamChange
+      tags: [Exams]
+      summary: 撤销最近一次试卷修改
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 已撤销
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/redo:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    post:
+      operationId: redoExamChange
+      tags: [Exams]
+      summary: 重做最近一次撤销
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 已重做
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/revision-proposals:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    get:
+      operationId: listExamRevisionProposals
+      tags: [Exams]
+      summary: 列出试卷修改提案
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 修改提案列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamRevisionProposalList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createExamRevisionProposal
+      tags: [Exams, Operations]
+      summary: 让 AI 生成结构化修改预览
+      description: 只生成差异提案，不直接修改试卷。
+      x-tickets: ['12', '13']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamRevisionProposalInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/revision-proposals/{proposal_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProposalId'
+    get:
+      operationId: getExamRevisionProposal
+      tags: [Exams]
+      summary: 读取修改提案和差异预览
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 修改提案
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamRevisionProposal}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/revision-proposals/{proposal_id}/apply:
+    parameters:
+      - $ref: '#/components/parameters/ProposalId'
+    post:
+      operationId: applyExamRevisionProposal
+      tags: [Exams]
+      summary: 明确应用修改提案
+      description: base_version_id 已过期或应用后结构无效时返回 409，当前试卷保持不变。
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 已应用并创建新版本
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/revision-proposals/{proposal_id}/discard:
+    parameters:
+      - $ref: '#/components/parameters/ProposalId'
+    post:
+      operationId: discardExamRevisionProposal
+      tags: [Exams]
+      summary: 放弃修改提案
+      x-tickets: ['13']
+      responses:
+        '204': {description: 已放弃，试卷保持不变}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/attempts:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    post:
+      operationId: createAttempt
+      tags: [Attempts]
+      summary: 开始试卷作答
+      description: 返回的 paper 不含答案、解析或隐藏的题目依据。
+      x-tickets: ['10', '11']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/AttemptInput}
+      responses:
+        '201':
+          description: 已开始
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/attempts/{attempt_id}:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    get:
+      operationId: getAttempt
+      tags: [Attempts]
+      summary: 恢复试卷作答
+      description: 考试模式提交前始终隐藏答案和解析。
+      x-tickets: ['10', '11']
+      responses:
+        '200':
+          description: 试卷作答
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateAttempt
+      tags: [Attempts]
+      summary: 切换考试/练习模式或建议分数显示设置
+      x-tickets: ['10', '11']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/AttemptPatch}
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/attempts/{attempt_id}/answers/{question_id}:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+      - $ref: '#/components/parameters/QuestionId'
+    put:
+      operationId: saveAttemptAnswer
+      tags: [Attempts]
+      summary: 保存一道题的答案
+      description: 考试模式不返回正确性；练习模式只返回已请求或可即时判断的反馈。
+      x-tickets: ['10', '11']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/AttemptAnswerInput}
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AttemptAnswer}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/attempts/{attempt_id}/answers/{question_id}/feedback:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+      - $ref: '#/components/parameters/QuestionId'
+    post:
+      operationId: requestQuestionFeedback
+      tags: [Attempts, Operations]
+      summary: 请求单题反馈或主观题批改
+      x-tickets: ['10', '11']
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/FeedbackInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/pause:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      operationId: pauseAttempt
+      tags: [Attempts]
+      summary: 暂停作答
+      x-tickets: ['10']
+      responses:
+        '200':
+          description: 已暂停
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      operationId: resumeAttempt
+      tags: [Attempts]
+      summary: 恢复作答
+      x-tickets: ['10']
+      responses:
+        '200':
+          description: 已恢复
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/submit:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      operationId: submitAttempt
+      tags: [Attempts, Operations]
+      summary: 提交作答并开始统一批改
+      x-tickets: ['10', '11']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/review:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    get:
+      operationId: getAttemptReview
+      tags: [Attempts]
+      summary: 读取可见的答案、解析、依据和批改结果
+      description: 考试模式仅在提交后可用；练习模式只包含已经产生反馈的题目。
+      x-tickets: ['10', '11']
+      responses:
+        '200':
+          description: 作答复盘
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AttemptReview}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/render-document:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+      - name: edition
+        in: query
+        required: true
+        schema: {$ref: ./schemas.yaml#/components/schemas/ExamEdition}
+    get:
+      operationId: getExamRenderDocument
+      tags: [Rendering]
+      summary: 读取网页、打印和 PDF 共用的统一渲染文档
+      x-tickets: ['14']
+      responses:
+        '200':
+          description: 固定版本的渲染文档
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamRenderDocument}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/exams/{exam_id}/exports:
+    parameters:
+      - $ref: '#/components/parameters/ExamId'
+    post:
+      operationId: createExamExport
+      tags: [Rendering, Operations]
+      summary: 创建明确的导出副本
+      description: 带答案版本必须显式传 edition=solutions；考试模式未提交的作答不能导出答案版。
+      x-tickets: ['14']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamExportInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/exports/{export_id}:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      operationId: getExamExport
+      tags: [Rendering]
+      summary: 读取导出状态
+      x-tickets: ['14']
+      responses:
+        '200':
+          description: 导出副本
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamExport}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/exports/{export_id}/file:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      operationId: downloadExamExport
+      tags: [Rendering]
+      summary: 下载导出副本
+      x-tickets: ['14']
+      responses:
+        '200':
+          description: 导出文件
+          content:
+            application/pdf:
+              schema: {type: string, format: binary}
+            text/markdown:
+              schema: {type: string}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/operations/{operation_id}:
+    parameters:
+      - $ref: '#/components/parameters/OperationId'
+    get:
+      operationId: getOperation
+      tags: [Operations]
+      summary: 查询异步任务
+      x-tickets: ['02', '03', '05', '07', '08', '09', '11', '13', '14']
+      responses:
+        '200':
+          description: 异步任务
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Operation}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/operations/{operation_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/OperationId'
+    post:
+      operationId: cancelOperation
+      tags: [Operations]
+      summary: 取消可取消的异步任务
+      x-tickets: ['02', '03', '05', '07', '08', '09', '11', '13', '14']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/orchestration-runs:
+    get:
+      operationId: listOrchestrationRuns
+      tags: [Observability]
+      summary: 列出编排运行
+      x-tickets: ['15']
+      parameters:
+        - name: subject_id
+          in: query
+          schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}
+        - name: category
+          in: query
+          schema: {$ref: ./schemas.yaml#/components/schemas/OperationKind}
+      responses:
+        '200':
+          description: 编排运行列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/OrchestrationRunList}
+
+  /api/orchestration-runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getOrchestrationRun
+      tags: [Observability]
+      summary: 读取编排阶段、指标和脱敏事件
+      description: 不返回完整资料、API Key、完整提示词或无关敏感内容。
+      x-tickets: ['15']
+      responses:
+        '200':
+          description: 编排运行
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/OrchestrationRun}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/evaluation-suites:
+    get:
+      operationId: listEvaluationSuites
+      tags: [Evaluations]
+      summary: 列出固定评估样例集
+      x-tickets: ['15']
+      responses:
+        '200':
+          description: 固定评估样例集
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/EvaluationSuiteList}
+
+  /api/evaluation-suites/{suite_id}/runs:
+    parameters:
+      - $ref: '#/components/parameters/SuiteId'
+    post:
+      operationId: runEvaluationSuite
+      tags: [Evaluations, Operations]
+      summary: 运行固定评估样例
+      x-tickets: ['15']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/EvaluationRunInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/evaluation-runs/{evaluation_run_id}:
+    parameters:
+      - $ref: '#/components/parameters/EvaluationRunId'
+    get:
+      operationId: getEvaluationRun
+      tags: [Evaluations]
+      summary: 读取分离的编排层指标和模型结果观测
+      x-tickets: ['15']
+      responses:
+        '200':
+          description: 评估运行结果
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/EvaluationRun}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+components:
+  parameters:
+    SubjectId: {name: subject_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    ModelId: {name: model_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    SourceId: {name: source_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    SourceVersionId: {name: version_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AnchorId: {name: anchor_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AssetId: {name: asset_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    CitationId: {name: citation_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    ArtifactId: {name: artifact_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    BlueprintId: {name: blueprint_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    DraftId: {name: draft_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    QuestionId: {name: question_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    ExamId: {name: exam_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    ExamVersionId: {name: version_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    ProposalId: {name: proposal_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AttemptId: {name: attempt_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    ExportId: {name: export_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    OperationId: {name: operation_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    GenerationId: {name: generation_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    RunId: {name: run_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    SuiteId: {name: suite_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    EvaluationRunId: {name: evaluation_run_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+
+  responses:
+    OperationAccepted:
+      description: 已接受异步任务
+      content:
+        application/json:
+          schema: {$ref: ./schemas.yaml#/components/schemas/OperationAccepted}
+    NotFound:
+      description: 资源不存在或不属于当前科目空间
+      content:
+        application/json:
+          schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+    Conflict:
+      description: 当前资源状态不允许此操作
+      content:
+        application/json:
+          schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
+    ValidationFailed:
+      description: 请求字段或领域约束校验失败
+      content:
+        application/json:
+          schema: {$ref: ./schemas.yaml#/components/schemas/ErrorResponse}
