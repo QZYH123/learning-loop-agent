@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -96,3 +97,23 @@ class WorkspaceService:
     def snapshot(self) -> dict:
         with self._lock:
             return deepcopy(self.workspace)
+
+    def update_subject_data(self, subject_id: str, update) -> dict | None:
+        with self._lock:
+            subject = next((item for item in self.workspace.get("subjects", []) if item["id"] == subject_id), None)
+            if not subject:
+                return None
+            timestamp = int(time.time() * 1000)
+            data = update(deepcopy(subject.get("data", {})))
+            updated_subject = {**subject, "data": data, "updated_at": timestamp}
+            self.workspace = {
+                **self.workspace,
+                "subjects": [
+                    updated_subject if item["id"] == subject_id else item
+                    for item in self.workspace.get("subjects", [])
+                ],
+                "updated_at": timestamp,
+            }
+            saved = self.store.save(self.workspace)
+            self.last_storage_error = None if saved["ok"] else saved["error"]
+            return deepcopy(data)

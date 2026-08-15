@@ -105,6 +105,20 @@ class OperationManager:
                 for record in self._records.values()
             )
 
+    def active_for_subject(self, subject_id: str, kind: str | None = None) -> dict | None:
+        with self._lock:
+            record = next(
+                (
+                    item
+                    for item in self._records.values()
+                    if item["status"] not in TERMINAL_STATUSES
+                    and item.get("subject_id") == subject_id
+                    and (kind is None or item.get("kind") == kind)
+                ),
+                None,
+            )
+            return copy.deepcopy(record) if record else None
+
     async def _run(self, operation_id: str, worker: Callable[[], Awaitable[dict | None]]) -> None:
         timestamp = self._now()
         with self._lock:

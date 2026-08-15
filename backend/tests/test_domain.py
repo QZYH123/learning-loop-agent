@@ -44,7 +44,7 @@ def test_model_validation_and_chat_message_snapshot():
     }, now=1002, id_factory=lambda: "m1")
     model = added["workspace"]["models"][0]
     assert model["base_url"] == "http://localhost/v1"
-    assert model["capabilities"] == {"text": True, "vision": False}
+    assert model["capabilities"] == {"text": True, "vision": False, "source": "configured"}
 
     message_ids = iter(["user-1", "assistant-1"])
     sent = apply_action(added["workspace"], {

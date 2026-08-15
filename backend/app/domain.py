@@ -185,7 +185,18 @@ def _validate_model_input(workspace: dict, action: dict, except_model_id=None) -
             and candidate["base_url"] == base_url
         ):
             return None, _error("MODEL_SERVICE_DUPLICATE", f"已存在相同的模型服务「{provider} / {model}」")
-    return {"provider": provider, "model": model, "base_url": base_url, "api_key": api_key}, None
+    capabilities = action.get("capabilities") if isinstance(action.get("capabilities"), dict) else {}
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "capabilities": {
+            "text": True,
+            "vision": bool(capabilities.get("vision")),
+            "source": capabilities.get("source") if capabilities.get("source") in {"configured", "verified"} else "configured",
+        },
+    }, None
 
 
 def _set_chat(workspace: dict, subject: dict, chat: dict, timestamp: int) -> dict:
@@ -418,7 +429,6 @@ def _add_model(workspace: dict, action: dict, now, ids) -> dict:
     profile = {
         "id": ids(),
         **fields,
-        "capabilities": {"text": True, "vision": False},
         "created_at": timestamp,
         "updated_at": timestamp,
         "last_validation": None,
@@ -761,6 +771,7 @@ def _complete_source_version(workspace: dict, action: dict, now) -> dict:
         "status": "ready",
         "anchor_count": int(action.get("anchor_count") or 0),
         "cache_hit": bool(action.get("cache_hit")),
+        "assets": action.get("assets") or [],
         "failure": None,
         "processed_at": timestamp,
     }
@@ -992,6 +1003,7 @@ def _normalize_models(raw_models, timestamp: int) -> list[dict]:
             continue
         seen_ids.add(model_id)
         seen_keys.add(key)
+        capabilities = candidate.get("capabilities") if isinstance(candidate.get("capabilities"), dict) else {}
         models.append(
             {
                 "id": model_id,
@@ -999,7 +1011,11 @@ def _normalize_models(raw_models, timestamp: int) -> list[dict]:
                 "model": model,
                 "base_url": base_url,
                 "api_key": candidate.get("api_key") if isinstance(candidate.get("api_key"), str) else "",
-                "capabilities": {"text": True, "vision": False},
+                "capabilities": {
+                    "text": True,
+                    "vision": bool(capabilities.get("vision")),
+                    "source": capabilities.get("source") if capabilities.get("source") in {"configured", "verified"} else "configured",
+                },
                 "created_at": _number_or(candidate.get("created_at"), timestamp),
                 "updated_at": _number_or(candidate.get("updated_at"), timestamp),
                 "last_validation": _normalize_validation(candidate.get("last_validation"), timestamp),

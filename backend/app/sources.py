@@ -4,9 +4,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import tempfile
+import threading
+import uuid
 from pathlib import Path
 
 from .domain import (
@@ -17,6 +20,7 @@ from .domain import (
     SOURCE_FAIL_VERSION,
 )
 from .operations import OperationFailure, OperationManager
+from .source_parsers import parse_source
 
 
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
@@ -24,6 +28,17 @@ SOURCE_FORMATS = {
     ".md": ("markdown", "text/markdown"),
     ".markdown": ("markdown", "text/markdown"),
     ".txt": ("text", "text/plain"),
+    ".pdf": ("pdf", "application/pdf"),
+    ".docx": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ".pptx": ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    ".png": ("image", "image/png"),
+    ".jpg": ("image", "image/jpeg"),
+    ".jpeg": ("image", "image/jpeg"),
+    ".webp": ("image", "image/webp"),
+    ".gif": ("image", "image/gif"),
+    ".bmp": ("image", "image/bmp"),
+    ".tif": ("image", "image/tiff"),
+    ".tiff": ("image", "image/tiff"),
 }
 
 
@@ -42,6 +57,9 @@ class SourceLibrary:
         self.operations = operations
         self.files_dir = data_path / "source-files"
         self.cache_dir = data_path / "source-cache"
+        self.index_dir = data_path / "source-index"
+        self.citations_path = data_path / "citations.json"
+        self._citation_lock = threading.RLock()
 
     def list_sources(self, subject_id: str) -> list[dict]:
         subject = self._subject(subject_id)
@@ -75,6 +93,76 @@ class SourceLibrary:
             if version:
                 return version
         raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "资料版本不存在")
+
+    def get_anchor(self, version_id: str, anchor_id: str) -> dict:
+        version = self.get_version(version_id)
+        index = self._load_version_index(version_id)
+        anchor = next((item for item in index.get("anchors", []) if item.get("id") == anchor_id), None)
+        if not anchor:
+            raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "来源位置不存在")
+        if version.get("status") == "unavailable":
+            raise SourceLibraryError(410, "SOURCE_UNAVAILABLE", "资料已不可用，来源位置仅保留历史身份")
+        return {**anchor, "available": True}
+
+    def get_asset(self, version_id: str, asset_id: str) -> tuple[bytes, str]:
+        version = self.get_version(version_id)
+        if version.get("status") == "unavailable":
+            raise SourceLibraryError(410, "SOURCE_UNAVAILABLE", "资料已不可用")
+        index = self._load_version_index(version_id)
+        asset = next((item for item in index.get("assets", []) if item.get("id") == asset_id), None)
+        if not asset:
+            raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "资料图片不存在")
+        path = self.cache_dir / f"{version['content_hash']}.assets" / Path(asset["cache_file"]).name
+        if not path.exists():
+            raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "资料图片文件不存在")
+        return path.read_bytes(), asset["mime_type"]
+
+    def retrieve(self, query: str, version_ids: list[str], limit: int = 5) -> list[dict]:
+        scored = []
+        image_anchors = []
+        terms = self._query_terms(query)
+        for version_id in version_ids:
+            version = self.get_version(version_id)
+            if version.get("status") != "ready":
+                raise SourceLibraryError(409, "SOURCE_UNAVAILABLE", "选定资料尚不可用于检索")
+            index = self._load_version_index(version_id)
+            for anchor in index.get("anchors", []):
+                text = self._anchor_text(anchor).casefold()
+                score = sum(text.count(term) for term in terms)
+                if score:
+                    scored.append((score, anchor))
+                elif any(block.get("type") == "image" for block in anchor.get("content", [])):
+                    image_anchors.append(anchor)
+        scored.sort(key=lambda item: item[0], reverse=True)
+        matches = [anchor for _, anchor in scored[:limit]]
+        if not matches:
+            matches = image_anchors[:limit]
+        return matches
+
+    def create_citation(self, anchor: dict) -> dict:
+        source = self.get_source(anchor["source_id"])
+        citation = {
+            "id": f"citation-{uuid.uuid4().hex}",
+            "source_id": anchor["source_id"],
+            "source_version_id": anchor["source_version_id"],
+            "anchor_id": anchor["id"],
+            "source_name": source["display_name"],
+            "location": anchor["location"],
+            "excerpt": self._anchor_text(anchor)[:1000] or None,
+            "available": True,
+        }
+        with self._citation_lock:
+            records = self._load_citations()
+            records.append(citation)
+            self._write_json_atomic(self.citations_path, {"schema_version": 1, "citations": records})
+        return citation
+
+    def get_citation(self, citation_id: str) -> dict:
+        citation = next((item for item in self._load_citations() if item.get("id") == citation_id), None)
+        if not citation:
+            raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "来源引用不存在")
+        version = self.get_version(citation["source_version_id"])
+        return {**citation, "available": version.get("status") != "unavailable"}
 
     def create_source(self, subject_id: str, filename: str | None, display_name: str | None, content: bytes) -> dict:
         self._subject(subject_id)
@@ -125,13 +213,15 @@ class SourceLibrary:
             await asyncio.sleep(0)
             try:
                 self._write_atomic(self.files_dir / f"{version['id']}.bin", content)
-                cached, anchor_count = self._parse_with_cache(version["content_hash"], content, media_kind)
+                cached, parsed = self._parse_with_cache(version["content_hash"], content, media_kind)
+                index = self._materialize_version_index(source, version, parsed)
                 result = self.workspace_service.dispatch(
                     {
                         "type": SOURCE_COMPLETE_VERSION,
                         "version_id": version["id"],
                         "cache_hit": cached,
-                        "anchor_count": anchor_count,
+                        "anchor_count": len(index["anchors"]),
+                        "assets": [self._public_asset(asset) for asset in index["assets"]],
                     }
                 )
                 self._require_worker_dispatch(result)
@@ -152,6 +242,10 @@ class SourceLibrary:
                     retryable=True,
                     details={"reason": str(exc)},
                 ) from exc
+            except Exception as exc:
+                message = "资料文件无法解析"
+                self._mark_failed(version["id"], message)
+                raise OperationFailure("SOURCE_PROCESSING_FAILED", message, details={"reason": str(exc)}) from exc
 
         resource = {"type": "source", "id": source["id"]}
         operation = self.operations.start(
@@ -162,27 +256,112 @@ class SourceLibrary:
         )
         return {"operation": operation, "resource": resource}
 
-    def _parse_with_cache(self, digest: str, content: bytes, media_kind: str) -> tuple[bool, int]:
+    def _parse_with_cache(self, digest: str, content: bytes, media_kind: str) -> tuple[bool, dict]:
         cache_path = self.cache_dir / f"{digest}.json"
         if cache_path.exists():
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if cached.get("content_hash") == digest and isinstance(cached.get("text"), str):
-                    return True, int(cached.get("anchor_count") or 0)
-            except (OSError, ValueError, TypeError):
-                pass
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("content_hash") == digest and isinstance(cached.get("anchors"), list):
+                return True, cached
 
-        text = content.decode("utf-8-sig")
-        chunks = [chunk for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
+        parsed = parse_source(media_kind, content)
+        cache_assets_dir = self.cache_dir / f"{digest}.assets"
+        assets = []
+        for index, asset in enumerate(parsed["assets"]):
+            extension = mimetypes.guess_extension(asset["mime_type"]) or ".bin"
+            filename = f"{index}{extension}"
+            self._write_atomic(cache_assets_dir / filename, asset["data"])
+            assets.append({key: value for key, value in asset.items() if key != "data"} | {"cache_file": filename})
         payload = {
             "schema_version": 1,
             "content_hash": digest,
             "media_kind": media_kind,
-            "text": text,
-            "anchor_count": len(chunks),
+            "anchors": parsed["anchors"],
+            "assets": assets,
         }
-        self._write_atomic(cache_path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-        return False, len(chunks)
+        self._write_json_atomic(cache_path, payload)
+        return False, payload
+
+    def _materialize_version_index(self, source: dict, version: dict, parsed: dict) -> dict:
+        assets = []
+        asset_ids = []
+        for index, asset in enumerate(parsed.get("assets", [])):
+            asset_id = f"asset-{uuid.uuid4().hex}"
+            asset_ids.append(asset_id)
+            assets.append({"id": asset_id, **asset})
+
+        anchors = []
+        for anchor_index, neutral in enumerate(parsed.get("anchors", [])):
+            location = {**neutral["location"]}
+            asset_index = location.pop("asset_index", None)
+            location["asset_id"] = asset_ids[asset_index] if asset_index is not None else None
+            blocks = []
+            for block_index, neutral_block in enumerate(neutral.get("content", [])):
+                block = {**neutral_block, "id": f"block-{version['id']}-{anchor_index}-{block_index}"}
+                block_asset_index = block.pop("asset_index", None)
+                if block_asset_index is not None:
+                    block["asset"] = {
+                        "source_version_id": version["id"],
+                        "asset_id": asset_ids[block_asset_index],
+                    }
+                blocks.append(block)
+            anchors.append({
+                "id": f"anchor-{uuid.uuid4().hex}",
+                "source_id": source["id"],
+                "source_version_id": version["id"],
+                "location": location,
+                "content": blocks,
+            })
+        index = {
+            "schema_version": 1,
+            "source_id": source["id"],
+            "source_version_id": version["id"],
+            "anchors": anchors,
+            "assets": assets,
+        }
+        self._write_json_atomic(self.index_dir / f"{version['id']}.json", index)
+        return index
+
+    def _load_version_index(self, version_id: str) -> dict:
+        path = self.index_dir / f"{version_id}.json"
+        if not path.exists():
+            raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "资料版本尚无可用索引")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _load_citations(self) -> list[dict]:
+        if not self.citations_path.exists():
+            return []
+        payload = json.loads(self.citations_path.read_text(encoding="utf-8"))
+        return payload.get("citations", [])
+
+    @staticmethod
+    def _query_terms(query: str) -> list[str]:
+        folded = query.casefold()
+        words = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]", folded)
+        return list(dict.fromkeys(words))
+
+    @staticmethod
+    def _anchor_text(anchor: dict) -> str:
+        values = []
+        for block in anchor.get("content", []):
+            if block.get("type") == "markdown":
+                values.append(block.get("text", ""))
+            elif block.get("type") == "latex":
+                values.append(block.get("latex", ""))
+            elif block.get("type") == "table":
+                values.extend(block.get("columns", []))
+                values.extend(cell for row in block.get("rows", []) for cell in row)
+        return "\n".join(values)
+
+    @staticmethod
+    def _public_asset(asset: dict) -> dict:
+        return {key: asset.get(key) for key in ("id", "kind", "mime_type", "width", "height", "alt")}
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: dict) -> None:
+        SourceLibrary._write_atomic(
+            path,
+            (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        )
 
     def _mark_failed(self, version_id: str, message: str, retryable: bool = False) -> None:
         self.workspace_service.dispatch(

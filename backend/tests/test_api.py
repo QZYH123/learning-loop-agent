@@ -1,160 +1,134 @@
-import time
-
 from backend.tests.conftest import ImmediateFakeModelClient, WaitingFakeModelClient, make_client, wait_for
 
 
 def workspace(client):
-    return client.get("/api/workspace").json()["workspace"]
+    return client.get("/api/workspace").json()
+
+
+def create_model(client, **overrides):
+    payload = {"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1", **overrides}
+    return client.post("/api/models", json=payload).json()["id"]
+
+
+def send_message(client, subject_id, content, model_id):
+    return client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+        "intent": "ask",
+        "content": content,
+        "model_id": model_id,
+    })
 
 
 def test_subject_lifecycle_api(tmp_path):
     client, _ = make_client(tmp_path)
+    with client:
+        math = client.post("/api/subjects", json={"name": "数学"})
+        assert math.status_code == 201
+        math_id = math.json()["id"]
+        english_id = client.post("/api/subjects", json={"name": "英语"}).json()["id"]
 
-    created = client.post("/api/subjects", json={"name": "数学"}).json()
-    assert created["ok"] is True
-    math_id = created["workspace"]["active_subject_id"]
+        renamed = client.patch(f"/api/subjects/{english_id}", json={"name": "大学英语"})
+        assert renamed.json()["name"] == "大学英语"
+        assert client.post(f"/api/subjects/{math_id}/activate").json()["active_subject_id"] == math_id
 
-    english = client.post("/api/subjects", json={"name": "英语"}).json()["workspace"]
-    english_id = next(s["id"] for s in english["subjects"] if s["name"] == "英语")
+        assert client.delete(f"/api/subjects/{math_id}").status_code == 204
+        assert [item["id"] for item in client.get("/api/subjects").json()["items"]] == [english_id]
 
-    renamed = client.patch(f"/api/subjects/{english_id}", json={"name": "大学英语"}).json()
-    assert renamed["ok"] is True
-    assert client.post(f"/api/subjects/{math_id}/activate").json()["workspace"]["active_subject_id"] == math_id
-
-    deleted = client.delete(f"/api/subjects/{math_id}").json()
-    assert deleted["workspace"]["active_subject_id"] == english_id
-    assert len(deleted["workspace"]["subjects"]) == 1
-
-    duplicate = client.post("/api/subjects", json={"name": " 大学英语 "})
-    assert duplicate.status_code == 400
-    assert duplicate.json()["error"]["code"] == "SUBJECT_NAME_DUPLICATE"
+        duplicate = client.post("/api/subjects", json={"name": " 大学英语 "})
+        assert duplicate.status_code == 409
+        assert duplicate.json()["error"]["code"] == "SUBJECT_NAME_DUPLICATE"
 
 
 def test_workspace_persists_between_app_restarts(tmp_path):
     client, _ = make_client(tmp_path)
-    created = client.post("/api/subjects", json={"name": "数学"}).json()["workspace"]
-    subject_id = created["active_subject_id"]
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
 
-    client2, _ = make_client(tmp_path)
-    reopened = workspace(client2)
-    assert reopened["active_subject_id"] == subject_id
-    assert [s["name"] for s in reopened["subjects"]] == ["数学"]
+    reopened, _ = make_client(tmp_path)
+    with reopened:
+        state = workspace(reopened)
+        assert state["active_subject_id"] == subject_id
+        assert [item["name"] for item in state["subjects"]] == ["数学"]
 
 
 def test_model_verify_and_chat_message_metadata_api(tmp_path):
     fake = ImmediateFakeModelClient()
     client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model_id = create_model(client, provider="FakeAI", api_key="secret")
 
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["workspace"]["active_subject_id"]
-    model_id = client.post("/api/models", json={
-        "provider": "FakeAI",
-        "model": "fake-1",
-        "base_url": "http://localhost/v1",
-        "api_key": "secret",
-    }).json()["workspace"]["models"][0]["id"]
+        verified = client.post(f"/api/models/{model_id}/verify")
+        assert verified.status_code == 202
+        operation_id = verified.json()["operation"]["id"]
+        wait_for(lambda: client.get(f"/api/operations/{operation_id}").json()["status"] == "succeeded")
+        assert client.get(f"/api/models/{model_id}").json()["validation"]["status"] == "ok"
 
-    verified = client.post(f"/api/models/{model_id}/verify").json()
-    assert verified["workspace"]["models"][0]["last_validation"]["status"] == "ok"
+        sent = send_message(client, subject_id, "你好", model_id)
+        assert sent.status_code == 202
+        wait_for(lambda: client.get(f"/api/subjects/{subject_id}/chat").json()["messages"][-1]["status"] == "complete")
 
-    sent = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
-        "content": "你好",
-        "model_id": model_id,
-    })
-    assert sent.status_code == 202
-    assert sent.json()["workspace"]["subjects"][0]["data"]["chat"]["messages"][1]["status"] == "generating"
-
-    def completed():
-        chat = workspace(client)["subjects"][0]["data"]["chat"]
-        return chat["messages"][1]["status"] == "complete"
-
-    wait_for(completed)
-    chat = workspace(client)["subjects"][0]["data"]["chat"]
-    assert chat["messages"][0]["content"] == "你好"
-    assert chat["messages"][1]["content"] == "这是通用知识模式下的回答。"
-    assert chat["messages"][1]["mode"] == "general-knowledge"
-    assert chat["messages"][1]["model"]["provider"] == "FakeAI"
-    assert chat["messages"][1]["model"]["model"] == "fake-1"
-    assert len(fake.chat_calls) == 1
-    assert fake.chat_calls[0]["messages"] == [{"role": "user", "content": "你好"}]
+        chat = client.get(f"/api/subjects/{subject_id}/chat").json()
+        assert chat["messages"][0]["content"][0]["text"] == "你好"
+        assert chat["messages"][1]["content"][0]["text"] == "这是通用知识模式下的回答。"
+        assert chat["messages"][1]["grounding_result"] == "general-knowledge"
+        assert chat["messages"][1]["model"]["provider"] == "FakeAI"
+        assert len(fake.chat_calls) == 1
+        assert "你好" in fake.chat_calls[0]["messages"][0]["content"]
 
 
 def test_chat_history_and_model_config_restore_after_restart(tmp_path):
     fake = ImmediateFakeModelClient(answer="持久化回答")
     client, _ = make_client(tmp_path, model_client=fake)
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["workspace"]["active_subject_id"]
-    model_id = client.post("/api/models", json={
-        "provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"
-    }).json()["workspace"]["models"][0]["id"]
-    client.post(f"/api/subjects/{subject_id}/chat/messages", json={"content": "会保存吗？", "model_id": model_id})
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model_id = create_model(client)
+        send_message(client, subject_id, "会保存吗？", model_id)
+        wait_for(lambda: client.get(f"/api/subjects/{subject_id}/chat").json()["messages"][-1]["status"] == "complete")
 
-    def completed():
-        chat = workspace(client)["subjects"][0]["data"]["chat"]
-        return chat["messages"][1]["status"] == "complete"
-
-    wait_for(completed)
-
-    client2, _ = make_client(tmp_path)
-    restored = workspace(client2)
-    assert restored["models"][0]["model"] == "fake-1"
-    chat = restored["subjects"][0]["data"]["chat"]
-    assert chat["messages"][0]["content"] == "会保存吗？"
-    assert chat["messages"][1]["content"] == "持久化回答"
-    assert chat["messages"][1]["model"]["provider"] == "Fake"
+    reopened, _ = make_client(tmp_path)
+    with reopened:
+        assert workspace(reopened)["models"][0]["model"] == "fake-1"
+        chat = reopened.get(f"/api/subjects/{subject_id}/chat").json()
+        assert chat["messages"][0]["content"][0]["text"] == "会保存吗？"
+        assert chat["messages"][1]["content"][0]["text"] == "持久化回答"
+        assert chat["messages"][1]["model"]["provider"] == "Fake"
 
 
 def test_chat_history_is_isolated_between_subjects_and_can_be_cleared(tmp_path):
     client, _ = make_client(tmp_path)
-    math_id = client.post("/api/subjects", json={"name": "数学"}).json()["workspace"]["active_subject_id"]
-    english_id = client.post("/api/subjects", json={"name": "英语"}).json()["workspace"]["active_subject_id"]
-    model_id = client.post("/api/models", json={
-        "provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"
-    }).json()["workspace"]["models"][0]["id"]
+    with client:
+        math_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        english_id = client.post("/api/subjects", json={"name": "英语"}).json()["id"]
+        model_id = create_model(client)
+        send_message(client, math_id, "数学问题", model_id)
+        send_message(client, english_id, "英语问题", model_id)
+        wait_for(lambda: all(
+            client.get(f"/api/subjects/{subject_id}/chat").json()["messages"][-1]["status"] == "complete"
+            for subject_id in (math_id, english_id)
+        ))
 
-    client.post(f"/api/subjects/{math_id}/chat/messages", json={"content": "数学问题", "model_id": model_id})
-    client.post(f"/api/subjects/{english_id}/chat/messages", json={"content": "英语问题", "model_id": model_id})
-
-    wait_for(lambda: all(
-        m["status"] == "complete"
-        for s in workspace(client)["subjects"]
-        for m in s["data"]["chat"]["messages"]
-        if m["role"] == "assistant"
-    ))
-
-    state = workspace(client)
-    math_chat = next(s for s in state["subjects"] if s["id"] == math_id)["data"]["chat"]
-    english_chat = next(s for s in state["subjects"] if s["id"] == english_id)["data"]["chat"]
-    assert math_chat["messages"][0]["content"] == "数学问题"
-    assert english_chat["messages"][0]["content"] == "英语问题"
-
-    cleared = client.delete(f"/api/subjects/{math_id}/chat").json()
-    assert cleared["ok"] is True
-    assert workspace(client)["subjects"][0]["data"]["chat"]["messages"] == []
+        math_chat = client.get(f"/api/subjects/{math_id}/chat").json()
+        english_chat = client.get(f"/api/subjects/{english_id}/chat").json()
+        assert math_chat["messages"][0]["content"][0]["text"] == "数学问题"
+        assert english_chat["messages"][0]["content"][0]["text"] == "英语问题"
+        assert client.delete(f"/api/subjects/{math_id}/chat").status_code == 204
+        assert client.get(f"/api/subjects/{math_id}/chat").json()["messages"] == []
 
 
 def test_stop_generation_api_marks_message_stopped(tmp_path):
     fake = WaitingFakeModelClient()
     client, _ = make_client(tmp_path, model_client=fake)
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["workspace"]["active_subject_id"]
-    model_id = client.post("/api/models", json={
-        "provider": "Slow", "model": "slow-1", "base_url": "http://localhost/v1"
-    }).json()["workspace"]["models"][0]["id"]
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model_id = create_model(client, provider="Slow", model="slow-1")
+        sent = send_message(client, subject_id, "长问题", model_id)
+        assert sent.status_code == 202
+        wait_for(lambda: client.get(f"/api/subjects/{subject_id}/chat").json()["messages"][-1]["status"] == "generating")
 
-    sent = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
-        "content": "长问题", "model_id": model_id
-    })
-    assert sent.status_code == 202
-
-    stopped = client.post(f"/api/subjects/{subject_id}/chat/stop").json()
-    assert stopped["ok"] is True
-
-    def message_stopped():
-        chat = workspace(client)["subjects"][0]["data"]["chat"]
-        return chat["messages"][1]["status"] == "stopped"
-
-    wait_for(message_stopped)
-    chat = workspace(client)["subjects"][0]["data"]["chat"]
-    assert chat["messages"][1]["status"] == "stopped"
-    assert fake.cancelled is True
+        stopped = client.post(f"/api/subjects/{subject_id}/chat/stop")
+        assert stopped.status_code == 202
+        wait_for(lambda: client.get(f"/api/subjects/{subject_id}/chat").json()["messages"][-1]["status"] == "stopped")
+        assert fake.cancelled is True
 
 
 def test_index_page_is_served(tmp_path):

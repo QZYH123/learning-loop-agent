@@ -2,7 +2,7 @@ from backend.tests.conftest import make_client, wait_for
 
 
 def create_subject(client, name):
-    return client.post("/api/subjects", json={"name": name}).json()["workspace"]["active_subject_id"]
+    return client.post("/api/subjects", json={"name": name}).json()["id"]
 
 
 def upload_source(client, subject_id, filename, content, content_type="text/plain", display_name=None):
@@ -117,8 +117,10 @@ def test_failed_source_is_visible_without_affecting_ready_sources(tmp_path):
         assert failed_source["failure"]["code"] == "SOURCE_PROCESSING_FAILED"
 
         unsupported = upload_source(client, subject_id, "book.pdf", b"%PDF", "application/pdf")
-        assert unsupported.status_code == 415
-        assert unsupported.json()["error"]["code"] == "SOURCE_TYPE_UNSUPPORTED"
+        assert unsupported.status_code == 202
+        invalid_pdf = wait_for_operation(client, unsupported.json()["operation"]["id"])
+        assert invalid_pdf["status"] == "failed"
+        assert invalid_pdf["error"]["code"] == "SOURCE_PROCESSING_FAILED"
 
 
 def test_source_metadata_and_parse_cache_survive_restart(tmp_path):

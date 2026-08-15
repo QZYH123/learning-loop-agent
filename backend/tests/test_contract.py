@@ -149,14 +149,14 @@ def test_current_backend_routes_are_present_in_target_contract(tmp_path):
                 assert method in target["paths"][path]
 
 
-def test_ticket_03_backend_operations_match_target_contract(tmp_path):
+def test_implemented_backend_operations_match_target_contract(tmp_path):
     from backend.app.main import create_app
 
     target, _ = load_contract()
     implemented = create_app(data_dir=tmp_path).openapi()
 
     for path, method, target_operation in iter_operations(target):
-        if "03" not in target_operation["x-tickets"]:
+        if not set(target_operation["x-tickets"]) & {"01", "02", "03", "04", "05", "06", "07"}:
             continue
         actual_operation = implemented["paths"][path][method]
         assert actual_operation["operationId"] == target_operation["operationId"]
