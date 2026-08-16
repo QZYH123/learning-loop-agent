@@ -73,7 +73,7 @@ queued -> running -> succeeded
 
 ### 学习会话
 
-每个科目空间当前有一个学习会话资源，HTTP 路径继续使用 `/chat` 兼容现有前端。`learning_mode` 为 `chat`、`socratic` 或 `crash-course`；切换学习方式、资料范围和依据模式不会删除会话记录，也不会隐式切换模型。
+每个科目空间可以保存多个独立学习会话，并通过 `/sessions` 管理当前会话和固定资料版本；`/chat` 继续兼容原有学习方式。`learning_mode` 为 `chat`、`socratic` 或 `crash-course`；切换学习方式、资料范围和依据模式不会删除会话记录，也不会隐式切换模型。
 
 苏格拉底式学习通过消息 `intent` 推进：配置目标后以 `start` 开始，再使用尝试、请求提示、直接解释、复述和自测等动作。`SocraticState` 明确当前阶段、提示层级和答案是否已展示，客户端不得仅凭文案猜测流程状态。
 
@@ -103,7 +103,7 @@ queued -> running -> succeeded
 
 ## Ticket 追踪
 
-每个 OpenAPI operation 都带 `x-tickets`。契约测试要求 01–15 全部被覆盖。
+每个 OpenAPI operation 都带 `x-tickets`。契约测试要求 01–16 全部被覆盖。
 
 | Ticket | 主契约区域 |
 | --- | --- |

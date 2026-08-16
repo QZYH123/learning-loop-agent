@@ -376,7 +376,7 @@ def create_exam_router(exams) -> APIRouter:
         "/api/attempts/{attempt_id}/complete",
         operation_id="completeAttempt",
         response_model=Attempt,
-        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     def complete_attempt(attempt_id: str):
         return exams.complete_attempt(attempt_id)
@@ -385,7 +385,7 @@ def create_exam_router(exams) -> APIRouter:
         "/api/attempts/{attempt_id}/continue",
         operation_id="continueAttempt",
         response_model=Attempt,
-        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     def continue_attempt(attempt_id: str):
         return exams.resume_attempt(attempt_id)
@@ -395,7 +395,7 @@ def create_exam_router(exams) -> APIRouter:
         operation_id="submitAttemptGrading",
         status_code=202,
         response_model=OperationAccepted,
-        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     async def submit_attempt_grading(attempt_id: str):
         return exams.submit_attempt(attempt_id)

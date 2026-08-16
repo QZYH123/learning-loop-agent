@@ -258,6 +258,28 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
         assert chat["messages"][-1]["selection"]["question_id"] == choice["id"]
         assert client.get(f"/api/exams/{exam_id}").json()["document"] == original_document
 
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={
+            "source_version_ids": [version_id],
+        }).json()
+        call_count = len(fake.chat_calls)
+        session_selected = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "解释这个选区",
+            "grounding_mode": "strict",
+            "selection": {
+                "document_kind": "exam",
+                "document_id": exam_id,
+                "version_id": exam["current_version_id"],
+                "question_id": choice["id"],
+                "block_id": stem["id"],
+                "citation_ids": [citation_id],
+                "selected_text": stem["text"],
+            },
+        })
+        assert wait_for_operation(client, session_selected.json()["operation"]["id"])["status"] == "succeeded"
+        assert len(fake.chat_calls) == call_count + 1
+        assert stem["text"] in fake.chat_calls[-1]["messages"][-1]["content"]
+
         invalid_selection = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
             "intent": "ask",
             "content": "无效选区",

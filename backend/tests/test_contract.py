@@ -177,6 +177,19 @@ def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
     assert "null" not in str(actual["SessionInput"]["properties"]["title"])
     assert {"completion_status", "grading_status"} <= set(actual["Attempt"]["required"])
     assert {"before", "after"} <= set(actual["AiDocumentChange"]["required"])
+    assert {
+        "source_version_ids",
+        "focused_source_version_ids",
+        "only_use_specified_sources",
+        "grounding_mode",
+        "attachment_ids",
+        "citations",
+    } <= set(actual["MessageSourceContext"]["required"])
+    assert "source_context" in actual["ChatMessage"]["required"]
+    assert actual["Session"]["properties"]["source_version_ids"]["uniqueItems"] is True
+    discovery = actual["ModelDiscoveryInput"]["properties"]
+    assert discovery["base_url"]["format"] == "uri"
+    assert discovery["api_key"]["writeOnly"] is True
     capabilities_ref = actual["DiscoveredModel"]["properties"]["capabilities"]["$ref"]
     capabilities = actual[capabilities_ref.rsplit("/", 1)[-1]]
     assert capabilities["additionalProperties"] is False
@@ -219,6 +232,8 @@ def test_implemented_backend_operations_match_target_contract(tmp_path):
         target_errors = {status for status in target_operation["responses"] if not str(status).startswith("2")}
         actual_errors = {status for status in actual_operation["responses"] if not str(status).startswith("2")}
         assert target_errors <= actual_errors
+        if "16" in target_operation["x-tickets"]:
+            assert actual_errors == target_errors
 
         target_success = {status for status in target_operation["responses"] if str(status).startswith("2")}
         actual_success = {status for status in actual_operation["responses"] if str(status).startswith("2")}

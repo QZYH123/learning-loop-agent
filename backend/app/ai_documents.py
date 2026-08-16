@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 import uuid
 
@@ -44,8 +45,16 @@ class AiDocumentService:
                 anchors = [] if payload["grounding_mode"] == "general-knowledge" else self.sources.retrieve(payload["instruction"], payload.get("source_version_ids", []), limit=10)
                 if payload["grounding_mode"] == "strict" and not anchors:
                     raise OperationFailure("GROUNDING_SOURCE_REQUIRED", "资料未覆盖该文档要求")
-                response = await self.model_client.chat(profile, [{"role": "user", "content": f"创建资料文档：{payload['instruction']}\n资料片段：{self._anchor_text(anchors)}"}])
-                citations = [self.sources.create_citation(anchor) for anchor in anchors]
+                prompt = (
+                    f"{self._grounding_instruction(payload['grounding_mode'])}"
+                    f"\n\n创建资料文档：{payload['instruction']}"
+                    f"\n\n资料片段：\n{self._anchor_text(anchors) or '无'}"
+                )
+                response = await self.model_client.chat(profile, [{
+                    "role": "user",
+                    "content": self._grounded_content(prompt, anchors, profile),
+                }])
+                citations = self._citations_for_anchors(anchors)
                 version = {"id": version_id, "document_id": document_id, "number": 1, "status": "ready", "content": [{"id": self._ids("block"), "type": "markdown", "text": response.get("text") or ""}], "upstream_citations": citations, "created_at": timestamp}
                 document = {
                     "id": document_id,
@@ -57,10 +66,7 @@ class AiDocumentService:
                     "created_at": timestamp,
                     "updated_at": self._now(),
                 }
-                self._mutate(subject_id, lambda data: {
-                    **data,
-                    "ai_documents": [*data.get("ai_documents", []), document],
-                })
+                self._store_document_version(subject_id, document, version)
                 return resource
             except asyncio.CancelledError:
                 raise
@@ -77,7 +83,7 @@ class AiDocumentService:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "资料文档版本不存在")
         restored = self._new_version(document, version["content"], version["upstream_citations"])
         updated = {**document, "current_version_id": restored["id"], "versions": [*document["versions"], restored], "updated_at": self._now()}
-        self._replace_document(subject["id"], document_id, updated)
+        self._store_document_version(subject["id"], updated, restored)
         return updated
 
     def list_proposals(self, document_id: str) -> list[dict]:
@@ -110,7 +116,9 @@ class AiDocumentService:
                     for citation in base_version.get("upstream_citations", [])
                 )
                 prompt = (
-                    f"请按要求修改资料文档。\n\n修改要求：{payload['instruction']}"
+                    "请按要求修改资料文档。只能根据当前文档内容和已有引用依据改写；"
+                    "不要新增引用未覆盖的事实，也不要编造来源。"
+                    f"\n\n修改要求：{payload['instruction']}"
                     f"\n\n当前文档内容：\n{self._content_text(current) or '无'}"
                     f"\n\n当前文档引用依据：\n{citation_context or '无'}"
                 )
@@ -151,7 +159,7 @@ class AiDocumentService:
         content = proposal["changes"][0]["after"]
         version = self._new_version(document, content, document["versions"][-1].get("upstream_citations", []))
         updated = {**document, "current_version_id": version["id"], "versions": [*document["versions"], version], "updated_at": self._now()}
-        self._replace_document(subject["id"], document["id"], updated)
+        self._store_document_version(subject["id"], updated, version)
         self._replace_proposal(subject["id"], proposal_id, {**proposal, "status": "applied", "updated_at": self._now()})
         return updated
 
@@ -204,7 +212,17 @@ class AiDocumentService:
 
     @staticmethod
     def _anchor_text(anchors: list[dict]) -> str:
-        return "\n".join(block.get("text", "") for anchor in anchors for block in anchor.get("content", []) if block.get("type") == "markdown")
+        parts = []
+        for anchor in anchors:
+            for block in anchor.get("content", []):
+                if block.get("type") == "markdown":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "latex":
+                    parts.append(block.get("latex", ""))
+                elif block.get("type") == "table":
+                    parts.append(" | ".join(block.get("columns", [])))
+                    parts.extend(" | ".join(row) for row in block.get("rows", []))
+        return "\n".join(part for part in parts if part)
 
     @staticmethod
     def _content_text(blocks: list[dict]) -> str:
@@ -218,8 +236,84 @@ class AiDocumentService:
         if self.workspace_service.update_subject_data(subject_id, update) is None:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "科目空间不存在")
 
-    def _replace_document(self, subject_id: str, document_id: str, document: dict) -> None:
-        self._mutate(subject_id, lambda data: {**data, "ai_documents": [document if item.get("id") == document_id else item for item in data.get("ai_documents", [])]})
+    def _store_document_version(self, subject_id: str, document: dict, version: dict) -> None:
+        subject = self._subject(subject_id)
+        data = subject.get("data", {})
+        existing_source = next(
+            (item for item in data.get("sources", []) if item.get("id") == document["id"]),
+            None,
+        )
+        source, source_version = self.sources.materialize_ai_document_version(
+            document,
+            version,
+            existing_source,
+        )
+
+        def update(current):
+            documents = current.get("ai_documents", [])
+            if any(item.get("id") == document["id"] for item in documents):
+                documents = [
+                    document if item.get("id") == document["id"] else item
+                    for item in documents
+                ]
+            else:
+                documents = [*documents, document]
+            sources = current.get("sources", [])
+            if existing_source:
+                sources = [source if item.get("id") == source["id"] else item for item in sources]
+            else:
+                sources = [*sources, source]
+            source_versions = [
+                item
+                for item in current.get("source_versions", [])
+                if item.get("id") != source_version["id"]
+            ]
+            return {
+                **current,
+                "ai_documents": documents,
+                "sources": sources,
+                "source_versions": [*source_versions, source_version],
+            }
+
+        self._mutate(subject_id, update)
 
     def _replace_proposal(self, subject_id: str, proposal_id: str, proposal: dict) -> None:
         self._mutate(subject_id, lambda data: {**data, "ai_document_proposals": [proposal if item.get("id") == proposal_id else item for item in data.get("ai_document_proposals", [])]})
+
+    def _citations_for_anchors(self, anchors: list[dict]) -> list[dict]:
+        citations = []
+        for anchor in anchors:
+            citations.append(self.sources.create_citation(anchor))
+            for upstream in anchor.get("_upstream_citations", []):
+                try:
+                    citations.append(self.sources.get_citation(upstream["id"]))
+                except SourceLibraryError:
+                    citations.append({**upstream, "available": False})
+        return list({citation["id"]: citation for citation in citations}.values())
+
+    def _grounded_content(self, text: str, anchors: list[dict], profile: dict) -> str | list[dict]:
+        image_blocks = [
+            block
+            for anchor in anchors
+            for block in anchor.get("content", [])
+            if block.get("type") == "image"
+        ]
+        if not image_blocks:
+            return text
+        if not profile.get("capabilities", {}).get("vision"):
+            raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片资料")
+        content = [{"type": "text", "text": text}]
+        for block in image_blocks:
+            asset = block["asset"]
+            raw, mime_type = self.sources.get_asset(asset["source_version_id"], asset["asset_id"])
+            encoded = base64.b64encode(raw).decode("ascii")
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}})
+        return content
+
+    @staticmethod
+    def _grounding_instruction(grounding_mode: str) -> str:
+        if grounding_mode == "strict":
+            return "只能依据提供的资料片段创建文档，不得补充资料之外的知识。"
+        if grounding_mode == "supplemental":
+            return "资料优先；可以补充通用知识，但必须明确标出资料外的补充内容。"
+        return "使用通用知识创建文档，并明确说明内容未依据用户资料。"

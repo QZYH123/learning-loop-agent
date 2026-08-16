@@ -1858,6 +1858,11 @@ components:
         status: {type: string, enum: [in-progress, paused, grading, submitted]}
         completion_status: {type: string, enum: [in-progress, completed]}
         grading_status: {type: string, enum: [not-requested, queued, grading, completed, failed, stale]}
+        unanswered_question_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+          description: 当前尚未保存答案的题目 ID；存在值时仍允许标记完成。
         show_suggested_score: {type: boolean}
         paper: {$ref: '#/components/schemas/AttemptPaper'}
         answers:

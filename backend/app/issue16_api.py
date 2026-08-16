@@ -31,7 +31,7 @@ from .api_models import (
 
 
 def create_issue16_router(learning, attachments, documents) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(responses={422: {"model": ErrorResponse}})
 
     @router.get("/api/subjects/{subject_id}/sessions", operation_id="listSessions", response_model=SessionList, responses={404: {"model": ErrorResponse}})
     def list_sessions(subject_id: str):
@@ -111,7 +111,7 @@ def create_issue16_router(learning, attachments, documents) -> APIRouter:
 
     @router.post("/api/models/discover", operation_id="discoverModels", response_model=ModelDiscoveryResponse, responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}})
     def discover_models(payload: ModelDiscoveryInput):
-        return learning.discover_models(payload.model_dump(exclude_none=True))
+        return learning.discover_models(payload.model_dump(mode="json", exclude_none=True))
 
     @router.get("/api/subjects/{subject_id}/documents", operation_id="listAiDocuments", response_model=AiDocumentList, responses={404: {"model": ErrorResponse}})
     def list_ai_documents(subject_id: str):

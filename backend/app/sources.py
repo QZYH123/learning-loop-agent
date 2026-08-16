@@ -129,28 +129,40 @@ class SourceLibrary:
             raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "资料图片文件不存在")
         return path.read_bytes(), asset["mime_type"]
 
-    def retrieve(self, query: str, version_ids: list[str], limit: int = 5) -> list[dict]:
+    def retrieve(
+        self,
+        query: str,
+        version_ids: list[str],
+        limit: int = 5,
+        priority_version_ids: list[str] | None = None,
+    ) -> list[dict]:
         retrieve_started_at = int(time.time() * 1000)
         retrieve_started = time.perf_counter()
         scored = []
         image_anchors = []
         terms = self._query_terms(query)
+        priority_ids = set(priority_version_ids or [])
         for version_id in version_ids:
             version = self.get_version(version_id)
             if version.get("status") != "ready":
                 raise SourceLibraryError(409, "SOURCE_UNAVAILABLE", "选定资料尚不可用于检索")
             index = self._load_version_index(version_id)
             for anchor in index.get("anchors", []):
+                anchor = {
+                    **anchor,
+                    "_upstream_citations": index.get("upstream_citations", []),
+                }
                 text = self._anchor_text(anchor).casefold()
                 score = sum(text.count(term) for term in terms)
                 if score:
-                    scored.append((score, anchor))
+                    scored.append((int(version_id in priority_ids), score, anchor))
                 elif any(block.get("type") == "image" for block in anchor.get("content", [])):
-                    image_anchors.append(anchor)
-        scored.sort(key=lambda item: item[0], reverse=True)
-        matches = [anchor for _, anchor in scored[:limit]]
+                    image_anchors.append((int(version_id in priority_ids), anchor))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        image_anchors.sort(key=lambda item: item[0], reverse=True)
+        matches = [anchor for _, _, anchor in scored[:limit]]
         if not matches:
-            matches = image_anchors[:limit]
+            matches = [anchor for _, anchor in image_anchors[:limit]]
         self.operations.record_stage(
             "retrieve",
             started_at=retrieve_started_at,
@@ -205,6 +217,8 @@ class SourceLibrary:
 
     def create_version(self, source_id: str, filename: str | None, content: bytes) -> dict:
         source = self.get_source(source_id)
+        if self._is_ai_document(source_id):
+            raise SourceLibraryError(409, "AI_DOCUMENT_READ_ONLY", "AI 资料文档只能通过修改提案创建新版本")
         _, media_kind, mime_type = self._validate_upload(filename, source["display_name"], content)
         if media_kind != source["media_kind"]:
             raise SourceLibraryError(415, "SOURCE_TYPE_UNSUPPORTED", "新版本必须与原资料类型一致")
@@ -221,6 +235,65 @@ class SourceLibrary:
         )
         self._require_dispatch(result)
         return self._start_parse(result["source"], result["version"], content, media_kind)
+
+    def materialize_ai_document_version(
+        self,
+        document: dict,
+        version: dict,
+        existing_source: dict | None = None,
+    ) -> tuple[dict, dict]:
+        encoded = json.dumps(version["content"], ensure_ascii=False, sort_keys=True).encode("utf-8")
+        source_version = {
+            "id": version["id"],
+            "source_id": document["id"],
+            "number": version["number"],
+            "status": "ready",
+            "content_hash": hashlib.sha256(encoded).hexdigest(),
+            "mime_type": "text/markdown",
+            "size_bytes": len(encoded),
+            "anchor_count": 1,
+            "cache_hit": False,
+            "assets": [],
+            "failure": None,
+            "created_at": version["created_at"],
+            "processed_at": version["created_at"],
+        }
+        source = {
+            "id": document["id"],
+            "subject_id": document["subject_id"],
+            "display_name": document["title"],
+            "media_kind": "markdown",
+            "status": "ready",
+            "current_version": self._version_summary(source_version),
+            "version_count": version["number"],
+            "failure": None,
+            "created_at": (existing_source or {}).get("created_at", document["created_at"]),
+            "updated_at": document["updated_at"],
+        }
+        anchor = {
+            "id": f"anchor-{version['id']}-0",
+            "source_id": document["id"],
+            "source_version_id": version["id"],
+            "location": {
+                "kind": "section",
+                "label": f"AI 生成：{document['title']}",
+                "section_path": [document["title"]],
+                "page": None,
+                "slide": None,
+                "block_index": 0,
+                "asset_id": None,
+            },
+            "content": version["content"],
+        }
+        self._write_json_atomic(self.index_dir / f"{version['id']}.json", {
+            "schema_version": 1,
+            "source_id": document["id"],
+            "source_version_id": version["id"],
+            "anchors": [anchor],
+            "assets": [],
+            "upstream_citations": version.get("upstream_citations", []),
+        })
+        return source, source_version
 
     def delete_source(self, source_id: str) -> None:
         source = self.get_source(source_id)
@@ -425,6 +498,13 @@ class SourceLibrary:
             for item in subject.get("data", {}).get("source_versions", [])
             if item.get("source_id") == source_id
         ]
+
+    def _is_ai_document(self, source_id: str) -> bool:
+        return any(
+            document.get("id") == source_id
+            for subject in self.workspace_service.snapshot().get("subjects", [])
+            for document in subject.get("data", {}).get("ai_documents", [])
+        )
 
     @staticmethod
     def _version_summary(version: dict) -> dict:

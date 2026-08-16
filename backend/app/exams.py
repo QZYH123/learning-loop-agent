@@ -578,6 +578,7 @@ class ExamService:
             "status": "in-progress",
             "completion_status": "in-progress",
             "grading_status": "not-requested",
+            "unanswered_question_ids": [question["id"] for question in paper["questions"]],
             "show_suggested_score": bool(payload.get("show_suggested_score")),
             "paper": paper,
             "answers": [],
@@ -634,9 +635,16 @@ class ExamService:
             objective = self._objective_feedback(attempt, question, saved)
             feedback.append(objective)
         grading_status = attempt.get("grading_status", "not-requested")
-        if existing and attempt.get("feedback") and grading_status in {"completed", "failed"}:
+        if grading_status == "completed":
             grading_status = "stale"
-        updated = {**attempt, "answers": answers, "feedback": feedback, "grading_status": grading_status, "updated_at": timestamp}
+        updated = {
+            **attempt,
+            "answers": answers,
+            "feedback": feedback,
+            "grading_status": grading_status,
+            "unanswered_question_ids": self._unanswered_question_ids(attempt, answers),
+            "updated_at": timestamp,
+        }
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return saved
 
@@ -688,8 +696,14 @@ class ExamService:
 
     def resume_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
+        if attempt.get("grading_status") in {"queued", "grading"}:
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "批改进行中，暂时不能继续作答")
         if attempt.get("completion_status") == "completed":
             updated = {**attempt, "completion_status": "in-progress", "completed_at": None, "status": "in-progress", "updated_at": self._now()}
+            self._replace(subject["id"], "attempts", attempt_id, updated)
+            return updated
+        if attempt["status"] == "submitted" and attempt.get("grading_status") in {"completed", "failed", "stale"}:
+            updated = {**attempt, "status": "in-progress", "updated_at": self._now()}
             self._replace(subject["id"], "attempts", attempt_id, updated)
             return updated
         if attempt["status"] != "paused":
@@ -705,7 +719,13 @@ class ExamService:
         if attempt["status"] not in {"in-progress", "paused"}:
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前状态不能标记完成")
         timestamp = self._now()
-        updated = {**attempt, "completion_status": "completed", "completed_at": timestamp, "updated_at": timestamp}
+        updated = {
+            **attempt,
+            "completion_status": "completed",
+            "completed_at": timestamp,
+            "unanswered_question_ids": self._unanswered_question_ids(attempt),
+            "updated_at": timestamp,
+        }
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return updated
 
@@ -1632,6 +1652,18 @@ class ExamService:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "题目不存在")
         return question
 
+    @staticmethod
+    def _unanswered_question_ids(attempt: dict, answers: list[dict] | None = None) -> list[str]:
+        answered_ids = {
+            answer["question_id"]
+            for answer in (answers if answers is not None else attempt.get("answers", []))
+        }
+        return [
+            question["id"]
+            for question in attempt["paper"]["questions"]
+            if question["id"] not in answered_ids
+        ]
+
     def _version_document(self, subject: dict, exam_id: str, version_id: str) -> dict:
         version = next(
             (item for item in subject.get("data", {}).get("exam_versions", []) if item["exam_id"] == exam_id and item["id"] == version_id),
@@ -1642,7 +1674,11 @@ class ExamService:
         return copy.deepcopy(version["document"])
 
     def _selected_model(self, subject_id: str, model_id: str | None) -> dict:
-        selected = model_id or self.learning.get_chat(subject_id).get("active_model_id")
+        selected = (
+            model_id
+            or self.learning.workspace_service.snapshot().get("current_model_id")
+            or self.learning.get_chat(subject_id).get("active_model_id")
+        )
         if not selected:
             raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
         return self.learning._model(selected)

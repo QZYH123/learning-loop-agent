@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ContractModel(BaseModel):
@@ -414,13 +414,20 @@ class SelectionContext(ContractModel):
 
 
 class MessageSourceContext(ContractModel):
-    source_version_ids: list[str] = Field(default_factory=list)
-    focused_source_version_ids: list[str] = Field(default_factory=list)
-    only_use_specified_sources: bool = False
+    source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
+    focused_source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
+    only_use_specified_sources: bool
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
     selection: SelectionContext | None = None
-    attachment_ids: list[str] = Field(default_factory=list)
-    citations: list[Citation] = Field(default_factory=list)
+    attachment_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
+    citations: list[Citation]
+
+    @field_validator("source_version_ids", "focused_source_version_ids", "attachment_ids")
+    @classmethod
+    def context_ids_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("context id lists must contain unique items")
+        return value
 
 
 ChatMessageIntent = Literal[
@@ -477,9 +484,7 @@ class ChatMessage(ContractModel):
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] | None = None
     grounding_result: Literal["covered", "not-covered", "general-knowledge", "supplemental"] | None = None
     citations: list[Citation]
-    source_context: MessageSourceContext = Field(
-        default_factory=lambda: MessageSourceContext(grounding_mode="general-knowledge")
-    )
+    source_context: MessageSourceContext
     selection: SelectionContext | None = None
     model: ModelSnapshot | None = None
     error: ApiError | None = None
@@ -533,7 +538,7 @@ class Session(ContractModel):
     subject_id: str
     title: str
     active: bool
-    source_version_ids: list[str]
+    source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     messages: list[ChatMessage]
     created_at: int
     updated_at: int
@@ -580,8 +585,8 @@ class TempAttachment(ContractModel):
 
 class ModelDiscoveryInput(ContractModel):
     provider: Literal["openai-compatible", "ollama"]
-    base_url: str = Field(min_length=1, max_length=500)
-    api_key: str = Field(default="", max_length=2000)
+    base_url: AnyHttpUrl = Field(max_length=500)
+    api_key: str = Field(default="", max_length=2000, json_schema_extra={"writeOnly": True})
     manual_model_name: str | None = Field(default=None, max_length=120)
 
 

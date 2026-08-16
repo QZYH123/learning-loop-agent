@@ -432,6 +432,10 @@ class Attempt(ContractModel):
     status: Literal["in-progress", "paused", "grading", "submitted"]
     completion_status: Literal["in-progress", "completed"]
     grading_status: Literal["not-requested", "queued", "grading", "completed", "failed", "stale"]
+    unanswered_question_ids: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={"uniqueItems": True},
+    )
     show_suggested_score: bool
     paper: AttemptPaper
     answers: list[AttemptAnswer]

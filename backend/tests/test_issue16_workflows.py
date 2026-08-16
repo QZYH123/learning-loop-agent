@@ -21,7 +21,8 @@ def create_subject_and_source(client):
 
 
 def test_sessions_keep_explicit_source_scope_and_message_snapshot(tmp_path):
-    client, _ = make_client(tmp_path, model_client=ImmediateFakeModelClient(answer="依据资料"))
+    model_client = ImmediateFakeModelClient(answer="依据资料")
+    client, _ = make_client(tmp_path, model_client=model_client)
     with client:
         subject_id, version_id = create_subject_and_source(client)
         model_id = client.post(
@@ -50,6 +51,36 @@ def test_sessions_keep_explicit_source_scope_and_message_snapshot(tmp_path):
         assert current["messages"][-1]["source_context"]["source_version_ids"] == [version_id]
 
 
+def test_focused_source_is_retrieved_before_other_session_sources(tmp_path):
+    model_client = ImmediateFakeModelClient()
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id, first_version_id = create_subject_and_source(client)
+        uploaded = client.post(
+            f"/api/subjects/{subject_id}/sources",
+            files={"file": ("focus.md", b"# Focus\nlimit", "text/markdown")},
+        ).json()
+        wait_for(lambda: client.get(f"/api/operations/{uploaded['operation']['id']}").json()["status"] == "succeeded")
+        sources = client.get(f"/api/subjects/{subject_id}/sources").json()["items"]
+        focused_version_id = next(source for source in sources if source["display_name"] == "focus.md")["current_version"]["id"]
+        model_id = client.post(
+            "/api/models",
+            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+        ).json()["id"]
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={
+            "source_version_ids": [first_version_id, focused_version_id],
+        }).json()
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "limit",
+            "model_id": model_id,
+            "focused_source_version_ids": [focused_version_id],
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+        prompt = model_client.chat_calls[-1]["messages"][-1]["content"]
+        assert prompt.index("[Focus]") < prompt.index("[Limits]")
+
+
 def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
     model_client = ImmediateFakeModelClient(answer="结合资料回答")
     client, _ = make_client(tmp_path, model_client=model_client)
@@ -72,7 +103,7 @@ def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
             "intent": "ask",
             "content": "请解释",
             "model_id": model_id,
-            "grounding_mode": "supplemental",
+            "grounding_mode": "strict",
             "attachment_ids": [attachment["id"]],
         })
         operation_id = sent.json()["operation"]["id"]
@@ -80,7 +111,18 @@ def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
 
         prompt = model_client.chat_calls[-1]["messages"][0]["content"]
         assert "attachment evidence" in prompt
-        assert "资料优先" in prompt
+        assert "只能依据" in prompt
+
+        follow_up = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "Limits 是什么？",
+            "model_id": model_id,
+            "grounding_mode": "general-knowledge",
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{follow_up['operation']['id']}").json()["status"] == "succeeded")
+        messages = model_client.chat_calls[-1]["messages"]
+        assert any(message["role"] == "assistant" and message["content"] == "结合资料回答" for message in messages)
+        assert "The limit of x is x." not in messages[-1]["content"]
 
 
 def test_running_session_cannot_be_deleted(tmp_path):
@@ -125,7 +167,20 @@ def test_attempt_completion_does_not_start_grading_and_can_resume(tmp_path):
         completed = client.post(f"/api/attempts/{attempt['id']}/complete").json()
         assert completed["completion_status"] == "completed"
         assert completed["grading_status"] == "not-requested"
-        assert client.post(f"/api/attempts/{attempt['id']}/continue").json()["completion_status"] == "in-progress"
+        assert completed["unanswered_question_ids"]
+        grading = client.post(f"/api/attempts/{attempt['id']}/grade").json()
+        wait_for(lambda: client.get(f"/api/operations/{grading['operation']['id']}").json()["status"] == "succeeded")
+        graded = client.get(f"/api/attempts/{attempt['id']}").json()
+        assert graded["completion_status"] == "completed"
+        assert graded["grading_status"] == "completed"
+
+        continued = client.post(f"/api/attempts/{attempt['id']}/continue").json()
+        assert continued["completion_status"] == "in-progress"
+        choice = next(question for question in continued["paper"]["questions"] if question["type"] == "single-choice")
+        client.put(f"/api/attempts/{attempt['id']}/answers/{choice['id']}", json={
+            "answer": {"kind": "choice", "option_ids": ["A"]},
+        })
+        assert client.get(f"/api/attempts/{attempt['id']}").json()["grading_status"] == "stale"
 
 
 def test_model_discovery_failure_keeps_manual_fallback(tmp_path):
@@ -160,11 +215,36 @@ def test_model_discovery_does_not_guess_vision_from_model_name(tmp_path, monkeyp
         assert response.json()["models"][0]["capabilities"] == {"text": True, "vision": False}
 
 
+def test_current_model_selection_applies_to_existing_chat(tmp_path):
+    model_client = ImmediateFakeModelClient()
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        first_model_id = client.post(
+            "/api/models",
+            json={"provider": "Fake", "model": "fake-a", "base_url": "http://localhost/v1"},
+        ).json()["id"]
+        second_model_id = client.post(
+            "/api/models",
+            json={"provider": "Fake", "model": "fake-b", "base_url": "http://localhost/v1"},
+        ).json()["id"]
+        client.post(f"/api/subjects/{subject_id}/chat/model", json={"model_id": first_model_id})
+        client.put("/api/models/current", json={"model_id": second_model_id})
+
+        sent = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+            "intent": "ask",
+            "content": "2 + 2 等于多少？",
+            "grounding_mode": "general-knowledge",
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+        assert model_client.chat_calls[-1]["profile"]["id"] == second_model_id
+
+
 def test_attachment_and_ai_document_lifecycle(tmp_path):
     model_client = ImmediateFakeModelClient(answer="文档内容")
     client, _ = make_client(tmp_path, model_client=model_client)
     with client:
-        subject_id = client.post("/api/subjects", json={"name": "物理"}).json()["id"]
+        subject_id, source_version_id = create_subject_and_source(client)
         model_id = client.post(
             "/api/models",
             json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
@@ -180,15 +260,33 @@ def test_attachment_and_ai_document_lifecycle(tmp_path):
 
         created = client.post(f"/api/subjects/{subject_id}/documents", json={
             "title": "电磁学摘要",
-            "instruction": "整理核心概念",
-            "source_version_ids": [],
-            "grounding_mode": "general-knowledge",
+            "instruction": "整理 Limits 核心概念",
+            "source_version_ids": [source_version_id],
+            "grounding_mode": "strict",
             "model_id": model_id,
         }).json()
         operation_id = created["operation"]["id"]
         wait_for(lambda: client.get(f"/api/operations/{operation_id}").json()["status"] == "succeeded")
         document = client.get(f"/api/documents/{created['resource']['id']}").json()
         assert document["generated_by"] == "ai"
+        assert "只能依据" in model_client.chat_calls[-1]["messages"][0]["content"]
+        sources = client.get(f"/api/subjects/{subject_id}/sources").json()["items"]
+        assert any(source["id"] == document["id"] for source in sources)
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+        added = client.post(f"/api/sessions/{session['id']}/sources", json={
+            "source_version_id": document["current_version_id"],
+        })
+        assert added.status_code == 201
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "文档内容",
+            "model_id": model_id,
+            "grounding_mode": "strict",
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+        citations = client.get(f"/api/sessions/{session['id']}").json()["messages"][-1]["citations"]
+        assert {citation["source_id"] for citation in citations} >= {document["id"]}
+        assert any(citation["source_version_id"] == source_version_id for citation in citations)
         proposal = client.post(f"/api/documents/{document['id']}/revision-proposals", json={
             "base_version_id": document["current_version_id"],
             "instruction": "补充一个例子",
@@ -201,6 +299,8 @@ def test_attachment_and_ai_document_lifecycle(tmp_path):
         assert client.get(f"/api/document-revision-proposals/{proposal['resource']['id']}").json()["status"] == "ready"
         applied = client.post(f"/api/document-revision-proposals/{proposal['resource']['id']}/apply")
         assert len(applied.json()["versions"]) == 2
+        source_versions = client.get(f"/api/sources/{document['id']}/versions").json()["items"]
+        assert len(source_versions) == 2
 
 
 def test_failed_ai_document_generation_does_not_leave_ready_document(tmp_path):

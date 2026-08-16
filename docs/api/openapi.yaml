@@ -1443,6 +1443,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '410': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/subjects/{subject_id}/sessions:
     parameters:
@@ -1459,6 +1460,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/SessionList}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     post:
       operationId: createSession
       tags: [Chat]
@@ -1495,6 +1497,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/Session}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     patch:
       operationId: updateSession
       tags: [Chat]
@@ -1524,6 +1527,7 @@ paths:
         '204': {description: 已删除}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/sessions/{session_id}/activate:
     parameters:
@@ -1540,6 +1544,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/Session}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/sessions/{session_id}/sources:
     parameters:
@@ -1556,6 +1561,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/SessionSourceList}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     post:
       operationId: addSessionSource
       tags: [Chat, Sources]
@@ -1618,6 +1624,7 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/SessionSource}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
     delete:
       operationId: removeSessionSource
@@ -1628,6 +1635,7 @@ paths:
         '204': {description: 已移除}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/subjects/{subject_id}/attachments:
     parameters:
@@ -1674,6 +1682,7 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/TempAttachment}
         '404': {$ref: '#/components/responses/NotFound'}
         '410': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     delete:
       operationId: deleteChatAttachment
       tags: [Chat]
@@ -1682,6 +1691,7 @@ paths:
       responses:
         '204': {description: 已删除}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/attachments/{attachment_id}/file:
     parameters:
@@ -1699,6 +1709,7 @@ paths:
               schema: {type: string, format: binary}
         '404': {$ref: '#/components/responses/NotFound'}
         '410': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/models/current:
     get:
@@ -1716,6 +1727,7 @@ paths:
                   - $ref: ./schemas.yaml#/components/schemas/ModelService
                   - type: 'null'
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     put:
       operationId: selectCurrentModel
       tags: [Models]
@@ -1733,6 +1745,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/ModelService}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/models/discover:
     post:
@@ -1770,6 +1783,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentList}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     post:
       operationId: createAiDocument
       tags: [Artifacts, Operations]
@@ -1802,6 +1816,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/documents/{document_id}/versions:
     parameters:
@@ -1818,6 +1833,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentVersionList}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/documents/{document_id}/versions/{version_id}/restore:
     parameters:
@@ -1836,6 +1852,7 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/documents/{document_id}/revision-proposals:
     parameters:
@@ -1852,6 +1869,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentRevisionProposalList}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     post:
       operationId: createAiDocumentRevisionProposal
       tags: [Artifacts, Operations]
@@ -1883,6 +1901,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentRevisionProposal}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/document-revision-proposals/{proposal_id}/apply:
     parameters:
@@ -1900,6 +1919,7 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/document-revision-proposals/{proposal_id}/discard:
     parameters:
@@ -1913,6 +1933,7 @@ paths:
         '204': {description: 已放弃}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/attempts/{attempt_id}/complete:
     parameters:
@@ -1931,6 +1952,7 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/attempts/{attempt_id}/continue:
     parameters:
@@ -1948,6 +1970,7 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/attempts/{attempt_id}/grade:
     parameters:
@@ -1962,6 +1985,7 @@ paths:
         '202': {$ref: '#/components/responses/OperationAccepted'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
 
 components:
