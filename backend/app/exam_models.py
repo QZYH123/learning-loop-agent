@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from .api_models import (
     ApiError,
@@ -11,6 +11,7 @@ from .api_models import (
     ContentBlock,
     ContractModel,
     ModelSnapshot,
+    PatchModel,
     SelectionContext,
 )
 
@@ -43,18 +44,39 @@ class BlueprintIssue(ContractModel):
 class ExamBlueprintPromptInput(ContractModel):
     prompt: str = Field(min_length=1, max_length=10000)
     grounding_mode: GroundingMode
-    source_version_ids: list[str] = Field(default_factory=list)
+    source_version_ids: list[str] = Field(default_factory=list, json_schema_extra={"uniqueItems": True})
     model_id: str | None = None
 
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
 
-class ExamBlueprintPatch(ContractModel):
-    title: str | None = Field(default=None, min_length=1, max_length=200)
-    syllabus: list[str] | None = None
-    source_version_ids: list[str] | None = None
-    grounding_mode: GroundingMode | None = None
-    question_plan: list[BlueprintQuestionPlan] | None = None
-    total_score: float | None = Field(default=None, gt=0)
+
+class ExamBlueprintPatch(PatchModel):
+    title: str = Field(default=None, min_length=1, max_length=200)
+    syllabus: list[str] = None
+    source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
+    grounding_mode: GroundingMode = None
+    question_plan: list[BlueprintQuestionPlan] = Field(default=None, min_length=1)
+    total_score: float = Field(default=None, gt=0)
     duration_minutes: int | None = Field(default=None, ge=1)
+
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
+
+    @field_validator("syllabus")
+    @classmethod
+    def syllabus_items_must_not_be_empty(cls, value):
+        if value is not None and any(not item for item in value):
+            raise ValueError("syllabus items must not be empty")
+        return value
 
 
 class ExamBlueprint(ContractModel):
@@ -67,7 +89,7 @@ class ExamBlueprint(ContractModel):
     source_version_ids: list[str]
     grounding_mode: GroundingMode
     question_plan: list[BlueprintQuestionPlan]
-    total_score: float
+    total_score: float = Field(gt=0)
     duration_minutes: int | None = None
     issues: list[BlueprintIssue]
     confirmed_at: int | None = None
@@ -97,7 +119,14 @@ class ChoiceOption(ContractModel):
 
 class ChoiceAnswerKey(ContractModel):
     kind: Literal["choice"]
-    option_ids: list[str] = Field(min_length=1)
+    option_ids: list[str] = Field(min_length=1, json_schema_extra={"uniqueItems": True})
+
+    @field_validator("option_ids")
+    @classmethod
+    def option_ids_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("option_ids must contain unique items")
+        return value
 
 
 class BlankNormalization(ContractModel):
@@ -144,7 +173,7 @@ class QuestionInput(ContractModel):
     id: str
     type: QuestionType
     stem: list[ContentBlock] = Field(min_length=1)
-    options: list[ChoiceOption] = Field(default_factory=list)
+    options: list[ChoiceOption] = Field(default_factory=list, json_schema_extra={"minItems": 2})
     score: float = Field(gt=0)
     answer_area: AnswerArea
     answer: AnswerKey
@@ -152,6 +181,50 @@ class QuestionInput(ContractModel):
     knowledge_points: list[str] = Field(min_length=1)
     evidence: QuestionEvidence
     reliability: Literal["reliable", "needs-review"]
+
+    @field_validator("knowledge_points")
+    @classmethod
+    def knowledge_points_must_not_be_empty(cls, value):
+        if any(not item for item in value):
+            raise ValueError("knowledge_points items must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def validate_question_structure(self):
+        expected_kind = (
+            "choice" if self.type in {"single-choice", "multiple-choice"}
+            else "fill-blank" if self.type == "fill-blank"
+            else "true-false" if self.type == "true-false"
+            else "subjective"
+        )
+        if self.answer.kind != expected_kind:
+            raise ValueError("question type and answer kind do not match")
+        if expected_kind == "choice":
+            if len(self.options) < 2:
+                raise ValueError("choice questions require at least two options")
+            option_ids = [item.id for item in self.options]
+            if len(option_ids) != len(set(option_ids)):
+                raise ValueError("choice option ids must contain unique items")
+            if not set(self.answer.option_ids) <= set(option_ids):
+                raise ValueError("choice answer references an unknown option")
+            if self.type == "single-choice" and len(self.answer.option_ids) != 1:
+                raise ValueError("single-choice questions require exactly one answer option")
+        elif expected_kind == "fill-blank":
+            blank_ids = [item.id for item in self.answer.blanks]
+            if len(blank_ids) != len(set(blank_ids)):
+                raise ValueError("fill-blank ids must contain unique items")
+        elif expected_kind == "subjective":
+            point_ids = [item.id for item in self.answer.scoring_points]
+            if len(point_ids) != len(set(point_ids)):
+                raise ValueError("scoring point ids must contain unique items")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_question(self, handler):
+        data = handler(self)
+        if self.type not in {"single-choice", "multiple-choice"}:
+            data.pop("options", None)
+        return data
 
 
 class DraftQuestion(ContractModel):
@@ -164,10 +237,17 @@ class DraftQuestion(ContractModel):
     updated_at: int
 
 
-class ExamDraftPatch(ContractModel):
-    title: str | None = Field(default=None, min_length=1, max_length=200)
-    instructions: list[ContentBlock] | None = None
-    question_order: list[str] | None = None
+class ExamDraftPatch(PatchModel):
+    title: str = Field(default=None, min_length=1, max_length=200)
+    instructions: list[ContentBlock] = None
+    question_order: list[str] = Field(default=None, min_length=1, json_schema_extra={"uniqueItems": True})
+
+    @field_validator("question_order")
+    @classmethod
+    def question_order_must_be_unique(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("question_order must contain unique items")
+        return value
 
 
 class ExamDraft(ContractModel):
@@ -178,7 +258,7 @@ class ExamDraft(ContractModel):
     instructions: list[ContentBlock]
     status: Literal["generating", "editable", "failed", "published"]
     questions: list[DraftQuestion]
-    total_score: float
+    total_score: float = Field(ge=0)
     created_at: int
     updated_at: int
 
@@ -203,7 +283,7 @@ class Exam(ContractModel):
     source_blueprint_id: str | None
     current_version_id: str
     document: ExamDocument
-    total_score: float
+    total_score: float = Field(ge=0)
     can_undo: bool
     can_redo: bool
     created_at: int
@@ -217,7 +297,7 @@ class ExamList(ContractModel):
 class ExamDocumentReplaceInput(ContractModel):
     base_version_id: str
     document: ExamDocument
-    summary: str | None = Field(default=None, max_length=500)
+    summary: str = Field(default=None, max_length=500)
 
 
 class ExamVersion(ContractModel):
@@ -239,18 +319,18 @@ class AttemptInput(ContractModel):
     show_suggested_score: bool = False
 
 
-class AttemptPatch(ContractModel):
-    mode: Literal["exam", "practice"] | None = None
-    show_suggested_score: bool | None = None
+class AttemptPatch(PatchModel):
+    mode: Literal["exam", "practice"] = None
+    show_suggested_score: bool = None
 
 
 class AttemptQuestion(ContractModel):
     id: str
-    ordinal: int
+    ordinal: int = Field(ge=1)
     type: QuestionType
     stem: list[ContentBlock]
     options: list[ChoiceOption] = Field(default_factory=list)
-    score: float
+    score: float = Field(gt=0)
     answer_area: AnswerArea
 
 
@@ -260,12 +340,19 @@ class AttemptPaper(ContractModel):
     title: str
     instructions: list[ContentBlock]
     questions: list[AttemptQuestion]
-    total_score: float
+    total_score: float = Field(ge=0)
 
 
 class ChoiceAnswerInput(ContractModel):
     kind: Literal["choice"]
-    option_ids: list[str]
+    option_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
+
+    @field_validator("option_ids")
+    @classmethod
+    def option_ids_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("option_ids must contain unique items")
+        return value
 
 
 class BlankAnswer(ContractModel):
@@ -276,6 +363,14 @@ class BlankAnswer(ContractModel):
 class FillBlankAnswerInput(ContractModel):
     kind: Literal["fill-blank"]
     blanks: list[BlankAnswer]
+
+    @field_validator("blanks")
+    @classmethod
+    def blank_ids_must_be_unique(cls, value):
+        ids = [item.blank_id for item in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("blank_id values must contain unique items")
+        return value
 
 
 class TrueFalseAnswerInput(ContractModel):
@@ -308,7 +403,7 @@ class AttemptAnswer(ContractModel):
 
 class FeedbackInput(ContractModel):
     model_id: str | None = None
-    show_suggested_score: bool | None = None
+    show_suggested_score: bool = None
 
 
 class QuestionFeedback(ContractModel):
@@ -322,7 +417,7 @@ class QuestionFeedback(ContractModel):
     missed_points: list[ScoringPoint]
     reasoning_issues: list[str]
     suggestions: list[str]
-    suggested_score: float | None
+    suggested_score: float | None = Field(ge=0)
     reference_answer: list[ContentBlock] = Field(default_factory=list)
     evidence: QuestionEvidence
     model: ModelSnapshot | None
@@ -355,27 +450,34 @@ class AttemptReview(ContractModel):
     mode: Literal["exam", "practice"]
     status: Literal["in-progress", "paused", "grading", "submitted"]
     items: list[AttemptReviewItem]
-    total_suggested_score: float | None
+    total_suggested_score: float | None = Field(ge=0)
 
 
 class RevisionScope(ContractModel):
     kind: Literal["whole-exam", "questions", "blocks"]
-    question_ids: list[str]
-    block_ids: list[str]
+    question_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
+    block_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
+
+    @field_validator("question_ids", "block_ids")
+    @classmethod
+    def ids_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("scope ids must contain unique items")
+        return value
 
 
 class ExamRevisionProposalInput(ContractModel):
     base_version_id: str
     instruction: str = Field(min_length=1, max_length=10000)
     scope: RevisionScope
-    selection: SelectionContext | None = None
+    selection: SelectionContext = None
     model_id: str | None = None
 
 
 class ExamChange(ContractModel):
-    path: str
+    path: str = Field(min_length=1)
     operation: Literal["add", "replace", "remove", "move"]
-    summary: str
+    summary: str = Field(min_length=1)
     before: Any
     after: Any
 

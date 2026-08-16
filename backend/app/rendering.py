@@ -20,7 +20,6 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import (
     Image as PdfImage,
-    KeepTogether,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -91,11 +90,11 @@ class ExamRenderingService:
                 render_started_at = self._now()
                 render_started = time.perf_counter()
                 render_document = self._render_document(current_subject, current_exam, version_id, payload["edition"])
-                content = (
-                    self._render_pdf(render_document)
-                    if payload["format"] == "pdf"
-                    else self._render_markdown(render_document).encode("utf-8")
-                )
+                if payload["format"] == "pdf":
+                    content = await asyncio.to_thread(self._render_pdf, render_document)
+                else:
+                    markdown = await asyncio.to_thread(self._render_markdown, render_document)
+                    content = markdown.encode("utf-8")
                 self.operations.record_stage(
                     "render",
                     started_at=render_started_at,
@@ -238,7 +237,8 @@ class ExamRenderingService:
             for option in question.get("options", []):
                 option_text = " ".join(self._plain_block(block) for block in option["content"])
                 prompt_section.append(Paragraph(f"{html.escape(option['id'])}. {html.escape(option_text)}", body))
-            story.append(KeepTogether(prompt_section))
+            # 题干可能跨页；让 ReportLab 自然分页，避免超长题目触发 LayoutError。
+            story.extend(prompt_section)
             for _ in range(question["answer_area"]["lines"]):
                 story.extend([Spacer(1, 4), Paragraph("_" * 70, muted)])
             if item["solution"] is not None:
@@ -250,7 +250,7 @@ class ExamRenderingService:
                 ]
                 if solution["knowledge_points"]:
                     solution_section.append(Paragraph(f"考点：{html.escape('、'.join(solution['knowledge_points']))}", muted))
-                story.append(KeepTogether(solution_section))
+                story.extend(solution_section)
             story.append(Spacer(1, 8))
         pdf.build(story, onFirstPage=self._draw_page_number, onLaterPages=self._draw_page_number)
         return buffer.getvalue()

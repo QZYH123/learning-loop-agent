@@ -152,7 +152,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     async def upload_source(
         subject_id: str,
         file: UploadFile = File(...),
-        display_name: str | None = Form(default=None, max_length=255),
+        display_name: str | None = Form(default=None, min_length=1, max_length=255),
     ):
         try:
             content = await file.read(MAX_SOURCE_BYTES + 1)

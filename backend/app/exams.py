@@ -12,7 +12,7 @@ from jsonpatch import JsonPatch, JsonPatchException
 from jsonpointer import JsonPointerException, resolve_pointer
 from pydantic import ValidationError
 
-from .exam_models import ExamChange, ExamDocument, QuestionInput
+from .exam_models import BlueprintQuestionPlan, ExamBlueprint, ExamChange, ExamDocument, QuestionFeedback, QuestionInput
 from .learning import LearningError
 from .model_client import ModelClientError
 from .operations import OperationFailure
@@ -68,23 +68,41 @@ class ExamService:
             try:
                 anchors = [] if payload["grounding_mode"] == "general-knowledge" else self.sources.retrieve(payload["prompt"], source_ids, limit=12)
                 if payload["grounding_mode"] == "strict" and not anchors:
+                    self._record_structure_stage(self._now(), time.perf_counter(), "failed")
                     raise OperationFailure("GROUNDING_SOURCE_REQUIRED", "选定资料未覆盖组卷要求")
-                context = self.learning._anchors_text(anchors)
+                grounding_instruction = {
+                    "strict": "只使用相关资料中的内容组卷。",
+                    "supplemental": "优先使用相关资料，资料外的补充内容需要与资料依据区分。",
+                    "general-knowledge": "使用通用知识组卷，并明确该蓝图未依据用户资料。",
+                }[payload["grounding_mode"]]
+                prompt = (
+                    "把组卷要求解析为 JSON，只返回："
+                    '{"title":"...","syllabus":["..."],"question_plan":['
+                    '{"type":"single-choice","count":1,"difficulty":"medium","score_each":5}],'
+                    '"total_score":5,"duration_minutes":30}。题型可用 single-choice、multiple-choice、fill-blank、'
+                    "true-false、short-answer、argumentation、extended-response。\n"
+                    f"{grounding_instruction}\n\n"
+                    f"用户要求：{payload['prompt']}\n\n相关资料：\n{self.learning._anchors_text(anchors) or '无'}"
+                )
                 response = await self.model_client.chat(profile, [{
                     "role": "user",
-                    "content": (
-                        "把组卷要求解析为 JSON，只返回："
-                        '{"title":"...","syllabus":["..."],"question_plan":['
-                        '{"type":"single-choice","count":1,"difficulty":"medium","score_each":5}],'
-                        '"total_score":5,"duration_minutes":30}。题型可用 single-choice、multiple-choice、fill-blank、'
-                        "true-false、short-answer、argumentation、extended-response。\n\n"
-                        f"用户要求：{payload['prompt']}\n\n相关资料：\n{context or '无'}"
-                    ),
+                    "content": self.learning._grounded_content(prompt, anchors, profile),
                 }])
-                parsed = json.loads(response["text"])
-                plan = [self._normalize_plan(item) for item in parsed["question_plan"]]
-                total_score = float(parsed["total_score"])
-                issues = self._blueprint_issues(plan, total_score)
+                validation_started_at = self._now()
+                validation_started = time.perf_counter()
+                try:
+                    parsed = json.loads(response["text"])
+                    plan = [self._normalize_plan(item) for item in parsed["question_plan"]]
+                    if not plan:
+                        raise ValueError("question_plan is required")
+                    total_score = float(parsed["total_score"])
+                    if total_score <= 0:
+                        raise ValueError("total_score must be positive")
+                    issues = self._blueprint_issues(plan, total_score)
+                except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    self._record_structure_stage(validation_started_at, validation_started, "failed")
+                    raise
+                self._record_structure_stage(validation_started_at, validation_started, "succeeded")
                 updated = {
                     **blueprint,
                     "title": parsed["title"],
@@ -96,12 +114,20 @@ class ExamService:
                     "issues": issues,
                     "updated_at": self._now(),
                 }
-                self._replace(subject_id, "exam_blueprints", blueprint_id, updated)
+                self._replace(
+                    subject_id,
+                    "exam_blueprints",
+                    blueprint_id,
+                    ExamBlueprint.model_validate(updated).model_dump(),
+                )
                 return {"type": "exam-blueprint", "id": blueprint_id}
+            except asyncio.CancelledError:
+                self._fail_blueprint(subject_id, blueprint, "组卷蓝图解析已取消")
+                raise
             except OperationFailure:
                 self._fail_blueprint(subject_id, blueprint, "选定资料未覆盖组卷要求")
                 raise
-            except (ModelClientError, SourceLibraryError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            except (LearningError, ValidationError, ModelClientError, SourceLibraryError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
                 self._fail_blueprint(subject_id, blueprint, "模型未返回有效的组卷蓝图")
                 raise OperationFailure("MODEL_INVALID_RESPONSE", "模型未返回有效的组卷蓝图") from exc
 
@@ -111,6 +137,8 @@ class ExamService:
 
     def update_blueprint(self, blueprint_id: str, patch: dict) -> dict:
         subject, blueprint = self.learning._find_owned("exam_blueprints", blueprint_id)
+        if blueprint["status"] == "parsing":
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "组卷蓝图仍在解析，暂不能编辑")
         source_ids = patch.get("source_version_ids", blueprint["source_version_ids"])
         grounding_mode = patch.get("grounding_mode", blueprint["grounding_mode"])
         self.learning._validate_source_scope(subject["id"], source_ids, grounding_mode)
@@ -128,8 +156,9 @@ class ExamService:
             "confirmed_at": None,
             "updated_at": self._now(),
         }
-        self._replace(subject["id"], "exam_blueprints", blueprint_id, updated)
-        return updated
+        validated = ExamBlueprint.model_validate(updated).model_dump()
+        self._replace(subject["id"], "exam_blueprints", blueprint_id, validated)
+        return validated
 
     def confirm_blueprint(self, blueprint_id: str) -> dict:
         subject, blueprint = self.learning._find_owned("exam_blueprints", blueprint_id)
@@ -142,7 +171,9 @@ class ExamService:
         return updated
 
     def delete_blueprint(self, blueprint_id: str) -> None:
-        subject, _ = self.learning._find_owned("exam_blueprints", blueprint_id)
+        subject, blueprint = self.learning._find_owned("exam_blueprints", blueprint_id)
+        if blueprint["status"] == "parsing":
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "组卷蓝图仍在解析")
         if any(item.get("blueprint_id") == blueprint_id for item in subject.get("data", {}).get("exam_drafts", [])):
             raise LearningError(409, "RESOURCE_CONFLICT", "该蓝图已被试卷草稿引用")
         self._remove(subject["id"], "exam_blueprints", blueprint_id)
@@ -190,60 +221,64 @@ class ExamService:
         operation_holder = {}
 
         async def worker():
-            completed = 0
-            for slot in slots:
-                self._update_slot(subject["id"], draft_id, slot["id"], {"status": "generating", "updated_at": self._now()})
-                try:
-                    question = await self._generate_question(profile, blueprint, slot)
-                    status = "complete" if question["reliability"] == "reliable" else "needs-review"
-                    self._update_slot(subject["id"], draft_id, slot["id"], {
-                        "status": status,
-                        "question": question,
-                        "error": None,
-                        "updated_at": self._now(),
-                    })
-                except json.JSONDecodeError as exc:
-                    self._update_slot(subject["id"], draft_id, slot["id"], {
-                        "status": "failed",
-                        "question": None,
-                        "error": {
-                            "code": "QUESTION_GENERATION_FAILED",
-                            "message": str(exc) or "题目生成失败",
-                            "retryable": True,
-                            "details": {},
-                        },
-                        "updated_at": self._now(),
-                    })
-                except (LearningError, ValidationError, KeyError, TypeError, ValueError) as exc:
-                    self._update_slot(subject["id"], draft_id, slot["id"], {
-                        "status": "needs-review",
-                        "question": None,
-                        "error": {
-                            "code": "QUESTION_STRUCTURE_INVALID",
-                            "message": str(exc) or "题目结构不完整",
-                            "retryable": True,
-                            "details": {},
-                        },
-                        "updated_at": self._now(),
-                    })
-                except (ModelClientError, SourceLibraryError) as exc:
-                    self._update_slot(subject["id"], draft_id, slot["id"], {
-                        "status": "failed",
-                        "question": None,
-                        "error": {
-                            "code": "QUESTION_GENERATION_FAILED",
-                            "message": str(exc) or "题目生成失败",
-                            "retryable": True,
-                            "details": {},
-                        },
-                        "updated_at": self._now(),
-                    })
-                completed += 1
-                self.operations.update_progress(operation_holder["id"], completed, len(slots), f"已生成 {completed}/{len(slots)} 题")
-            current = self.learning._find_owned("exam_drafts", draft_id)[1]
-            final_status = "failed" if all(item["status"] == "failed" for item in current["questions"]) else "editable"
-            self._replace(subject["id"], "exam_drafts", draft_id, {**current, "status": final_status, "updated_at": self._now()})
-            return {"type": "exam-draft", "id": draft_id}
+            try:
+                completed = 0
+                for slot in slots:
+                    self._update_slot(subject["id"], draft_id, slot["id"], {"status": "generating", "updated_at": self._now()})
+                    try:
+                        question = await self._generate_question(profile, blueprint, slot)
+                        status = "complete" if question["reliability"] == "reliable" else "needs-review"
+                        self._update_slot(subject["id"], draft_id, slot["id"], {
+                            "status": status,
+                            "question": question,
+                            "error": None,
+                            "updated_at": self._now(),
+                        })
+                    except json.JSONDecodeError as exc:
+                        self._update_slot(subject["id"], draft_id, slot["id"], {
+                            "status": "failed",
+                            "question": None,
+                            "error": {
+                                "code": "QUESTION_GENERATION_FAILED",
+                                "message": str(exc) or "题目生成失败",
+                                "retryable": True,
+                                "details": {},
+                            },
+                            "updated_at": self._now(),
+                        })
+                    except (LearningError, ValidationError, KeyError, TypeError, ValueError) as exc:
+                        self._update_slot(subject["id"], draft_id, slot["id"], {
+                            "status": "needs-review",
+                            "question": None,
+                            "error": {
+                                "code": "QUESTION_STRUCTURE_INVALID",
+                                "message": str(exc) or "题目结构不完整",
+                                "retryable": True,
+                                "details": {},
+                            },
+                            "updated_at": self._now(),
+                        })
+                    except (ModelClientError, SourceLibraryError) as exc:
+                        self._update_slot(subject["id"], draft_id, slot["id"], {
+                            "status": "failed",
+                            "question": None,
+                            "error": {
+                                "code": "QUESTION_GENERATION_FAILED",
+                                "message": str(exc) or "题目生成失败",
+                                "retryable": True,
+                                "details": {},
+                            },
+                            "updated_at": self._now(),
+                        })
+                    completed += 1
+                    self.operations.update_progress(operation_holder["id"], completed, len(slots), f"已生成 {completed}/{len(slots)} 题")
+                current = self.learning._find_owned("exam_drafts", draft_id)[1]
+                final_status = "failed" if all(item["status"] == "failed" for item in current["questions"]) else "editable"
+                self._replace(subject["id"], "exam_drafts", draft_id, {**current, "status": final_status, "updated_at": self._now()})
+                return {"type": "exam-draft", "id": draft_id}
+            except asyncio.CancelledError:
+                self._cancel_draft_generation(subject["id"], draft_id)
+                raise
 
         resource = {"type": "exam-draft", "id": draft_id}
         operation = self.operations.start(
@@ -264,6 +299,7 @@ class ExamService:
 
     def update_draft(self, draft_id: str, patch: dict) -> dict:
         subject, draft = self.learning._find_owned("exam_drafts", draft_id)
+        self._ensure_draft_operation_idle(draft)
         if draft["status"] in {"generating", "published"}:
             raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可编辑")
         if "question_order" in patch:
@@ -278,25 +314,41 @@ class ExamService:
 
     def delete_draft(self, draft_id: str) -> None:
         subject, draft = self.learning._find_owned("exam_drafts", draft_id)
+        self._ensure_draft_operation_idle(draft)
         if draft["status"] == "generating":
             raise LearningError(409, "OPERATION_IN_PROGRESS", "试卷草稿仍在生成")
         self._remove(subject["id"], "exam_drafts", draft_id)
 
     def replace_draft_question(self, draft_id: str, question_id: str, question: dict) -> dict:
         subject, draft = self.learning._find_owned("exam_drafts", draft_id)
+        self._ensure_draft_operation_idle(draft, question_id)
         slot = next((item for item in draft["questions"] if item["id"] == question_id), None)
         if not slot:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "题目不存在")
         if draft["status"] in {"generating", "published"}:
             raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可编辑")
+        blueprint = self.get_blueprint(draft["blueprint_id"])
         normalized = self._validate_manual_question(question, question_id)
+        normalized = self._validate_question_resources(
+            subject["id"],
+            normalized,
+            allowed_version_ids=set(blueprint["source_version_ids"]) if blueprint["grounding_mode"] != "general-knowledge" else set(),
+        )
         status = "complete" if normalized["reliability"] == "reliable" else "needs-review"
         updated_slot = {**self._slot_view(slot), "planned_type": normalized["type"], "status": status, "question": normalized, "error": None, "updated_at": self._now()}
         self._update_slot(subject["id"], draft_id, question_id, updated_slot)
+        refreshed = self.learning._find_owned("exam_drafts", draft_id)[1]
+        self._replace(
+            subject["id"],
+            "exam_drafts",
+            draft_id,
+            {**refreshed, "total_score": self._draft_score(refreshed["questions"]), "updated_at": self._now()},
+        )
         return updated_slot
 
     def delete_draft_question(self, draft_id: str, question_id: str) -> None:
         subject, draft = self.learning._find_owned("exam_drafts", draft_id)
+        self._ensure_draft_operation_idle(draft, question_id)
         if draft["status"] in {"generating", "published"}:
             raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可编辑")
         if not any(item["id"] == question_id for item in draft["questions"]):
@@ -318,8 +370,19 @@ class ExamService:
 
         async def worker():
             self._update_slot(subject["id"], draft_id, question_id, {"status": "generating", "updated_at": self._now()})
+            retry_started_at = self._now()
+            self.operations.record_stage(
+                "retry",
+                started_at=retry_started_at,
+                completed_at=self._now(),
+                outer_elapsed_ms=0,
+                counters={"retries": 1},
+            )
             try:
                 question = await self._generate_question(profile, blueprint, slot)
+            except asyncio.CancelledError:
+                self._update_slot(subject["id"], draft_id, question_id, {**slot, "updated_at": self._now()})
+                raise
             except json.JSONDecodeError as exc:
                 self._update_slot(subject["id"], draft_id, question_id, {
                     "status": "failed",
@@ -354,6 +417,7 @@ class ExamService:
 
     def publish_draft(self, draft_id: str, accept_needs_review: bool) -> dict:
         subject, draft = self.learning._find_owned("exam_drafts", draft_id)
+        self._ensure_draft_operation_idle(draft)
         if draft["status"] != "editable":
             raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可发布")
         incomplete = [item for item in draft["questions"] if item["status"] in {"failed", "needs-review"}]
@@ -530,6 +594,11 @@ class ExamService:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt["status"] not in {"in-progress", "paused"}:
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "已提交的作答不能修改设置")
+        if any(
+            self.operations.has_active("feedback", f"feedback-{attempt_id}-{question['id']}")
+            for question in attempt["paper"]["questions"]
+        ):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "题目反馈生成期间不能修改作答设置")
         updated = {**attempt, **patch, "updated_at": self._now()}
         if updated["mode"] == "exam":
             updated["feedback"] = []
@@ -554,24 +623,28 @@ class ExamService:
         answers = [saved if item["question_id"] == question_id else item for item in attempt["answers"]]
         if not existing:
             answers.append(saved)
-        feedback = attempt["feedback"]
+        feedback = [item for item in attempt["feedback"] if item["question_id"] != question_id]
         if attempt["mode"] == "practice" and question["type"] in {"single-choice", "multiple-choice", "fill-blank", "true-false"}:
             objective = self._objective_feedback(attempt, question, saved)
-            feedback = [item for item in feedback if item["question_id"] != question_id] + [objective]
+            feedback.append(objective)
         updated = {**attempt, "answers": answers, "feedback": feedback, "updated_at": timestamp}
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return saved
 
     def request_feedback(self, attempt_id: str, question_id: str, payload: dict) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
+        if attempt["status"] == "grading":
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "作答正在统一批改，请等待完成")
         if attempt["mode"] == "exam" and attempt["status"] != "submitted":
             raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式提交前不能查看反馈")
         question = self._attempt_question(subject, attempt, question_id)
         answer = next((item for item in attempt["answers"] if item["question_id"] == question_id), None)
         if not answer:
             raise LearningError(409, "FEEDBACK_UNAVAILABLE", "请先保存答案")
-        feedback_id = self._ids("feedback")
+        feedback_id = f"feedback-{attempt_id}-{question_id}"
         resource = {"type": "feedback", "id": feedback_id}
+        if self.operations.has_active("feedback", feedback_id):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "该题反馈正在生成")
 
         async def worker():
             try:
@@ -616,37 +689,65 @@ class ExamService:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt["status"] not in {"in-progress", "paused"}:
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不能提交")
+        if any(
+            self.operations.has_active("feedback", f"feedback-{attempt_id}-{question['id']}")
+            for question in self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])["questions"]
+        ):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "请等待当前题目反馈完成后再提交")
         grading = {**attempt, "status": "grading", "feedback": [], "updated_at": self._now()}
         self._replace(subject["id"], "attempts", attempt_id, grading)
         resource = {"type": "attempt", "id": attempt_id}
 
         async def worker():
-            current = self.get_attempt(attempt_id)
-            document = self._version_document(subject, current["exam_id"], current["exam_version_id"])
-            feedback = []
-            for question in document["questions"]:
-                answer = next((item for item in current["answers"] if item["question_id"] == question["id"]), None)
-                if not answer:
-                    continue
-                if question["type"] in {"single-choice", "multiple-choice", "fill-blank", "true-false"}:
-                    feedback.append(self._objective_feedback(current, question, answer))
-                else:
-                    try:
-                        profile = self._selected_model(subject["id"], None)
-                        feedback.append(await self._subjective_feedback(
-                            current,
-                            question,
-                            answer,
-                            profile,
-                            current["show_suggested_score"],
-                            self._ids("feedback"),
-                        ))
-                    except (LearningError, ModelClientError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-                        feedback.append(self._unable_feedback(current, question, answer))
-            timestamp = self._now()
-            submitted = {**current, "status": "submitted", "feedback": feedback, "updated_at": timestamp, "submitted_at": timestamp}
-            self._replace(subject["id"], "attempts", attempt_id, submitted)
-            return resource
+            try:
+                current = self.get_attempt(attempt_id)
+                document = self._version_document(subject, current["exam_id"], current["exam_version_id"])
+                feedback = []
+                objective_started_at = self._now()
+                objective_started = time.perf_counter()
+                objective_count = 0
+                for question in document["questions"]:
+                    answer = next((item for item in current["answers"] if item["question_id"] == question["id"]), None)
+                    if not answer:
+                        continue
+                    if question["type"] in {"single-choice", "multiple-choice", "fill-blank", "true-false"}:
+                        feedback.append(self._objective_feedback(current, question, answer))
+                        objective_count += 1
+                    else:
+                        try:
+                            profile = self._selected_model(subject["id"], None)
+                            feedback.append(await self._subjective_feedback(
+                                current,
+                                question,
+                                answer,
+                                profile,
+                                current["show_suggested_score"],
+                                self._ids("feedback"),
+                            ))
+                        except (LearningError, ModelClientError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                            feedback.append(self._unable_feedback(current, question, answer))
+                if objective_count:
+                    self.operations.record_stage(
+                        "structure-validation",
+                        started_at=objective_started_at,
+                        completed_at=self._now(),
+                        outer_elapsed_ms=max(0, round((time.perf_counter() - objective_started) * 1000)),
+                        counters={},
+                    )
+                timestamp = self._now()
+                submitted = {**current, "status": "submitted", "feedback": feedback, "updated_at": timestamp, "submitted_at": timestamp}
+                self._replace(subject["id"], "attempts", attempt_id, submitted)
+                return resource
+            except asyncio.CancelledError:
+                current = self.get_attempt(attempt_id)
+                restored = {
+                    **current,
+                    "status": attempt["status"],
+                    "feedback": attempt["feedback"],
+                    "updated_at": self._now(),
+                }
+                self._replace(subject["id"], "attempts", attempt_id, restored)
+                raise
 
         operation = self.operations.start("attempt-grading", worker, subject_id=subject["id"], resource=resource)
         return {"operation": operation, "resource": resource}
@@ -741,15 +842,31 @@ class ExamService:
                         f"试卷：{json.dumps(base_document, ensure_ascii=False)}\n\n指令：{payload['instruction']}"
                     ),
                 }])
-                raw_changes = json.loads(response["text"])["changes"]
-                changes = [ExamChange.model_validate(item).model_dump() for item in raw_changes]
-                if not isinstance(changes, list) or not changes:
-                    raise ValueError("changes is required")
-                self._validate_revision_changes(base_document, payload["scope"], changes)
-                self._apply_revision_changes(base_document, changes)
+                validation_started_at = self._now()
+                validation_started = time.perf_counter()
+                try:
+                    raw_changes = json.loads(response["text"])["changes"]
+                    changes = [ExamChange.model_validate(item).model_dump() for item in raw_changes]
+                    if not isinstance(changes, list) or not changes:
+                        raise ValueError("changes is required")
+                    self._validate_revision_changes(base_document, payload["scope"], changes)
+                    self._apply_revision_changes(base_document, changes)
+                except (LearningError, ValidationError, JsonPatchException, JsonPointerException, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    self._record_structure_stage(validation_started_at, validation_started, "failed")
+                    raise
+                self._record_structure_stage(validation_started_at, validation_started, "succeeded")
                 ready = {**proposal, "status": "ready", "changes": changes, "updated_at": self._now()}
                 self._replace(subject["id"], "revision_proposals", proposal_id, ready)
                 return resource
+            except asyncio.CancelledError:
+                canceled = {
+                    **proposal,
+                    "status": "failed",
+                    "error": {"code": "REVISION_PROPOSAL_INVALID", "message": "修改提案生成已取消", "retryable": True, "details": {}},
+                    "updated_at": self._now(),
+                }
+                self._replace(subject["id"], "revision_proposals", proposal_id, canceled)
+                raise
             except (
                 LearningError,
                 ModelClientError,
@@ -820,10 +937,13 @@ class ExamService:
         applied_proposal_id: str | None = None,
     ) -> dict:
         subject, _ = self.learning._find_owned("exams", exam_id)
-        normalized = self._validate_exam_document(document) if document is not None else None
+        normalized = None
         version_id = self._ids("exam-version")
         timestamp = self._now()
         committed: dict[str, dict] = {}
+
+        if document is not None:
+            normalized = self._validate_exam_document(document, subject["id"])
 
         def update(data):
             current_exam = next((item for item in data.get("exams", []) if item["id"] == exam_id), None)
@@ -919,15 +1039,21 @@ class ExamService:
         )
         return committed["exam"]
 
-    def _validate_exam_document(self, document: dict) -> dict:
+    def _validate_exam_document(self, document: dict, subject_id: str | None = None) -> dict:
         validated = ExamDocument.model_validate(document).model_dump()
         question_ids = [item["id"] for item in validated["questions"]]
         if len(question_ids) != len(set(question_ids)):
             raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "试卷题目 ID 不能重复")
-        return {
+        normalized = {
             **validated,
             "questions": [self._validate_manual_question(item, item["id"]) for item in validated["questions"]],
         }
+        if subject_id is not None:
+            normalized["questions"] = [
+                self._validate_question_resources(subject_id, item)
+                for item in normalized["questions"]
+            ]
+        return normalized
 
     def _validate_revision_scope(self, document: dict, scope: dict) -> None:
         question_ids = {item["id"] for item in document["questions"]}
@@ -1023,7 +1149,7 @@ class ExamService:
 
     # Selection -----------------------------------------------------------
 
-    def resolve_selection(self, selection: dict) -> dict:
+    def resolve_selection(self, selection: dict, *, include_context: bool = False):
         kind = selection["document_kind"]
         if kind == "exam":
             subject, exam = self.learning._find_owned("exams", selection["document_id"])
@@ -1032,7 +1158,7 @@ class ExamService:
             except LearningError as exc:
                 raise LearningError(409, "CHAT_SELECTION_INVALID", "试卷选区版本已失效") from exc
         elif kind == "exam-draft":
-            _, draft = self.learning._find_owned("exam_drafts", selection["document_id"])
+            subject, draft = self.learning._find_owned("exam_drafts", selection["document_id"])
             if selection["version_id"] != draft["id"]:
                 raise LearningError(409, "CHAT_SELECTION_INVALID", "试卷草稿选区版本已失效")
             document = {
@@ -1040,27 +1166,111 @@ class ExamService:
                 "instructions": draft["instructions"],
             }
         else:
-            _, artifact = self.learning._find_owned("artifacts", selection["document_id"])
+            subject, artifact = self.learning._find_owned("artifacts", selection["document_id"])
             if selection["version_id"] != artifact["id"]:
                 raise LearningError(409, "CHAT_SELECTION_INVALID", "学习产物选区版本已失效")
             document = artifact
 
-        serialized = json.dumps(document, ensure_ascii=False)
-        if selection.get("question_id") and f'"id": "{selection["question_id"]}"' not in serialized:
-            raise LearningError(409, "CHAT_SELECTION_INVALID", "选中的题目不属于该文档版本")
-        if selection.get("block_id") and f'"id": "{selection["block_id"]}"' not in serialized:
-            raise LearningError(409, "CHAT_SELECTION_INVALID", "选中的内容块不属于该文档版本")
-        if selection.get("selected_text") and selection["selected_text"] not in serialized:
-            raise LearningError(409, "CHAT_SELECTION_INVALID", "选中文字已不属于当前文档版本")
+        questions = document.get("questions", []) if isinstance(document, dict) else []
+        selected_question = None
+        if selection.get("question_id"):
+            selected_question = next(
+                (item for item in questions if isinstance(item, dict) and item.get("id") == selection["question_id"]),
+                None,
+            )
+            if selected_question is None:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选中的题目不属于该文档版本")
+
+        search_root = selected_question or document
+        selected_block = None
+        if selection.get("block_id"):
+            selected_block = self._find_content_block(search_root, selection["block_id"])
+            if selected_block is None:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选中的内容块不属于所在题目或文档版本")
+
+        if selection.get("selected_text"):
+            visible_text = self._selection_text(selected_block or search_root)
+            if selection["selected_text"] not in visible_text:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选中文字已不属于当前文档版本")
+
         asset = selection.get("image_asset")
-        if asset and asset["asset_id"] not in serialized:
-            raise LearningError(409, "CHAT_SELECTION_INVALID", "选中图片已不属于当前文档版本")
+        if asset:
+            image_block = selected_block if selected_block and selected_block.get("type") == "image" else self._find_image_block(search_root, asset)
+            if image_block is None or image_block.get("asset") != asset:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选中图片已不属于所在题目或文档版本")
+            try:
+                asset_version = self.sources.get_version(asset["source_version_id"])
+                asset_source = self.sources.get_source(asset_version["source_id"])
+                if asset_source["subject_id"] != subject["id"]:
+                    raise SourceLibraryError(409, "CHAT_SELECTION_INVALID", "选中图片不属于当前科目")
+                self.sources.get_asset(asset["source_version_id"], asset["asset_id"])
+            except SourceLibraryError as exc:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选中图片已失效") from exc
+
+        allowed_citations = {
+            item.get("id")
+            for item in self._walk_values(selected_question or document)
+            if isinstance(item, dict) and item.get("source_version_id") and item.get("anchor_id")
+        }
         for citation_id in selection.get("citation_ids", []):
             try:
-                self.sources.get_citation(citation_id)
+                citation = self.sources.get_citation(citation_id)
+                citation_version = self.sources.get_version(citation["source_version_id"])
+                citation_source = self.sources.get_source(citation_version["source_id"])
             except SourceLibraryError as exc:
                 raise LearningError(409, "CHAT_SELECTION_INVALID", "选区引用已失效") from exc
-        return selection
+            if citation_id not in allowed_citations:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选区引用不属于所在题目或文档")
+            if citation_source["subject_id"] != subject["id"]:
+                raise LearningError(409, "CHAT_SELECTION_INVALID", "选区引用不属于当前科目")
+
+        context = None
+        if selected_question is not None:
+            context = json.dumps(selected_question, ensure_ascii=False)
+        elif selected_block is not None:
+            context = json.dumps(selected_block, ensure_ascii=False)
+        return (selection, context) if include_context else selection
+
+    @staticmethod
+    def _walk_values(value):
+        yield value
+        if isinstance(value, dict):
+            for child in value.values():
+                yield from ExamService._walk_values(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from ExamService._walk_values(child)
+
+    @classmethod
+    def _find_content_block(cls, value, block_id: str):
+        for item in cls._walk_values(value):
+            if isinstance(item, dict) and item.get("id") == block_id and item.get("type") in {"markdown", "latex", "table", "image"}:
+                return item
+        return None
+
+    @classmethod
+    def _find_image_block(cls, value, asset: dict):
+        for item in cls._walk_values(value):
+            if isinstance(item, dict) and item.get("type") == "image" and item.get("asset") == asset:
+                return item
+        return None
+
+    @classmethod
+    def _selection_text(cls, value) -> str:
+        parts = []
+        for item in cls._walk_values(value):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "markdown":
+                parts.append(item.get("text", ""))
+            elif item.get("type") == "latex":
+                parts.append(item.get("latex", ""))
+            elif item.get("type") == "table":
+                parts.append(" | ".join(item.get("columns", [])))
+                parts.extend(" | ".join(row) for row in item.get("rows", []))
+            elif item.get("type") == "image":
+                parts.append(item.get("alt") or item.get("caption") or "图片")
+        return "\n".join(item for item in parts if item)
 
     # Question and grading helpers ---------------------------------------
 
@@ -1068,20 +1278,40 @@ class ExamService:
         query = " ".join([*blueprint.get("syllabus", []), slot["planned_type"]])
         anchors = [] if blueprint["grounding_mode"] == "general-knowledge" else self.sources.retrieve(query, blueprint["source_version_ids"], limit=5)
         if blueprint["grounding_mode"] == "strict" and not anchors:
+            self._record_structure_stage(self._now(), time.perf_counter(), "failed")
             raise SourceLibraryError(409, "QUESTION_EVIDENCE_INCOMPLETE", "资料未覆盖该题目计划")
         citations = [self.sources.create_citation(anchor) for anchor in anchors]
-        context = self.learning._anchors_text(anchors)
+        grounding_instruction = {
+            "strict": "题干、答案和解析只能依据资料片段。",
+            "supplemental": "优先依据资料片段；如需通用知识补充，必须与资料依据区分。",
+            "general-knowledge": "使用通用知识生成，并将依据标为通用知识。",
+        }[blueprint["grounding_mode"]]
+        prompt = (
+            f"生成一道 {slot['planned_type']} 题，难度 {slot['planned_difficulty']}，分值 {slot['planned_score']}。"
+            "只返回 JSON，字段为 type、stem、options（选择题）、answer、explanation、knowledge_points。"
+            "answer.kind 按题型使用 choice、fill-blank、true-false 或 subjective。\n"
+            f"{grounding_instruction}\n\n"
+            f"资料片段：\n{self.learning._anchors_text(anchors) or '无'}"
+        )
         response = await self.model_client.chat(profile, [{
             "role": "user",
-            "content": (
-                f"生成一道 {slot['planned_type']} 题，难度 {slot['planned_difficulty']}，分值 {slot['planned_score']}。"
-                "只返回 JSON，字段为 type、stem、options（选择题）、answer、explanation、knowledge_points。"
-                "answer.kind 按题型使用 choice、fill-blank、true-false 或 subjective。\n\n"
-                f"资料片段：\n{context or '无'}"
-            ),
+            "content": self.learning._grounded_content(prompt, anchors, profile),
         }])
-        raw = json.loads(response["text"])
-        return self._normalize_generated_question(raw, slot, citations, blueprint["grounding_mode"])
+        validation_started_at = self._now()
+        validation_started = time.perf_counter()
+        try:
+            raw = json.loads(response["text"])
+            question = self._normalize_generated_question(raw, slot, citations, blueprint["grounding_mode"])
+            question = self._validate_question_resources(
+                blueprint["subject_id"],
+                question,
+                allowed_version_ids=set(blueprint["source_version_ids"]) if blueprint["grounding_mode"] != "general-knowledge" else set(),
+            )
+        except (LearningError, ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            self._record_structure_stage(validation_started_at, validation_started, "failed")
+            raise
+        self._record_structure_stage(validation_started_at, validation_started, "succeeded")
+        return question
 
     def _normalize_generated_question(self, raw: dict, slot: dict, citations: list[dict], basis: str) -> dict:
         question_type = raw.get("type") or slot["planned_type"]
@@ -1164,6 +1394,47 @@ class ExamService:
             validated["reliability"] = "needs-review"
         return validated
 
+    def _validate_question_resources(
+        self,
+        subject_id: str,
+        question: dict,
+        *,
+        allowed_version_ids: set[str] | None = None,
+    ) -> dict:
+        canonical_citations = []
+        for supplied in question["evidence"].get("citations", []):
+            try:
+                citation = self.sources.get_citation(supplied["id"])
+                version = self.sources.get_version(citation["source_version_id"])
+                source = self.sources.get_source(version["source_id"])
+            except SourceLibraryError as exc:
+                raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "题目引用的资料依据不存在") from exc
+            if source["subject_id"] != subject_id:
+                raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "题目引用了其他科目的资料")
+            if allowed_version_ids is not None and citation["source_version_id"] not in allowed_version_ids:
+                raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "题目引用超出当前资料范围")
+            canonical_citations.append(citation)
+
+        for item in self._walk_values(question):
+            if not isinstance(item, dict) or item.get("type") != "image":
+                continue
+            asset = item["asset"]
+            try:
+                version = self.sources.get_version(asset["source_version_id"])
+                source = self.sources.get_source(version["source_id"])
+                self.sources.get_asset(asset["source_version_id"], asset["asset_id"])
+            except SourceLibraryError as exc:
+                raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "题目引用的图片不存在") from exc
+            if source["subject_id"] != subject_id:
+                raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "题目引用了其他科目的图片")
+            if allowed_version_ids is not None and asset["source_version_id"] not in allowed_version_ids:
+                raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "题目图片超出当前资料范围")
+
+        evidence = {**question["evidence"], "citations": canonical_citations}
+        if evidence["basis"] == "general-knowledge" and canonical_citations:
+            raise LearningError(422, "QUESTION_STRUCTURE_INVALID", "通用知识题目不能伪装为资料依据")
+        return {**question, "evidence": evidence}
+
     def _objective_feedback(self, attempt: dict, question: dict, saved: dict, feedback_id: str | None = None) -> dict:
         correct = self._objective_correct(question["answer"], saved["answer"])
         return {
@@ -1194,18 +1465,41 @@ class ExamService:
                 f"评分点：{json.dumps(points, ensure_ascii=False)}\n用户答案：{saved['answer']['text']}"
             ),
         }])
-        result = json.loads(response["text"])
-        by_id = {item["id"]: item for item in points}
-        matched_ids = result.get("matched_point_ids", [])
-        missed_ids = result.get("missed_point_ids", [])
-        matched = [by_id[item_id] for item_id in matched_ids if item_id in by_id]
-        missed = [by_id[item_id] for item_id in missed_ids if item_id in by_id]
-        covered = {item["id"] for item in [*matched, *missed]}
-        status = result.get("status", "needs-review")
-        if status != "unable-to-assess" and covered != set(by_id):
-            status = "needs-review"
-        suggested_score = result.get("suggested_score")
-        return {
+        validation_started_at = self._now()
+        validation_started = time.perf_counter()
+        try:
+            result = json.loads(response["text"])
+            status = result.get("status", "needs-review")
+            if status not in {"complete", "needs-review", "unable-to-assess"}:
+                raise ValueError("feedback status is invalid")
+            for field in ("matched_point_ids", "missed_point_ids", "reasoning_issues", "suggestions"):
+                value = result.get(field, [])
+                if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                    raise ValueError(f"{field} must be a list of strings")
+            by_id = {item["id"]: item for item in points}
+            matched_ids = result.get("matched_point_ids", [])
+            missed_ids = result.get("missed_point_ids", [])
+            if len(matched_ids) != len(set(matched_ids)) or len(missed_ids) != len(set(missed_ids)):
+                raise ValueError("feedback point ids must be unique")
+            if set(matched_ids) & set(missed_ids):
+                raise ValueError("a scoring point cannot be both matched and missed")
+            matched = [by_id[item_id] for item_id in matched_ids if item_id in by_id]
+            missed = [by_id[item_id] for item_id in missed_ids if item_id in by_id]
+            covered = {item["id"] for item in [*matched, *missed]}
+            if status != "unable-to-assess" and covered != set(by_id):
+                status = "needs-review"
+            suggested_score = result.get("suggested_score")
+            if suggested_score is not None:
+                if isinstance(suggested_score, bool) or not isinstance(suggested_score, (int, float)):
+                    raise ValueError("suggested_score must be a number")
+                if not 0 <= float(suggested_score) <= question["score"]:
+                    status = "needs-review"
+                    suggested_score = None
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            self._record_structure_stage(validation_started_at, validation_started, "failed")
+            raise
+        self._record_structure_stage(validation_started_at, validation_started, "succeeded")
+        feedback = {
             "id": feedback_id,
             "attempt_id": attempt["id"],
             "question_id": question["id"],
@@ -1222,6 +1516,7 @@ class ExamService:
             "model": self.learning._model_snapshot(profile),
             "created_at": self._now(),
         }
+        return QuestionFeedback.model_validate(feedback).model_dump()
 
     def _unable_feedback(self, attempt: dict, question: dict, saved: dict) -> dict:
         return {
@@ -1281,6 +1576,16 @@ class ExamService:
         )
         if answer["kind"] != expected:
             raise LearningError(422, "ANSWER_TYPE_MISMATCH", "答案类型与题型不一致")
+        if expected == "choice":
+            option_ids = {item["id"] for item in question.get("options", [])}
+            if not set(answer["option_ids"]) <= option_ids:
+                raise LearningError(422, "ANSWER_TYPE_MISMATCH", "答案引用了不存在的选项")
+            if question["type"] == "single-choice" and len(answer["option_ids"]) > 1:
+                raise LearningError(422, "ANSWER_TYPE_MISMATCH", "单选题最多选择一个选项")
+        elif expected == "fill-blank":
+            blank_ids = {item["id"] for item in question["answer"]["blanks"]}
+            if not {item["blank_id"] for item in answer["blanks"]} <= blank_ids:
+                raise LearningError(422, "ANSWER_TYPE_MISMATCH", "答案引用了不存在的填空")
 
     def _attempt_question(self, subject: dict, attempt: dict, question_id: str) -> dict:
         document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
@@ -1306,6 +1611,12 @@ class ExamService:
 
     def _save_feedback(self, subject_id: str, attempt_id: str, feedback: dict) -> None:
         _, attempt = self.learning._find_owned("attempts", attempt_id)
+        current_answer = next(
+            (item for item in attempt["answers"] if item["question_id"] == feedback["question_id"]),
+            None,
+        )
+        if current_answer is None or current_answer["answer"] != feedback["answer_snapshot"]:
+            raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "答案已更新，请重新请求反馈")
         updated = {
             **attempt,
             "feedback": [item for item in attempt["feedback"] if item["question_id"] != feedback["question_id"]] + [feedback],
@@ -1320,14 +1631,19 @@ class ExamService:
             return [item if isinstance(item, dict) else self.learning._markdown_block(str(item)) for item in value]
         raise ValueError("content blocks must be a string or list")
 
+    def _record_structure_stage(self, started_at: int, started: float, status: str) -> None:
+        self.operations.record_stage(
+            "structure-validation",
+            status=status,
+            started_at=started_at,
+            completed_at=self._now(),
+            outer_elapsed_ms=max(0, round((time.perf_counter() - started) * 1000)),
+            counters={"validation_failures": int(status == "failed")},
+        )
+
     @staticmethod
     def _normalize_plan(item: dict) -> dict:
-        return {
-            "type": item["type"],
-            "count": int(item["count"]),
-            "difficulty": item["difficulty"],
-            "score_each": float(item["score_each"]),
-        }
+        return BlueprintQuestionPlan.model_validate(item).model_dump()
 
     @staticmethod
     def _blueprint_issues(plan: list[dict], total_score: float) -> list[dict]:
@@ -1371,7 +1687,42 @@ class ExamService:
 
     @staticmethod
     def _draft_score(questions: list[dict]) -> float:
-        return sum((item.get("question") or {}).get("score", 0) for item in questions)
+        return sum(
+            (item.get("question") or {}).get("score", item.get("planned_score", 0))
+            for item in questions
+        )
+
+    def _cancel_draft_generation(self, subject_id: str, draft_id: str) -> None:
+        _, draft = self.learning._find_owned("exam_drafts", draft_id)
+        timestamp = self._now()
+        questions = [
+            {
+                **item,
+                "status": "failed",
+                "error": {
+                    "code": "QUESTION_GENERATION_FAILED",
+                    "message": "题目生成已取消",
+                    "retryable": True,
+                    "details": {},
+                },
+                "updated_at": timestamp,
+            }
+            if item["status"] in {"queued", "generating"} else item
+            for item in draft["questions"]
+        ]
+        status = "editable" if any(item.get("question") for item in questions) else "failed"
+        self._replace(subject_id, "exam_drafts", draft_id, {
+            **draft,
+            "status": status,
+            "questions": questions,
+            "updated_at": timestamp,
+        })
+
+    def _ensure_draft_operation_idle(self, draft: dict, question_id: str | None = None) -> None:
+        if self.operations.has_active("exam-draft", draft["id"]):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "试卷草稿仍有生成任务")
+        if question_id and self.operations.has_active("question", question_id):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "该题仍有生成任务")
 
     def _append(self, subject_id: str, collection: str, resource: dict) -> None:
         self.learning._mutate(subject_id, lambda data: {**data, collection: [*data.get(collection, []), resource]})

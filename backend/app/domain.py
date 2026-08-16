@@ -463,9 +463,17 @@ def _delete_model(workspace: dict, action: dict, now) -> dict:
     timestamp = _now_ms(now())
     subjects = []
     for subject in workspace.get("subjects", []):
-        chat = subject.get("data", {}).get("chat")
-        if chat and chat.get("active_model_id") == existing["id"]:
-            data = {**subject.get("data", {}), "chat": {**chat, "active_model_id": None}}
+        data = subject.get("data", {})
+        old_chat = data.get("chat")
+        learning_chat = data.get("learning_chat")
+        changed = False
+        if old_chat and old_chat.get("active_model_id") == existing["id"]:
+            data = {**data, "chat": {**old_chat, "active_model_id": None}}
+            changed = True
+        if learning_chat and learning_chat.get("active_model_id") == existing["id"]:
+            data = {**data, "learning_chat": {**learning_chat, "active_model_id": None}}
+            changed = True
+        if changed:
             subjects.append({**subject, "data": data, "updated_at": timestamp})
         else:
             subjects.append(subject)
@@ -922,6 +930,9 @@ def _normalize_subjects(raw_subjects, timestamp: int, model_ids: set[str]) -> tu
             data["chat"] = _normalize_chat(data["chat"], timestamp)
             if data["chat"].get("active_model_id") and data["chat"]["active_model_id"] not in model_ids:
                 data["chat"] = {**data["chat"], "active_model_id": None}
+        learning_chat = data.get("learning_chat")
+        if isinstance(learning_chat, dict) and learning_chat.get("active_model_id") not in model_ids:
+            data["learning_chat"] = {**learning_chat, "active_model_id": None}
         data = _recover_processing_sources(data, timestamp)
         subjects.append(
             {

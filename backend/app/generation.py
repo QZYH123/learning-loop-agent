@@ -85,7 +85,7 @@ class GenerationManager:
                     "type": CHAT_FAIL,
                     "subject_id": subject_id,
                     "message_id": request["assistant_message_id"],
-                    "error_code": "MODEL_REQUEST_FAILED",
+                    "error_code": "MODEL_INVALID_RESPONSE",
                     "error_message": str(exc) or "模型请求失败",
                 }
             )

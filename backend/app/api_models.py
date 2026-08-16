@@ -3,22 +3,109 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PatchModel(ContractModel):
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"minProperties": 1})
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_at_least_one_field(cls, value):
+        if isinstance(value, dict) and not value:
+            raise ValueError("at least one field is required")
+        return value
+
+
+ErrorCode = Literal[
+    "VALIDATION_FAILED",
+    "RESOURCE_NOT_FOUND",
+    "RESOURCE_CONFLICT",
+    "STORAGE_WRITE_FAILED",
+    "INTERNAL_ERROR",
+    "SUBJECT_NAME_DUPLICATE",
+    "SUBJECT_DELETE_BLOCKED",
+    "MODEL_SERVICE_DUPLICATE",
+    "MODEL_CAPABILITY_UNSUPPORTED",
+    "MODEL_VERIFICATION_FAILED",
+    "MODEL_CONNECTION_FAILED",
+    "MODEL_HTTP_ERROR",
+    "MODEL_INVALID_RESPONSE",
+    "SOURCE_TYPE_UNSUPPORTED",
+    "SOURCE_TOO_LARGE",
+    "SOURCE_PROCESSING_FAILED",
+    "SOURCE_UNAVAILABLE",
+    "SOURCE_VERSION_MISMATCH",
+    "CHAT_GENERATION_IN_PROGRESS",
+    "CHAT_MODEL_NOT_SELECTED",
+    "CHAT_SELECTION_INVALID",
+    "GROUNDING_SOURCE_REQUIRED",
+    "IMAGE_INPUT_UNSUPPORTED",
+    "BLUEPRINT_CONSTRAINT_CONFLICT",
+    "BLUEPRINT_NOT_CONFIRMED",
+    "QUESTION_STRUCTURE_INVALID",
+    "QUESTION_EVIDENCE_INCOMPLETE",
+    "QUESTION_GENERATION_FAILED",
+    "EXAM_VERSION_CONFLICT",
+    "REVISION_PROPOSAL_INVALID",
+    "REVISION_PROPOSAL_STALE",
+    "ATTEMPT_STATE_CONFLICT",
+    "ANSWER_TYPE_MISMATCH",
+    "ANSWER_NOT_AVAILABLE",
+    "FEEDBACK_UNAVAILABLE",
+    "EXPORT_ANSWER_NOT_ALLOWED",
+    "EXPORT_NOT_READY",
+    "OPERATION_IN_PROGRESS",
+    "OPERATION_NOT_CANCELABLE",
+    "EVALUATION_ALREADY_RUNNING",
+]
+
+ResourceType = Literal[
+    "model",
+    "source",
+    "source-version",
+    "chat-message",
+    "learning-artifact",
+    "exam-blueprint",
+    "exam-draft",
+    "question",
+    "exam",
+    "attempt",
+    "feedback",
+    "revision-proposal",
+    "export",
+    "evaluation-run",
+]
+
+OperationKind = Literal[
+    "model-verification",
+    "source-parsing",
+    "chat-generation",
+    "crash-course-generation",
+    "blueprint-parsing",
+    "exam-generation",
+    "question-retry",
+    "subjective-feedback",
+    "attempt-grading",
+    "exam-revision",
+    "exam-export",
+    "evaluation",
+]
+
+
 class ApiError(ContractModel):
-    code: str
-    message: str
+    code: ErrorCode
+    message: str = Field(min_length=1)
     retryable: bool
     details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ErrorResponse(ContractModel):
-    ok: Literal[False] = False
+    ok: Literal[False]
     error: ApiError
 
 
@@ -27,19 +114,19 @@ class Health(ContractModel):
 
 
 class ResourceRef(ContractModel):
-    type: str
+    type: ResourceType
     id: str
 
 
 class OperationProgress(ContractModel):
-    completed: int
-    total: int | None
+    completed: int = Field(ge=0)
+    total: int | None = Field(ge=0)
     message: str | None
 
 
 class Operation(ContractModel):
     id: str
-    kind: str
+    kind: OperationKind
     status: Literal["queued", "running", "succeeded", "failed", "canceling", "canceled"]
     cancelable: bool
     progress: OperationProgress
@@ -60,12 +147,12 @@ class OperationAccepted(ContractModel):
 
 class SourceVersionSummary(ContractModel):
     id: str
-    number: int
+    number: int = Field(ge=1)
     status: Literal["processing", "ready", "failed", "unavailable"]
     content_hash: str
     mime_type: str
-    size_bytes: int
-    anchor_count: int
+    size_bytes: int = Field(ge=0)
+    anchor_count: int = Field(ge=0)
     cache_hit: bool
     created_at: int
     processed_at: int | None
@@ -75,8 +162,8 @@ class SourceAsset(ContractModel):
     id: str
     kind: Literal["image", "attachment"]
     mime_type: str
-    width: int | None = None
-    height: int | None = None
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
     alt: str | None = None
 
 
@@ -93,7 +180,7 @@ class Source(ContractModel):
     media_kind: Literal["markdown", "text", "pdf", "docx", "pptx", "image"]
     status: Literal["processing", "ready", "failed", "unavailable"]
     current_version: SourceVersionSummary | None
-    version_count: int
+    version_count: int = Field(ge=0)
     failure: ApiError | None = None
     created_at: int
     updated_at: int
@@ -109,11 +196,11 @@ class SourceVersionList(ContractModel):
 
 class SourceLocation(ContractModel):
     kind: Literal["section", "paragraph", "page", "table", "slide", "image"]
-    label: str
+    label: str = Field(min_length=1)
     section_path: list[str] = Field(default_factory=list)
-    page: int | None = None
-    slide: int | None = None
-    block_index: int | None = None
+    page: int | None = Field(default=None, ge=1)
+    slide: int | None = Field(default=None, ge=1)
+    block_index: int | None = Field(default=None, ge=0)
     asset_id: str | None = None
 
 
@@ -172,7 +259,7 @@ class Citation(ContractModel):
     anchor_id: str
     source_name: str
     location: SourceLocation
-    excerpt: str | None = None
+    excerpt: str | None = Field(default=None, max_length=1000)
     available: bool
 
 
@@ -181,16 +268,16 @@ class SubjectInput(ContractModel):
 
 
 class SubjectCounts(ContractModel):
-    sources: int
-    artifacts: int
-    exam_blueprints: int
-    exam_drafts: int
-    exams: int
+    sources: int = Field(ge=0)
+    artifacts: int = Field(ge=0)
+    exam_blueprints: int = Field(ge=0)
+    exam_drafts: int = Field(ge=0)
+    exams: int = Field(ge=0)
 
 
 class Subject(ContractModel):
     id: str
-    name: str
+    name: str = Field(min_length=1, max_length=80)
     active: bool
     counts: SubjectCounts
     created_at: int
@@ -202,7 +289,7 @@ class SubjectList(ContractModel):
 
 
 class ModelCapabilitiesInput(ContractModel):
-    text: Literal[True] = True
+    text: Literal[True]
     vision: bool
 
 
@@ -223,15 +310,15 @@ class ModelServiceInput(ContractModel):
     model: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str = Field(default="", max_length=2000)
-    capabilities: ModelCapabilitiesInput | None = None
+    capabilities: ModelCapabilitiesInput = None
 
 
-class ModelServicePatch(ContractModel):
-    provider: str | None = Field(default=None, min_length=1, max_length=60)
-    model: str | None = Field(default=None, min_length=1, max_length=120)
-    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+class ModelServicePatch(PatchModel):
+    provider: str = Field(default=None, min_length=1, max_length=60)
+    model: str = Field(default=None, min_length=1, max_length=120)
+    base_url: str = Field(default=None, min_length=1, max_length=500)
     api_key: str | None = Field(default=None, max_length=2000)
-    capabilities: ModelCapabilitiesInput | None = None
+    capabilities: ModelCapabilitiesInput = None
 
 
 class ModelService(ContractModel):
@@ -251,18 +338,25 @@ class ModelServiceList(ContractModel):
 
 
 class Workspace(ContractModel):
-    schema_version: int
+    schema_version: int = Field(ge=1)
     active_subject_id: str | None
     subjects: list[Subject]
     models: list[ModelService]
     load_issue: str | None = None
 
 
-class ChatConfigPatch(ContractModel):
-    learning_mode: Literal["chat", "socratic", "crash-course"] | None = None
+class ChatConfigPatch(PatchModel):
+    learning_mode: Literal["chat", "socratic", "crash-course"] = None
     goal: str | None = Field(default=None, max_length=2000)
-    grounding_mode: Literal["strict", "general-knowledge", "supplemental"] | None = None
-    source_version_ids: list[str] | None = None
+    grounding_mode: Literal["strict", "general-knowledge", "supplemental"] = None
+    source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
+
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
 
 
 class ChatModelInput(ContractModel):
@@ -275,9 +369,22 @@ class SelectionContext(ContractModel):
     version_id: str
     question_id: str | None = None
     block_id: str | None = None
-    citation_ids: list[str] = Field(default_factory=list)
-    selected_text: str | None = Field(default=None, min_length=1, max_length=20000)
-    image_asset: AssetReference | None = None
+    citation_ids: list[str] = Field(default_factory=list, json_schema_extra={"uniqueItems": True})
+    selected_text: str = Field(default=None, min_length=1, max_length=20000)
+    image_asset: AssetReference = None
+
+    @field_validator("citation_ids")
+    @classmethod
+    def citations_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("citation_ids must contain unique items")
+        return value
+
+    @model_validator(mode="after")
+    def require_exactly_one_selection(self):
+        if (self.selected_text is None) == (self.image_asset is None):
+            raise ValueError("exactly one of selected_text and image_asset is required")
+        return self
 
 
 ChatMessageIntent = Literal[
@@ -294,11 +401,24 @@ ChatMessageIntent = Literal[
 
 class ChatMessageInput(ContractModel):
     intent: ChatMessageIntent
-    content: str | None = Field(default=None, min_length=1, max_length=20000)
+    content: str = Field(default=None, min_length=1, max_length=20000)
     model_id: str | None = None
-    source_version_ids: list[str] | None = None
-    grounding_mode: Literal["strict", "general-knowledge", "supplemental"] | None = None
-    selection: SelectionContext | None = None
+    source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
+    grounding_mode: Literal["strict", "general-knowledge", "supplemental"] = None
+    selection: SelectionContext = None
+
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
+
+    @model_validator(mode="after")
+    def require_content_for_text_intents(self):
+        if self.intent in {"ask", "attempt", "restate", "self-test-answer"} and self.content is None:
+            raise ValueError(f"content is required for intent {self.intent}")
+        return self
 
 
 class ModelSnapshot(ContractModel):
@@ -328,7 +448,7 @@ class ChatMessage(ContractModel):
 
 class SocraticState(ContractModel):
     stage: Literal["awaiting-attempt", "hinting", "correcting", "awaiting-restate", "self-testing", "completed"]
-    hint_level: int
+    hint_level: int = Field(ge=0, le=3)
     answer_revealed: bool
 
 
@@ -349,9 +469,16 @@ class Chat(ContractModel):
 
 class CrashCourseInput(ContractModel):
     goal: str = Field(min_length=1, max_length=2000)
-    source_version_ids: list[str] = Field(min_length=1)
+    source_version_ids: list[str] = Field(min_length=1, json_schema_extra={"uniqueItems": True})
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
     model_id: str | None = None
+
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
 
 
 class SelfTest(ContractModel):
@@ -361,7 +488,7 @@ class SelfTest(ContractModel):
 
 class KnowledgePoint(ContractModel):
     id: str
-    title: str
+    title: str = Field(min_length=1)
     explanation: list[ContentBlock]
     key_points: list[str]
     citations: list[Citation]

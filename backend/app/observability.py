@@ -98,7 +98,7 @@ class EvaluationSuiteList(ContractModel):
 
 class EvaluationRunInput(ContractModel):
     model_id: str
-    sample_ids: set[str] | None = None
+    sample_ids: set[str] = None
 
 
 class AggregateOrchestrationMetrics(ContractModel):
@@ -195,13 +195,12 @@ class ObservabilityService:
             existing_names = {item["name"] for item in run["stages"]}
             missing = [name for name in DEFAULT_STAGES.get(operation["kind"], []) if name not in existing_names]
             non_model_elapsed = max(0, outer_elapsed - sum(item["model_wait_ms"] for item in run["stages"]))
+            recorded_failure = any(item["status"] in {"failed", "canceled"} for item in run["stages"])
             for index, name in enumerate(missing):
                 elapsed = non_model_elapsed if index == 0 else 0
-                stage_status = (
-                    "skipped"
-                    if name == "model-call" and final_status == "succeeded"
-                    else "succeeded" if final_status == "succeeded" else final_status
-                )
+                # 未被编排代码记录的阶段没有执行证据；成功运行也只能标为 skipped。
+                # 失败/取消时，第一个缺失阶段是最接近故障点的阶段，其余阶段尚未执行。
+                stage_status = "skipped" if final_status == "succeeded" or recorded_failure or index > 0 else final_status
                 run["stages"].append(self._stage(
                     name,
                     stage_status,
@@ -508,12 +507,31 @@ class EvaluationService:
                     model_started = time.perf_counter()
                     try:
                         response = await self.model_client.chat(profile, [{"role": "user", "content": sample["prompt"]}])
-                        result = json.loads(response["text"])
-                        score = self._score_sample(sample, result)
-                    except (ModelClientError, json.JSONDecodeError, TypeError, ValueError, KeyError):
-                        validation_failures += 1
+                    except ModelClientError:
+                        model_wait_ms += max(0, round((time.perf_counter() - model_started) * 1000))
                         score = 0.0
-                    model_wait_ms += max(0, round((time.perf_counter() - model_started) * 1000))
+                    else:
+                        model_wait_ms += max(0, round((time.perf_counter() - model_started) * 1000))
+                        validation_started = time.perf_counter()
+                        try:
+                            result = json.loads(response["text"])
+                            score = self._score_sample(sample, result)
+                        except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+                            validation_failures += 1
+                            self.operations.record_stage(
+                                "structure-validation",
+                                status="failed",
+                                outer_elapsed_ms=max(0, round((time.perf_counter() - validation_started) * 1000)),
+                                counters={"validation_failures": 1},
+                            )
+                            score = 0.0
+                        else:
+                            self.operations.record_stage(
+                                "structure-validation",
+                                status="succeeded",
+                                outer_elapsed_ms=max(0, round((time.perf_counter() - validation_started) * 1000)),
+                                counters={},
+                            )
                     scores.setdefault(sample["check"], []).append(score)
                     self.operations.update_progress(operation_holder["id"], index, len(samples), f"已评估 {index}/{len(samples)} 个固定样例")
 

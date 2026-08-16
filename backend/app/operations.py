@@ -94,7 +94,9 @@ class OperationManager:
                 status="canceling",
                 progress={**record["progress"], "message": "正在取消"},
             )
-            task.cancel()
+            # 让刚创建的任务先进入 _run，再投递取消；否则 asyncio 会在协程
+            # 首次执行前直接取消任务，生命周期记录会永久停在 canceling。
+            task.get_loop().call_soon_threadsafe(task.cancel)
             return copy.deepcopy(self._records[operation_id])
 
     def has_active(self, resource_type: str, resource_id: str) -> bool:

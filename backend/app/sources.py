@@ -222,10 +222,15 @@ class SourceLibrary:
         async def worker():
             await asyncio.sleep(0)
             try:
-                self._write_atomic(self.files_dir / f"{version['id']}.bin", content)
+                await asyncio.to_thread(self._write_atomic, self.files_dir / f"{version['id']}.bin", content)
                 parse_started_at = int(time.time() * 1000)
                 parse_started = time.perf_counter()
-                cached, parsed = self._parse_with_cache(version["content_hash"], content, media_kind)
+                cached, parsed = await asyncio.to_thread(
+                    self._parse_with_cache,
+                    version["content_hash"],
+                    content,
+                    media_kind,
+                )
                 self.operations.record_stage(
                     "parse",
                     started_at=parse_started_at,
@@ -233,7 +238,7 @@ class SourceLibrary:
                     outer_elapsed_ms=max(0, round((time.perf_counter() - parse_started) * 1000)),
                     counters={"cache_hits": int(cached), "cache_misses": int(not cached)},
                 )
-                index = self._materialize_version_index(source, version, parsed)
+                index = await asyncio.to_thread(self._materialize_version_index, source, version, parsed)
                 result = self.workspace_service.dispatch(
                     {
                         "type": SOURCE_COMPLETE_VERSION,
@@ -435,7 +440,7 @@ class SourceLibrary:
             raise SourceLibraryError(422, "VALIDATION_FAILED", "上传文件缺少文件名")
         source_format = SOURCE_FORMATS.get(Path(safe_filename).suffix.lower())
         if not source_format:
-            raise SourceLibraryError(415, "SOURCE_TYPE_UNSUPPORTED", "当前只支持 Markdown 和 TXT 资料")
+            raise SourceLibraryError(415, "SOURCE_TYPE_UNSUPPORTED", "支持 Markdown、TXT、PDF、DOCX、PPTX 和常见图片格式")
         name = (display_name or safe_filename).strip()
         if not name or len(name) > 255:
             raise SourceLibraryError(422, "VALIDATION_FAILED", "资料名称长度必须为 1 到 255 个字符")

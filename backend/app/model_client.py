@@ -12,7 +12,7 @@ from .operations import CURRENT_OPERATION_ID
 
 
 class ModelClientError(Exception):
-    def __init__(self, message: str, code: str = "MODEL_REQUEST_FAILED", status: int | None = None):
+    def __init__(self, message: str, code: str = "MODEL_INVALID_RESPONSE", status: int | None = None):
         super().__init__(message)
         self.code = code
         self.status = status

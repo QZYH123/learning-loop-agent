@@ -7,6 +7,8 @@ import json
 import time
 import uuid
 
+from pydantic import ValidationError
+
 from .domain import (
     MODEL_ADD,
     MODEL_CHECKING,
@@ -19,6 +21,7 @@ from .domain import (
     SUBJECT_RENAME,
     SUBJECT_SWITCH,
 )
+from .api_models import LearningArtifact
 from .model_client import ModelClientError
 from .operations import OperationFailure
 from .sources import SourceLibraryError
@@ -130,6 +133,13 @@ class LearningService:
         async def worker():
             try:
                 response = await self.model_client.validate(profile)
+            except asyncio.CancelledError:
+                self.workspace_service.dispatch({
+                    "type": MODEL_SET_VALIDATION,
+                    "model_id": model_id,
+                    "validation": {"status": "unknown", "message": "模型服务验证已取消"},
+                })
+                raise
             except ModelClientError as exc:
                 self.workspace_service.dispatch({
                     "type": MODEL_SET_VALIDATION,
@@ -169,7 +179,8 @@ class LearningService:
         self._validate_source_scope(subject_id, source_ids, grounding_mode)
         updated = {**chat, **patch, "source_version_ids": source_ids, "updated_at": self._now()}
         learning_mode = updated["learning_mode"]
-        if learning_mode == "socratic" and updated.get("socratic_state") is None:
+        goal_changed = "goal" in patch and patch.get("goal") != chat.get("goal")
+        if learning_mode == "socratic" and (updated.get("socratic_state") is None or goal_changed):
             updated["socratic_state"] = {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
         elif learning_mode != "socratic":
             updated["socratic_state"] = None
@@ -199,6 +210,8 @@ class LearningService:
             raise LearningError(409, "RESOURCE_CONFLICT", "当前学习方式不支持该学习动作")
         if chat["learning_mode"] == "socratic" and intent == "start" and not chat.get("goal"):
             raise LearningError(409, "RESOURCE_CONFLICT", "请先配置苏格拉底式学习目标")
+        if chat["learning_mode"] == "socratic":
+            self._validate_socratic_intent(chat.get("socratic_state"), intent)
 
         model_id = payload.get("model_id") or chat.get("active_model_id")
         if not model_id:
@@ -208,18 +221,25 @@ class LearningService:
         grounding_mode = payload.get("grounding_mode", chat["grounding_mode"])
         self._validate_source_scope(subject_id, source_ids, grounding_mode)
         selection = payload.get("selection")
+        selection_context = None
         if selection:
             if self.selection_resolver is None:
                 raise LearningError(409, "CHAT_SELECTION_INVALID", "选区问答服务尚未就绪")
-            selection = self.selection_resolver(selection)
+            resolved = self.selection_resolver(selection, include_context=True)
+            if isinstance(resolved, tuple):
+                selection, selection_context = resolved
+            else:
+                selection = resolved
             payload = {**payload, "selection": selection}
         if selection and selection.get("image_asset") and not profile.get("capabilities", {}).get("vision"):
             raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入，请更换具备视觉能力的模型")
-        if not profile.get("capabilities", {}).get("vision") and any(
-            self.source_library.get_version(version_id).get("assets")
-            for version_id in source_ids
-        ):
-            raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "选定资料包含图片，请更换具备视觉能力的模型")
+        if not profile.get("capabilities", {}).get("vision"):
+            image_only = any(
+                self.source_library.get_source(self.source_library.get_version(version_id)["source_id"])["media_kind"] == "image"
+                for version_id in source_ids
+            )
+            if image_only:
+                raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "选定资料是图片，请更换具备视觉能力的模型")
 
         timestamp = self._now()
         content = payload.get("content") or self._intent_label(intent)
@@ -285,7 +305,7 @@ class LearningService:
                     )
                     return {"type": "chat-message", "id": assistant_id}
                 citations = [*selected_citations, *[self.source_library.create_citation(anchor) for anchor in anchors]]
-                messages = self._grounded_messages(chat, payload, anchors, grounding_mode, profile)
+                messages = self._grounded_messages(chat, payload, anchors, grounding_mode, profile, selection_context)
                 response = await self.model_client.chat(profile, messages)
                 result = (
                     "general-knowledge"
@@ -338,53 +358,70 @@ class LearningService:
 
         async def worker():
             try:
-                anchors = self.source_library.retrieve(payload["goal"], payload["source_version_ids"], limit=20)
-                if not anchors:
+                grounding_mode = payload["grounding_mode"]
+                anchors = [] if grounding_mode == "general-knowledge" else self.source_library.retrieve(
+                    payload["goal"], payload["source_version_ids"], limit=20
+                )
+                if grounding_mode == "strict" and not anchors:
+                    self._record_structure_stage(self._now(), time.perf_counter(), "failed")
                     raise OperationFailure("GROUNDING_SOURCE_REQUIRED", "选定资料未覆盖该学习目标")
                 citations = [self.source_library.create_citation(anchor) for anchor in anchors]
-                context = self._anchors_text(anchors)
+                instruction = {
+                    "strict": "请严格根据以下资料生成章节速成目录，只返回 JSON；资料未覆盖的内容不要补全。",
+                    "supplemental": "请先依据资料生成章节速成目录；资料未覆盖处可以补充通用知识，并明确标注补充内容。",
+                    "general-knowledge": "请使用通用知识生成章节速成目录，并明确说明未依据用户资料。",
+                }[grounding_mode]
+                prompt = (
+                    f"{instruction}\n"
+                    '{"title":"...","knowledge_points":[{"title":"...","explanation":"...",'
+                    '"key_points":["..."],"self_test":{"prompt":"...","answer":"..."}}]}。\n\n'
+                    f"学习目标：{payload['goal']}\n\n资料片段：\n{self._anchors_text(anchors) or '无'}"
+                )
                 response = await self.model_client.chat(profile, [{
                     "role": "user",
-                    "content": (
-                        "请严格根据以下资料生成章节速成目录，只返回 JSON："
-                        '{"title":"...","knowledge_points":[{"title":"...","explanation":"...",'
-                        '"key_points":["..."],"self_test":{"prompt":"...","answer":"..."}}]}。\n\n'
-                        f"学习目标：{payload['goal']}\n\n资料片段：\n{context}"
-                    ),
+                    "content": self._grounded_content(prompt, anchors, profile),
                 }])
-                result = json.loads(response["text"])
-                points = result["knowledge_points"]
-                if not isinstance(points, list) or not points:
-                    raise ValueError("knowledge_points is required")
-                timestamp = self._now()
-                artifact = {
-                    "id": artifact_id,
-                    "subject_id": subject_id,
-                    "type": "crash-course-outline",
-                    "title": result.get("title") or payload["goal"],
-                    "chat_id": chat["id"],
-                    "source_version_ids": payload["source_version_ids"],
-                    "grounding_mode": payload["grounding_mode"],
-                    "knowledge_points": [
-                        {
-                            "id": self._ids("knowledge-point"),
-                            "title": point["title"],
-                            "explanation": [self._markdown_block(point["explanation"])],
-                            "key_points": point["key_points"],
-                            "citations": citations,
-                            "self_test": {
-                                "prompt": [self._markdown_block(point["self_test"]["prompt"])],
-                                "answer": [self._markdown_block(point["self_test"]["answer"])],
-                            },
-                        }
-                        for point in points
-                    ],
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                }
+                validation_started_at = self._now()
+                validation_started = time.perf_counter()
+                try:
+                    result = json.loads(response["text"])
+                    points = result["knowledge_points"]
+                    if not isinstance(points, list) or not points:
+                        raise ValueError("knowledge_points is required")
+                    timestamp = self._now()
+                    artifact = {
+                        "id": artifact_id,
+                        "subject_id": subject_id,
+                        "type": "crash-course-outline",
+                        "title": result.get("title") or payload["goal"],
+                        "chat_id": chat["id"],
+                        "source_version_ids": payload["source_version_ids"],
+                        "grounding_mode": payload["grounding_mode"],
+                        "knowledge_points": [
+                            {
+                                "id": self._ids("knowledge-point"),
+                                "title": point["title"],
+                                "explanation": [self._markdown_block(point["explanation"])],
+                                "key_points": point["key_points"],
+                                "citations": citations,
+                                "self_test": {
+                                    "prompt": [self._markdown_block(point["self_test"]["prompt"])],
+                                    "answer": [self._markdown_block(point["self_test"]["answer"])],
+                                },
+                            }
+                            for point in points
+                        ],
+                        "created_at": timestamp,
+                        "updated_at": timestamp,
+                    }
+                    artifact = LearningArtifact.model_validate(artifact).model_dump()
+                except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    self._record_structure_stage(validation_started_at, validation_started, "failed")
+                    raise
+                self._record_structure_stage(validation_started_at, validation_started, "succeeded")
                 self._append_artifact(subject_id, artifact)
                 return resource
-            except (ModelClientError, SourceLibraryError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            except (LearningError, ModelClientError, SourceLibraryError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 code = getattr(exc, "code", "MODEL_INVALID_RESPONSE")
                 raise OperationFailure(code, str(exc)) from exc
 
@@ -491,10 +528,12 @@ class LearningService:
         for version_id in version_ids:
             try:
                 version = self.source_library.get_version(version_id)
+                if version["status"] != "ready":
+                    raise LearningError(409, "SOURCE_UNAVAILABLE", "选定资料尚不可用于检索")
                 source = self.source_library.get_source(version["source_id"])
             except SourceLibraryError as exc:
                 raise LearningError(exc.status_code, exc.code, str(exc)) from exc
-            if source["subject_id"] != subject_id or version["status"] != "ready":
+            if source["subject_id"] != subject_id:
                 raise LearningError(409, "SOURCE_UNAVAILABLE", "选定资料不属于当前科目或尚不可用")
 
     def _set_chat(self, subject_id: str, chat: dict) -> None:
@@ -545,7 +584,15 @@ class LearningService:
             "completed_at": timestamp,
         })
 
-    def _grounded_messages(self, chat: dict, payload: dict, anchors: list[dict], grounding_mode: str, profile: dict) -> list[dict]:
+    def _grounded_messages(
+        self,
+        chat: dict,
+        payload: dict,
+        anchors: list[dict],
+        grounding_mode: str,
+        profile: dict,
+        selection_context: str | None = None,
+    ) -> list[dict]:
         intent = payload["intent"]
         instruction = "请回答用户问题。"
         if grounding_mode == "strict":
@@ -557,17 +604,28 @@ class LearningService:
         context = self._anchors_text(anchors)
         question = payload.get("content") or self._intent_label(intent)
         selection = payload.get("selection") or {}
-        selection_context = selection.get("selected_text") or ""
+        selected_text = selection.get("selected_text") or ""
         citation_context = []
         for citation_id in selection.get("citation_ids", []):
             citation = self.source_library.get_citation(citation_id)
             citation_context.append(f"[{citation['location']['label']}] {citation.get('excerpt') or ''}")
         text = (
             f"{instruction}\n\n资料片段：\n{context or '无'}"
-            f"\n\n选区：\n{selection_context or '无'}"
+            f"\n\n选区：\n{selected_text or '无'}"
+            f"\n\n所在题目或文档上下文：\n{selection_context or '无'}"
             f"\n\n选区来源：\n{'\n'.join(citation_context) or '无'}"
             f"\n\n用户输入：{question}"
         )
+        content = self._grounded_content(text, anchors, profile, selection)
+        return [*self._conversation_messages(chat), {"role": "user", "content": content}]
+
+    def _grounded_content(
+        self,
+        text: str,
+        anchors: list[dict],
+        profile: dict,
+        selection: dict | None = None,
+    ) -> str | list[dict]:
         content: str | list[dict] = text
         image_blocks = [
             block
@@ -575,7 +633,7 @@ class LearningService:
             for block in anchor.get("content", [])
             if block.get("type") == "image"
         ]
-        if selection.get("image_asset"):
+        if selection and selection.get("image_asset"):
             image_blocks.append({"asset": selection["image_asset"]})
         if image_blocks:
             if not profile.get("capabilities", {}).get("vision"):
@@ -587,7 +645,38 @@ class LearningService:
                 encoded = base64.b64encode(raw).decode("ascii")
                 parts.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}})
             content = parts
-        return [{"role": "user", "content": content}]
+        return content
+
+    def _conversation_messages(self, chat: dict) -> list[dict]:
+        messages = chat.get("messages", [])
+        if len(messages) >= 2 and messages[-1].get("role") == "assistant" and messages[-1].get("status") in {"queued", "generating"}:
+            messages = messages[:-2]
+        result = []
+        for message in messages:
+            if message.get("role") not in {"user", "assistant", "system"}:
+                continue
+            if message.get("status") not in {"complete", "stopped"}:
+                continue
+            text = self._content_text(message.get("content", []))
+            if text:
+                result.append({"role": message["role"], "content": text})
+        return result
+
+    @staticmethod
+    def _content_text(blocks: list[dict]) -> str:
+        parts = []
+        for block in blocks or []:
+            kind = block.get("type")
+            if kind == "markdown":
+                parts.append(block.get("text", ""))
+            elif kind == "latex":
+                parts.append(block.get("latex", ""))
+            elif kind == "table":
+                parts.append(" | ".join(block.get("columns", [])))
+                parts.extend(" | ".join(row) for row in block.get("rows", []))
+            elif kind == "image":
+                parts.append(block.get("alt") or block.get("caption") or "[图片]")
+        return "\n".join(item for item in parts if item)
 
     @staticmethod
     def _anchors_text(anchors: list[dict]) -> str:
@@ -618,8 +707,24 @@ class LearningService:
         return " 一次只推进一个需要用户回应的学习动作。"
 
     @staticmethod
+    def _validate_socratic_intent(state: dict | None, intent: str) -> None:
+        stage = (state or {}).get("stage", "awaiting-attempt")
+        allowed = {
+            "awaiting-attempt": {"start", "attempt", "request-hint", "request-explanation"},
+            "hinting": {"attempt", "request-hint", "request-explanation"},
+            "correcting": {"restate", "request-explanation", "request-hint"},
+            "awaiting-restate": {"restate", "request-self-test", "request-explanation"},
+            "self-testing": {"self-test-answer"},
+            "completed": {"start"},
+        }
+        if intent not in allowed.get(stage, set()):
+            raise LearningError(409, "RESOURCE_CONFLICT", "当前苏格拉底学习阶段不支持该动作")
+
+    @staticmethod
     def _next_socratic_state(state: dict | None, intent: str) -> dict:
         current = state or {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
+        if intent == "start":
+            return {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
         if intent == "request-hint":
             return {**current, "stage": "hinting", "hint_level": min(current["hint_level"] + 1, 3)}
         if intent == "request-explanation":
@@ -676,6 +781,16 @@ class LearningService:
     def _markdown_block(self, text: str) -> dict:
         return {"id": self._ids("block"), "type": "markdown", "text": text}
 
+    def _record_structure_stage(self, started_at: int, started: float, status: str) -> None:
+        self.operations.record_stage(
+            "structure-validation",
+            status=status,
+            started_at=started_at,
+            completed_at=self._now(),
+            outer_elapsed_ms=max(0, round((time.perf_counter() - started) * 1000)),
+            counters={"validation_failures": int(status == "failed")},
+        )
+
     @staticmethod
     def _intent_label(intent: str) -> str:
         return {
@@ -698,6 +813,20 @@ class LearningService:
             code = "RESOURCE_NOT_FOUND"
         elif code.endswith("DUPLICATE"):
             status = duplicate_status
+        elif code in {
+            "SUBJECT_NAME_REQUIRED",
+            "SUBJECT_NAME_TOO_LONG",
+            "MODEL_BASE_URL_REQUIRED",
+            "MODEL_BASE_URL_INVALID",
+            "MODEL_PROVIDER_REQUIRED",
+            "MODEL_PROVIDER_TOO_LONG",
+            "MODEL_NAME_REQUIRED",
+            "MODEL_NAME_TOO_LONG",
+            "MODEL_API_KEY_INVALID",
+            "MODEL_VALIDATION_INVALID",
+        }:
+            status = 422
+            code = "VALIDATION_FAILED"
         else:
             status = 409
         raise LearningError(status, code, error.get("message", "操作失败"))
