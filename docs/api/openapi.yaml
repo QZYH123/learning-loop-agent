@@ -1425,6 +1425,531 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/EvaluationRun}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /api/source-versions/{version_id}/anchors:
+    parameters:
+      - $ref: '#/components/parameters/SourceVersionId'
+    get:
+      operationId: listSourceVersionAnchors
+      tags: [Sources]
+      summary: 列出资料版本锚点
+      description: 前端读取来源位置必须使用此接口，不从资料版本摘要猜测 anchors 字段。
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 资料版本锚点
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SourceAnchorList}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Conflict'}
+
+  /api/subjects/{subject_id}/sessions:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listSessions
+      tags: [Chat]
+      summary: 列出科目空间的学习会话
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 会话列表和当前会话
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SessionList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createSession
+      tags: [Chat]
+      summary: 创建学习会话
+      description: 未明确提供资料版本时不会自动绑定当前资料库的新版本。
+      x-tickets: ['16']
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/SessionInput}
+      responses:
+        '201':
+          description: 已创建会话
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Session}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/sessions/{session_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      operationId: getSession
+      tags: [Chat]
+      summary: 读取学习会话
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 学习会话
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Session}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateSession
+      tags: [Chat]
+      summary: 重命名学习会话
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/SessionPatch}
+      responses:
+        '200':
+          description: 已更新会话
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Session}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteSession
+      tags: [Chat]
+      summary: 删除学习会话
+      description: 不删除科目资料库或 AI 资料文档。
+      x-tickets: ['16']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/sessions/{session_id}/activate:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      operationId: activateSession
+      tags: [Chat]
+      summary: 切换当前学习会话
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 已激活会话
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Session}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/sessions/{session_id}/sources:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      operationId: listSessionSources
+      tags: [Chat, Sources]
+      summary: 列出会话固定的资料版本
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 会话资料范围
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SessionSourceList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: addSessionSource
+      tags: [Chat, Sources]
+      summary: 显式加入资料版本
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/SessionSourceInput}
+      responses:
+        '201':
+          description: 已加入会话
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SessionSource}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/sessions/{session_id}/sources/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+      - $ref: '#/components/parameters/SourceVersionId'
+    patch:
+      operationId: updateSessionSource
+      tags: [Chat, Sources]
+      summary: 显式更新会话资料版本
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/SessionSourcePatch}
+      responses:
+        '200':
+          description: 已更新会话资料
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/SessionSource}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+    delete:
+      operationId: removeSessionSource
+      tags: [Chat, Sources]
+      summary: 移除会话资料版本
+      x-tickets: ['16']
+      responses:
+        '204': {description: 已移除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/subjects/{subject_id}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    post:
+      operationId: uploadChatAttachment
+      tags: [Chat, Sources]
+      summary: 上传消息级临时附件
+      description: 临时附件只属于消息，不进入资料库或会话资料范围；过期后不可引用。
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary}
+      responses:
+        '201':
+          description: 已上传临时附件
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/TempAttachment}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/Conflict'}
+        '415': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/attachments/{attachment_id}:
+    parameters:
+      - $ref: '#/components/parameters/AttachmentId'
+    get:
+      operationId: getChatAttachment
+      tags: [Chat]
+      summary: 读取临时附件元数据
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 临时附件
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/TempAttachment}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Conflict'}
+    delete:
+      operationId: deleteChatAttachment
+      tags: [Chat]
+      summary: 删除临时附件
+      x-tickets: ['16']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/attachments/{attachment_id}/file:
+    parameters:
+      - $ref: '#/components/parameters/AttachmentId'
+    get:
+      operationId: downloadChatAttachment
+      tags: [Chat]
+      summary: 读取临时附件内容
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 附件字节
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Conflict'}
+
+  /api/models/current:
+    get:
+      operationId: getCurrentModel
+      tags: [Models]
+      summary: 读取当前模型选择
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 当前模型选择
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: ./schemas.yaml#/components/schemas/ModelService
+                  - type: 'null'
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      operationId: selectCurrentModel
+      tags: [Models]
+      summary: 设置当前模型选择
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ModelSelection}
+      responses:
+        '200':
+          description: 已选择模型
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ModelService}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/models/discover:
+    post:
+      operationId: discoverModels
+      tags: [Models]
+      summary: 手动发现模型列表
+      description: 仅支持 OpenAI-compatible /models 和 Ollama /api/tags；失败时仍允许手动填写模型名。
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ModelDiscoveryInput}
+      responses:
+        '200':
+          description: 规范化模型列表或可手动兜底的错误
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ModelDiscoveryResponse}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/{subject_id}/documents:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listAiDocuments
+      tags: [Artifacts]
+      summary: 列出 AI 生成的资料文档
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: AI 资料文档列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createAiDocument
+      tags: [Artifacts, Operations]
+      summary: 明确要求 AI 创建资料文档
+      description: 普通聊天消息不会自动创建资料文档；用户上传资料保持只读。
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentCreateInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/documents/{document_id}:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentId'
+    get:
+      operationId: getAiDocument
+      tags: [Artifacts]
+      summary: 读取 AI 资料文档
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: AI 资料文档
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/documents/{document_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentId'
+    get:
+      operationId: listAiDocumentVersions
+      tags: [Artifacts]
+      summary: 列出 AI 资料文档版本
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 文档版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: ./schemas.yaml#/components/schemas/AiDocumentVersion}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/documents/{document_id}/versions/{version_id}/restore:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentId'
+      - $ref: '#/components/parameters/AiDocumentVersionId'
+    post:
+      operationId: restoreAiDocumentVersion
+      tags: [Artifacts]
+      summary: 恢复 AI 资料文档版本
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 已创建恢复后的新版本
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/documents/{document_id}/revision-proposals:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentId'
+    get:
+      operationId: listAiDocumentRevisionProposals
+      tags: [Artifacts]
+      summary: 列出 AI 资料文档修改提案
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 修改提案列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentRevisionProposalList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createAiDocumentRevisionProposal
+      tags: [Artifacts, Operations]
+      summary: 生成 AI 资料文档修改提案
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentRevisionInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/document-revision-proposals/{proposal_id}:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentProposalId'
+    get:
+      operationId: getAiDocumentRevisionProposal
+      tags: [Artifacts]
+      summary: 读取 AI 资料文档修改提案
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 修改提案
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentRevisionProposal}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/document-revision-proposals/{proposal_id}/apply:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentProposalId'
+    post:
+      operationId: applyAiDocumentRevisionProposal
+      tags: [Artifacts]
+      summary: 应用 AI 资料文档修改提案
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 已应用并创建新版本
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/document-revision-proposals/{proposal_id}/discard:
+    parameters:
+      - $ref: '#/components/parameters/AiDocumentProposalId'
+    post:
+      operationId: discardAiDocumentRevisionProposal
+      tags: [Artifacts]
+      summary: 放弃 AI 资料文档修改提案
+      x-tickets: ['16']
+      responses:
+        '204': {description: 已放弃}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      operationId: completeAttempt
+      tags: [Attempts]
+      summary: 标记用户完成作答
+      description: 只改变用户完成状态，不触发批改；未答题时仍允许完成并返回提醒详情。
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 已标记完成
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/continue:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      operationId: continueAttempt
+      tags: [Attempts]
+      summary: 继续已完成的作答
+      x-tickets: ['16']
+      responses:
+        '200':
+          description: 已恢复可编辑状态
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Attempt}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/attempts/{attempt_id}/grade:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      operationId: submitAttemptGrading
+      tags: [Attempts, Operations]
+      summary: 独立提交批改
+      description: 批改不会替用户标记完成；批改失败可重试且不改变完成状态。
+      x-tickets: ['16']
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+
 components:
   parameters:
     SubjectId: {name: subject_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
@@ -1448,6 +1973,11 @@ components:
     RunId: {name: run_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
     SuiteId: {name: suite_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
     EvaluationRunId: {name: evaluation_run_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    SessionId: {name: session_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AttachmentId: {name: attachment_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AiDocumentId: {name: document_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AiDocumentVersionId: {name: version_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
+    AiDocumentProposalId: {name: proposal_id, in: path, required: true, schema: {$ref: ./schemas.yaml#/components/schemas/Identifier}}
 
   responses:
     OperationAccepted:

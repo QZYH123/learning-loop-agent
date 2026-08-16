@@ -9,7 +9,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = PROJECT_ROOT / "docs" / "api" / "openapi.yaml"
 SCHEMAS_PATH = PROJECT_ROOT / "docs" / "api" / "schemas.yaml"
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
-TICKETS = {f"{number:02d}" for number in range(1, 16)}
+# Issue 16 is contracted before its implementation lands. The implementation
+# parity gate is expanded to it in the backend follow-up commit.
+TICKETS = {f"{number:02d}" for number in range(1, 17)}
+IMPLEMENTED_TICKETS = {f"{number:02d}" for number in range(1, 16)}
 
 
 def load_contract():
@@ -128,6 +131,21 @@ def test_sensitive_and_answer_visibility_boundaries_are_explicit():
     assert definitions["RenderQuestion"]["properties"]["solution"]["description"] == "edition=questions 时必须为 null。"
 
 
+def test_issue16_contract_covers_context_lifecycle_boundaries():
+    openapi, schemas = load_contract()
+    paths = openapi["paths"]
+    assert "/api/subjects/{subject_id}/sessions" in paths
+    assert "/api/sessions/{session_id}/sources/{version_id}" in paths
+    assert "/api/subjects/{subject_id}/attachments" in paths
+    assert "/api/models/discover" in paths
+    assert "/api/subjects/{subject_id}/documents" in paths
+    assert "/api/attempts/{attempt_id}/complete" in paths
+    assert "source_context" in schemas["components"]["schemas"]["ChatMessage"]["properties"]
+    assert "only_use_specified_sources" in schemas["components"]["schemas"]["ChatMessageInput"]["properties"]
+    assert "completion_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
+    assert "grading_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
+
+
 def test_error_codes_are_closed_and_upper_snake_case():
     _, schemas = load_contract()
     error_codes = schemas["components"]["schemas"]["ErrorCode"]["enum"]
@@ -156,7 +174,7 @@ def test_implemented_backend_operations_match_target_contract(tmp_path):
     implemented = create_app(data_dir=tmp_path).openapi()
 
     for path, method, target_operation in iter_operations(target):
-        if not set(target_operation["x-tickets"]) & {f"{number:02d}" for number in range(1, 16)}:
+        if not set(target_operation["x-tickets"]) & IMPLEMENTED_TICKETS:
             continue
         actual_operation = implemented["paths"][path][method]
         assert actual_operation["operationId"] == target_operation["operationId"]

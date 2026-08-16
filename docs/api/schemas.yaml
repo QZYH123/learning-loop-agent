@@ -89,6 +89,21 @@ components:
         - OPERATION_IN_PROGRESS
         - OPERATION_NOT_CANCELABLE
         - EVALUATION_ALREADY_RUNNING
+        - SESSION_NAME_DUPLICATE
+        - SESSION_NOT_FOUND
+        - SESSION_SOURCE_CONFLICT
+        - ATTACHMENT_NOT_FOUND
+        - ATTACHMENT_EXPIRED
+        - MODEL_DISCOVERY_UNSUPPORTED
+        - MODEL_DISCOVERY_FAILED
+        - MODEL_MANUAL_NAME_REQUIRED
+        - AI_DOCUMENT_READ_ONLY
+        - AI_DOCUMENT_VERSION_CONFLICT
+        - AI_DOCUMENT_PROPOSAL_INVALID
+        - ATTEMPT_ALREADY_COMPLETED
+        - ATTEMPT_NOT_COMPLETED
+        - GRADING_ALREADY_REQUESTED
+        - GRADING_STALE
 
     ResourceRef:
       type: object
@@ -97,7 +112,7 @@ components:
       properties:
         type:
           type: string
-          enum: [model, source, source-version, chat-message, learning-artifact, exam-blueprint, exam-draft, question, exam, attempt, feedback, revision-proposal, export, evaluation-run]
+          enum: [model, source, source-version, chat-message, learning-artifact, exam-blueprint, exam-draft, question, exam, attempt, feedback, revision-proposal, export, evaluation-run, session, attachment, ai-document, ai-document-version, ai-document-proposal]
         id: {$ref: '#/components/schemas/Identifier'}
 
     OperationKind:
@@ -470,6 +485,15 @@ components:
           items: {$ref: '#/components/schemas/ContentBlock'}
         available: {type: boolean}
 
+    SourceAnchorList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SourceAnchor'}
+
     Citation:
       type: object
       additionalProperties: false
@@ -642,6 +666,19 @@ components:
           items: {$ref: '#/components/schemas/Identifier'}
         grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
         selection: {$ref: '#/components/schemas/SelectionContext'}
+        focused_source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+          description: "@资料点名的重点资料版本；只影响检索排序。"
+        only_use_specified_sources:
+          type: boolean
+          default: false
+          description: 显式为 true 时仅检索本请求指定的资料版本。
+        attachment_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
       allOf:
         - if:
             properties:
@@ -652,7 +689,7 @@ components:
     ChatMessage:
       type: object
       additionalProperties: false
-      required: [id, role, intent, content, status, citations, created_at, updated_at]
+      required: [id, role, intent, content, status, citations, source_context, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         role: {type: string, enum: [user, assistant, system]}
@@ -671,6 +708,7 @@ components:
         citations:
           type: array
           items: {$ref: '#/components/schemas/Citation'}
+        source_context: {$ref: '#/components/schemas/MessageSourceContext'}
         selection:
           anyOf:
             - $ref: '#/components/schemas/SelectionContext'
@@ -730,6 +768,287 @@ components:
           items: {$ref: '#/components/schemas/Identifier'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    MessageSourceContext:
+      type: object
+      additionalProperties: false
+      required: [source_version_ids, focused_source_version_ids, only_use_specified_sources, grounding_mode, citations, attachment_ids]
+      description: 消息发送时的资料、依据模式、选区和临时附件快照；不会随会话配置变化。
+      properties:
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        focused_source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        only_use_specified_sources: {type: boolean}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        selection:
+          anyOf:
+            - $ref: '#/components/schemas/SelectionContext'
+            - type: 'null'
+        attachment_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        citations:
+          type: array
+          items: {$ref: '#/components/schemas/Citation'}
+
+    SessionInput:
+      type: object
+      additionalProperties: false
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+      example: {title: '高等数学复习', source_version_ids: []}
+
+    SessionPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+
+    Session:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, title, active, source_version_ids, messages, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        title: {type: string}
+        active: {type: boolean}
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        messages:
+          type: array
+          items: {$ref: '#/components/schemas/ChatMessage'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    SessionList:
+      type: object
+      additionalProperties: false
+      required: [items, active_session_id]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Session'}
+        active_session_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
+    SessionSource:
+      type: object
+      additionalProperties: false
+      required: [source_version_id, source_id, source_name, version_number, status, added_at]
+      properties:
+        source_version_id: {$ref: '#/components/schemas/Identifier'}
+        source_id: {$ref: '#/components/schemas/Identifier'}
+        source_name: {type: string}
+        version_number: {type: integer, minimum: 1}
+        status: {type: string, enum: [processing, ready, failed, unavailable]}
+        added_at: {$ref: '#/components/schemas/Timestamp'}
+
+    SessionSourceList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SessionSource'}
+
+    SessionSourceInput:
+      type: object
+      additionalProperties: false
+      required: [source_version_id]
+      properties:
+        source_version_id: {$ref: '#/components/schemas/Identifier'}
+
+    SessionSourcePatch:
+      type: object
+      additionalProperties: false
+      required: [source_version_id]
+      properties:
+        source_version_id: {$ref: '#/components/schemas/Identifier'}
+
+    TempAttachment:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, file_name, mime_type, size_bytes, status, vision_required, created_at, expires_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        file_name: {type: string}
+        mime_type: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        status: {type: string, enum: [ready, failed, expired]}
+        vision_required: {type: boolean}
+        failure:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        expires_at: {$ref: '#/components/schemas/Timestamp'}
+
+    ModelDiscoveryInput:
+      type: object
+      additionalProperties: false
+      required: [provider, base_url]
+      properties:
+        provider: {type: string, enum: [openai-compatible, ollama]}
+        base_url: {type: string, format: uri}
+        api_key: {type: string, writeOnly: true, maxLength: 2000}
+        manual_model_name: {type: [string, 'null'], maxLength: 120}
+
+    DiscoveredModel:
+      type: object
+      additionalProperties: false
+      required: [name, capabilities]
+      properties:
+        name: {type: string}
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [text, vision]
+          properties:
+            text: {type: boolean}
+            vision: {type: boolean}
+
+    ModelDiscoveryResponse:
+      type: object
+      additionalProperties: false
+      required: [provider, models, manual_model_allowed]
+      properties:
+        provider: {type: string, enum: [openai-compatible, ollama]}
+        models:
+          type: array
+          items: {$ref: '#/components/schemas/DiscoveredModel'}
+        manual_model_allowed: {type: boolean}
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+
+    ModelSelection:
+      type: object
+      additionalProperties: false
+      required: [model_id]
+      properties:
+        model_id: {$ref: '#/components/schemas/Identifier'}
+
+    AiDocumentCreateInput:
+      type: object
+      additionalProperties: false
+      required: [title, instruction, source_version_ids, grounding_mode, model_id]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        instruction: {type: string, minLength: 1, maxLength: 10000}
+        source_version_ids:
+          type: array
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/Identifier'}
+        grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
+        model_id: {$ref: '#/components/schemas/Identifier'}
+
+    AiDocumentVersion:
+      type: object
+      additionalProperties: false
+      required: [id, document_id, number, status, content, upstream_citations, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        document_id: {$ref: '#/components/schemas/Identifier'}
+        number: {type: integer, minimum: 1}
+        status: {type: string, enum: [ready, unavailable]}
+        content:
+          type: array
+          items: {$ref: '#/components/schemas/ContentBlock'}
+        upstream_citations:
+          type: array
+          items: {$ref: '#/components/schemas/Citation'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+
+    AiDocument:
+      type: object
+      additionalProperties: false
+      required: [id, subject_id, title, generated_by, current_version_id, versions, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        subject_id: {$ref: '#/components/schemas/Identifier'}
+        title: {type: string}
+        generated_by: {type: string, const: ai}
+        current_version_id: {$ref: '#/components/schemas/Identifier'}
+        versions:
+          type: array
+          items: {$ref: '#/components/schemas/AiDocumentVersion'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    AiDocumentList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AiDocument'}
+
+    AiDocumentRevisionInput:
+      type: object
+      additionalProperties: false
+      required: [base_version_id, instruction, model_id]
+      properties:
+        base_version_id: {$ref: '#/components/schemas/Identifier'}
+        instruction: {type: string, minLength: 1, maxLength: 10000}
+        model_id: {$ref: '#/components/schemas/Identifier'}
+
+    AiDocumentChange:
+      type: object
+      additionalProperties: false
+      required: [path, operation, before, after]
+      properties:
+        path: {type: string, minLength: 1}
+        operation: {type: string, enum: [add, replace, remove]}
+        before: {}
+        after: {}
+
+    AiDocumentRevisionProposal:
+      type: object
+      additionalProperties: false
+      required: [id, document_id, base_version_id, status, changes, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        document_id: {$ref: '#/components/schemas/Identifier'}
+        base_version_id: {$ref: '#/components/schemas/Identifier'}
+        status: {type: string, enum: [generating, ready, applied, discarded, failed]}
+        changes:
+          type: array
+          items: {$ref: '#/components/schemas/AiDocumentChange'}
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    AiDocumentRevisionProposalList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AiDocumentRevisionProposal'}
 
     CrashCourseInput:
       type: object
@@ -1484,13 +1803,15 @@ components:
     Attempt:
       type: object
       additionalProperties: false
-      required: [id, exam_id, exam_version_id, mode, status, show_suggested_score, paper, answers, feedback, created_at, updated_at]
+      required: [id, exam_id, exam_version_id, mode, status, completion_status, grading_status, show_suggested_score, paper, answers, feedback, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         exam_id: {$ref: '#/components/schemas/Identifier'}
         exam_version_id: {$ref: '#/components/schemas/Identifier'}
         mode: {$ref: '#/components/schemas/AttemptMode'}
         status: {type: string, enum: [in-progress, paused, grading, submitted]}
+        completion_status: {type: string, enum: [in-progress, completed]}
+        grading_status: {type: string, enum: [not-requested, queued, grading, completed, failed, stale]}
         show_suggested_score: {type: boolean}
         paper: {$ref: '#/components/schemas/AttemptPaper'}
         answers:
@@ -1505,6 +1826,14 @@ components:
         submitted_at:
           anyOf:
             - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        completed_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        grading_error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
             - type: 'null'
 
     AttemptReviewItem:
