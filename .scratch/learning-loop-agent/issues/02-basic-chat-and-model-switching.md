@@ -16,5 +16,5 @@
 
 ## Comments
 
-- 实现（技术栈已调整为 FastAPI 后端 + 浏览器前端）：`backend/app/domain.py` 管理模型服务和按科目隔离的会话状态；`backend/app/model_client.py` 调用 OpenAI-compatible `/chat/completions`；`backend/app/generation.py` 编排验证、发送、失败和停止；`frontend/` 提供模型配置、验证、模型切换和问答界面。
+- 实现（技术栈已调整为 FastAPI 后端 + 浏览器前端）：`backend/app/domain.py` 管理模型服务和按科目隔离的会话状态；`backend/app/model_client.py` 当前只调用 OpenAI-compatible `/chat/completions`；`backend/app/generation.py` 编排验证、发送、失败和停止；`frontend/` 提供模型配置、验证、模型切换和问答界面。Responses 与原生 Ollama 格式由 Issue 19 补齐。
 - 测试：`pytest -q`（15 项全部通过），假模型覆盖验证、消息、切换、停止和本地恢复。

@@ -46,6 +46,10 @@ pytest -q
 机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 17–21 复用 Ticket 16
 定义的工作流契约，后端已按目标契约实现。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
 
+四个一级工作区的目标布局、自然语言操作、右侧上下文按钮和文案规则见
+[`docs/frontend-workspaces.md`](docs/frontend-workspaces.md)。学习对话风格与模型 `api_format`
+是后续契约修订项，旧状态机和当前单一 Chat Completions 客户端不是最终产品边界。
+
 ## 结构
 
 ```

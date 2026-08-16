@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-契约版本为 `0.1.0`，状态为 `target`。Ticket 01–16 的后端路径、operationId、成功状态码和响应模型已与目标契约对齐，除既有能力外覆盖多学习会话、消息资料上下文、临时附件、模型发现与当前选择、AI 资料文档版本/修改提案、作答完成与批改分离；对应前端尚未全部接入。
+当前静态契约版本为 `0.1.0`，后端路径、operationId、成功状态码和响应模型已实现。产品路线随后修订了两处边界：学习方式改为不带阶段门禁的 `chat_style`，模型配置增加显式 `api_format`。Issue 06、07、19 实现时必须先把这些变更升级到下一版静态 OpenAPI，再同步后端和前端；旧 `learning_mode`、`SocraticState` 和阶段型 `intent` 只能作为迁移期兼容字段，不能继续指导新前端。
 
 主要迁移差异：
 
@@ -73,11 +73,35 @@ queued -> running -> succeeded
 
 ### 学习会话
 
-每个科目空间可以保存多个独立学习会话，并通过 `/sessions` 管理当前会话和固定资料版本；`/chat` 继续兼容原有学习方式。`learning_mode` 为 `chat`、`socratic` 或 `crash-course`；切换学习方式、资料范围和依据模式不会删除会话记录，也不会隐式切换模型。
+每个科目空间可以保存多个独立学习会话，并通过 `/sessions` 管理当前会话和固定资料版本；`/chat` 是原有单会话兼容入口。目标契约使用 `chat_style: default | socratic | crash-course` 表示提示或工具指令风格；切换风格、资料范围和依据模式不会删除会话记录，也不会隐式切换模型。
 
-苏格拉底式学习通过消息 `intent` 推进：配置目标后以 `start` 开始，再使用尝试、请求提示、直接解释、复述和自测等动作。`SocraticState` 明确当前阶段、提示层级和答案是否已展示，客户端不得仅凭文案猜测流程状态。
+普通消息始终使用自然语言 `content`，可以在会话上配置默认 `chat_style`，也可以单条消息临时覆盖。苏格拉底和章节速成不再通过 `intent`、提示层级或应用状态机推进；模型结合提示风格和完整对话决定如何追问、解释或总结。旧阶段字段在迁移完成后废弃。
 
 选区问答使用 `SelectionContext` 固定到文档版本、题目和内容块。创建消息只更新会话和异步任务，不具备修改试卷的副作用。
+
+下一版目标请求形状：
+
+```json
+{
+  "content": "先别直接给答案，引导我想明白这一步",
+  "chat_style": "socratic",
+  "source_version_ids": ["source-version-1"],
+  "selection": null,
+  "attachment_ids": []
+}
+```
+
+### 模型 API 格式
+
+模型配置中的展示名称 `provider` 与调用协议 `api_format` 是两个字段。`api_format` 是封闭枚举：
+
+- `openai-chat-completions`：调用 `/chat/completions`，发送 `messages`，读取 `choices[0].message.content`。
+- `openai-responses`：调用 `/responses`，发送 `instructions` 与 `input`，从类型化 `output` 中提取文本；默认 `store: false`。
+- `ollama`：调用原生 `/api/chat`，通过 `/api/tags` 发现模型。
+
+OpenAI 两种格式都通过 `/models` 发现模型。实现不得根据 `provider`、模型名或 Base URL 猜格式。下一版 `ModelServiceInput`、`ModelServicePatch`、`ModelService`、`ModelSnapshot` 和临时发现请求都必须包含 `api_format`；既有配置迁移默认 `openai-chat-completions`。
+
+Responses 的请求、输出、结构化结果和流式事件不能复用 Chat Completions 解析器，具体差异以 [OpenAI 官方迁移文档](https://developers.openai.com/api/docs/guides/migrate-to-responses) 为准。
 
 ### 试卷
 
@@ -112,8 +136,8 @@ queued -> running -> succeeded
 | 03 | 用户资料、资料版本、解析缓存 |
 | 04 | 资料范围、依据模式、来源引用 |
 | 05 | 富文档、图片资源、模型视觉能力 |
-| 06 | 苏格拉底式状态与消息 intent |
-| 07 | 章节速成和学习产物 |
+| 06 | 苏格拉底对话风格与旧状态机迁移 |
+| 07 | 章节速成对话风格与明确保存文档 |
 | 08 | 组卷蓝图解析、编辑和确认 |
 | 09 | 增量组卷、固定题型、单题重试和发布 |
 | 10 | 试卷作答、模式、暂停恢复和客观题反馈 |
@@ -123,6 +147,8 @@ queued -> running -> succeeded
 | 14 | 统一渲染文档和导出副本 |
 | 15 | 编排运行和固定评估 |
 | 16 | 多会话、消息上下文、临时附件、模型发现、AI 资料文档和作答状态 |
+| 18 | 四工作区共享会话与上下文布局 |
+| 19 | 显式模型 API 格式和适配器 |
 
 ## 实现顺序
 
