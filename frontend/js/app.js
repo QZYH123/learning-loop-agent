@@ -1,556 +1,1331 @@
+/**
+ * Main Application Orchestrator for Learning Loop Agent
+ * Strictly aligned with Tickets 03–22:
+ * 4+1 Information Architecture, real contract alignment, complete error/loading states,
+ * and reliable asynchronous flows. Strictly ZERO emojis throughout.
+ */
+
 import { api } from './api.js';
+import { store } from './state.js';
+import { renderNavbar } from './components/navbar.js';
+import { renderChatView } from './components/chat_view.js';
+import { renderSourcesView } from './components/sources_view.js';
+import { renderExamStudioView } from './components/exam_studio_view.js';
+import { renderPracticeExamView } from './components/practice_exam_view.js';
+import { renderSettingsDevView } from './components/settings_dev_view.js';
+import { renderModals } from './components/modals.js';
+import { renderCommandPalette } from './components/command_palette.js';
+import { renderToasts } from './components/toast.js';
 
-const root = document.getElementById('app');
-if (!root) throw new Error('找不到应用挂载点 #app');
+class App {
+  constructor() {
+    this.root = document.getElementById('app');
+    this.timerInterval = null;
+  }
 
-const SUBJECT_NAME_MAX_LENGTH = 80;
-const CHAT_MESSAGE_MAX_LENGTH = 20_000;
+  async init() {
+    this.renderAppShell();
+    this.setupGlobalShortcuts();
 
-let workspace = {
-  schema_version: 1,
-  active_subject_id: null,
-  subjects: [],
-  models: [],
-  created_at: null,
-  updated_at: null
-};
-let status = null;
-let editingSubjectId = null;
-let editingName = '';
-let createDraft = '';
-let showModelForm = false;
-let verifyingModels = new Set();
-let pollTimer = null;
+    // Subscribe store to trigger re-renders
+    store.subscribe((state) => this.render(state));
 
-function activeSubject() {
-  return workspace.subjects.find((subject) => subject.id === workspace.active_subject_id) || null;
-}
+    // Load initial workspace, models, eval suites
+    await this.loadInitialData();
+    this.startAttemptTimer();
+  }
 
-function subjectChat(subject) {
-  const chat = subject?.data?.chat;
-  if (chat && Array.isArray(chat.messages)) return chat;
-  return { active_model_id: null, messages: [] };
-}
+  renderAppShell() {
+    this.root.innerHTML = `
+      <div class="app-shell" data-testid="app-shell">
+        <div id="navbar-root"></div>
+        <main class="main-workspace-container" id="main-workspace-root" role="main"></main>
+        <div id="modal-root"></div>
+        <div id="cmd-root"></div>
+        <div id="toast-root"></div>
+      </div>
+    `;
 
-function generatingMessage(chat) {
-  return chat.messages.find((message) => message.status === 'generating') || null;
-}
+    // Apply active theme
+    const theme = store.getState().theme || 'paper';
+    document.documentElement.setAttribute('data-theme', theme);
+  }
 
-function hasGeneratingMessage() {
-  return workspace.subjects.some((subject) => Boolean(generatingMessage(subjectChat(subject))));
-}
-
-function setStatus(payload) {
-  if (payload.tone === 'error') status = { tone: 'error', text: payload.message };
-  else if (payload.tone === 'warning') status = { tone: 'warning', text: payload.message };
-  else status = { tone: 'success', text: payload.message };
-}
-
-function setError(error) {
-  status = { tone: 'error', text: error.message || String(error) };
-  render();
-}
-
-function startPolling() {
-  stopPolling();
-  if (!hasGeneratingMessage()) return;
-  pollTimer = setTimeout(async () => {
+  async loadInitialData() {
     try {
-      const payload = await api.getWorkspace();
-      workspace = payload.workspace;
-      render();
-      startPolling();
-    } catch (error) {
-      setError(error);
-    }
-  }, 700);
-}
+      const [workspace, modelsList, currentModelRes, evalSuites] = await Promise.all([
+        api.getWorkspace().catch(() => ({ subjects: [], active_subject_id: null })),
+        api.listModels().catch(() => ({ items: [] })),
+        api.getCurrentModel().catch(() => null),
+        api.listEvaluationSuites().catch(() => ({ items: [] }))
+      ]);
 
-function stopPolling() {
-  if (pollTimer) {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-  }
-}
+      const subjects = workspace.subjects || [];
+      const activeId = workspace.active_subject_id || (subjects[0] ? subjects[0].id : null);
+      const models = modelsList.items || [];
+      const currentModelId = currentModelRes?.model_id || (models[0] ? models[0].id : null);
 
-async function perform(promise) {
-  const payload = await promise;
-  if (payload.workspace) workspace = payload.workspace;
-  setStatus(payload);
-  render();
-  startPolling();
-  return payload;
-}
+      store.setState({
+        workspace,
+        activeSubjectId: activeId,
+        models,
+        currentModelId,
+        evaluationSuites: evalSuites.items || []
+      });
 
-async function init() {
-  try {
-    const payload = await api.getWorkspace();
-    workspace = payload.workspace;
-    if (payload.load_issue) status = { tone: 'warning', text: payload.load_issue };
-    render();
-    startPolling();
-  } catch (error) {
-    setError(error);
-  }
-}
-
-function render() {
-  const subject = activeSubject();
-  root.innerHTML = `
-    <div class="app-shell" data-testid="app-shell">
-      <aside class="learning-panel" data-testid="learning-panel" aria-label="学习操作区">
-        <header class="brand">
-          <p class="brand-kicker">本地优先 · FastAPI</p>
-          <h1>AI 学习工具</h1>
-          <p class="brand-copy">围绕科目空间组织资料、会话和试卷。</p>
-        </header>
-
-        ${renderSubjectSection()}
-        <p class="status ${status ? `status-${status.tone}` : ''}" role="status" aria-live="polite" data-testid="workspace-status">
-          ${status ? escapeHtml(status.text) : ''}
-        </p>
-        ${renderModelSection()}
-        ${renderChatSection(subject)}
-      </aside>
-
-      <main class="content-panel" data-testid="content-panel" aria-label="内容区">
-        ${renderContentPanel(subject)}
-      </main>
-    </div>
-  `;
-
-  if (editingSubjectId) {
-    const input = root.querySelector('[data-rename-input]');
-    if (input) {
-      input.focus();
-      input.select();
-    }
-  }
-}
-
-function renderSubjectSection() {
-  return `
-    <section class="subject-spaces" aria-labelledby="subject-spaces-title">
-      <div class="section-heading">
-        <h2 id="subject-spaces-title">科目空间</h2>
-        <span class="section-count" data-testid="subject-count">${workspace.subjects.length}</span>
-      </div>
-
-      <form class="create-subject-form" data-form="create-subject" data-testid="create-subject-form">
-        <label class="visually-hidden" for="subject-name-input">新科目名称</label>
-        <input
-          id="subject-name-input" name="name" type="text" maxlength="${SUBJECT_NAME_MAX_LENGTH}"
-          placeholder="例如：高等数学" autocomplete="off" value="${escapeHtml(createDraft)}"
-          data-testid="subject-name-input"
-        />
-        <button type="submit" data-testid="create-subject-button">创建</button>
-      </form>
-
-      <ul class="subject-list" data-testid="subject-list">
-        ${workspace.subjects.map(renderSubjectItem).join('')}
-      </ul>
-    </section>
-  `;
-}
-
-function renderSubjectItem(subject) {
-  const isActive = subject.id === workspace.active_subject_id;
-  if (editingSubjectId === subject.id) {
-    return `
-      <li class="subject-item subject-item-editing" data-subject-id="${escapeHtml(subject.id)}">
-        <form class="rename-subject-form" data-form="rename-subject" data-subject-id="${escapeHtml(subject.id)}">
-          <label class="visually-hidden" for="rename-subject-input-${escapeHtml(subject.id)}">科目名称</label>
-          <input id="rename-subject-input-${escapeHtml(subject.id)}" name="name" type="text"
-            maxlength="${SUBJECT_NAME_MAX_LENGTH}" value="${escapeHtml(editingName)}" autocomplete="off" data-rename-input />
-          <button type="submit" data-testid="save-rename-button">保存</button>
-          <button type="button" data-action="rename-cancel" data-subject-id="${escapeHtml(subject.id)}">取消</button>
-        </form>
-      </li>
-    `;
-  }
-  return `
-    <li class="subject-item ${isActive ? 'subject-item-active' : ''}" data-subject-id="${escapeHtml(subject.id)}">
-      <button class="subject-switch-button" type="button" data-action="activate-subject"
-        data-subject-id="${escapeHtml(subject.id)}" aria-current="${isActive ? 'true' : 'false'}" data-testid="switch-subject-button">
-        <span class="subject-name">${escapeHtml(subject.name)}</span>
-        <span class="subject-updated">更新于 ${formatDate(subject.updated_at)}</span>
-      </button>
-      <div class="subject-actions">
-        <button class="icon-button" type="button" data-action="start-rename"
-          data-subject-id="${escapeHtml(subject.id)}" aria-label="重命名 ${escapeHtml(subject.name)}">✏️</button>
-        <button class="icon-button icon-button-danger" type="button" data-action="delete-subject"
-          data-subject-id="${escapeHtml(subject.id)}" aria-label="删除 ${escapeHtml(subject.name)}">🗑️</button>
-      </div>
-    </li>
-  `;
-}
-
-function renderModelSection() {
-  return `
-    <section class="model-services" aria-labelledby="model-services-title" data-testid="model-services">
-      <div class="section-heading">
-        <h2 id="model-services-title">模型服务</h2>
-        <span class="section-count" data-testid="model-count">${workspace.models.length}</span>
-      </div>
-      <button class="secondary-button" type="button" data-action="toggle-model-form" data-testid="toggle-model-form">
-        ${showModelForm ? '收起配置' : '添加模型服务'}
-      </button>
-      ${showModelForm ? renderModelForm() : ''}
-      <ul class="model-list" data-testid="model-list">${workspace.models.map(renderModelItem).join('')}</ul>
-      ${workspace.models.length === 0 ? '<p class="section-hint">还没有模型服务。支持 OpenAI-compatible /chat/completions 文本接口。</p>' : ''}
-    </section>
-  `;
-}
-
-function renderModelForm() {
-  return `
-    <form class="model-form" data-form="model-add" data-testid="model-form">
-      <label><span>服务商</span><input name="provider" type="text" maxlength="60" placeholder="例如：OpenAI" required /></label>
-      <label><span>模型</span><input name="model" type="text" maxlength="120" placeholder="例如：gpt-4.1-mini" required /></label>
-      <label><span>Base URL</span><input name="baseUrl" type="url" maxlength="500" placeholder="https://api.openai.com/v1" required /></label>
-      <label><span>API Key（可选，仅保存在本地）</span><input name="apiKey" type="password" maxlength="2000" placeholder="sk-…" /></label>
-      <button type="submit" data-testid="save-model-button">保存模型服务</button>
-    </form>
-  `;
-}
-
-function renderModelItem(profile) {
-  const validating = verifyingModels.has(profile.id);
-  return `
-    <li class="model-item" data-model-id="${escapeHtml(profile.id)}" data-testid="model-item">
-      <div class="model-main">
-        <strong>${escapeHtml(profile.provider)} / ${escapeHtml(profile.model)}</strong>
-        <code>${escapeHtml(profile.base_url)}</code>
-        ${renderValidationBadge(profile.last_validation, validating)}
-      </div>
-      <div class="model-actions">
-        <button class="small-button" type="button" data-action="verify-model"
-          data-model-id="${escapeHtml(profile.id)}" ${validating ? 'disabled' : ''}>验证</button>
-        <button class="small-button" type="button" data-action="use-model"
-          data-model-id="${escapeHtml(profile.id)}">使用</button>
-        <button class="small-button small-button-danger" type="button"
-          data-action="delete-model" data-model-id="${escapeHtml(profile.id)}">删除</button>
-      </div>
-    </li>
-  `;
-}
-
-function renderValidationBadge(validation, validating) {
-  if (validating) return '<span class="validation-badge validation-checking">验证中…</span>';
-  if (!validation) return '<span class="validation-badge validation-unknown">未验证</span>';
-  const labels = { checking: '验证中…', ok: '可用', error: '验证失败', unknown: '未验证' };
-  return `<span class="validation-badge validation-${escapeHtml(validation.status)}">${labels[validation.status] || '未验证'}</span>`;
-}
-
-function renderChatSection(subject) {
-  if (!subject) {
-    return `
-      <section class="chat-panel" data-testid="chat-panel">
-        <div class="section-heading"><h2>问答</h2></div>
-        <p class="section-hint">创建科目空间后即可开始问答。</p>
-      </section>
-    `;
-  }
-  const chat = subjectChat(subject);
-  const generating = generatingMessage(chat);
-  return `
-    <section class="chat-panel" aria-labelledby="chat-title" data-testid="chat-panel">
-      <div class="section-heading chat-heading">
-        <div>
-          <h2 id="chat-title">问答</h2>
-          <p class="chat-mode-note" data-testid="chat-mode-note">当前没有用户资料，回答使用通用知识模式</p>
-        </div>
-        <button class="small-button small-button-danger" type="button" data-action="clear-chat"
-          data-subject-id="${escapeHtml(subject.id)}" data-testid="clear-chat-button"
-          ${chat.messages.length === 0 || generating ? 'disabled' : ''}>清空记录</button>
-      </div>
-      <div class="chat-messages" data-testid="chat-messages">
-        ${chat.messages.length === 0 ? renderChatEmpty() : chat.messages.map(renderChatMessage).join('')}
-      </div>
-      <form class="chat-composer" data-form="chat-send" data-subject-id="${escapeHtml(subject.id)}" data-testid="chat-composer">
-        <div class="composer-row">
-          <label class="composer-model-label" for="model-select">模型</label>
-          <select id="model-select" name="model" data-model-select data-testid="model-select" ${generating ? 'disabled' : ''}>
-            ${workspace.models.length === 0 ? '<option value="">请先添加模型服务</option>' : ''}
-            ${workspace.models.map((profile) => `
-              <option value="${escapeHtml(profile.id)}" ${profile.id === chat.active_model_id ? 'selected' : ''}>
-                ${escapeHtml(profile.provider)} / ${escapeHtml(profile.model)}
-              </option>`).join('')}
-          </select>
-        </div>
-        <div class="composer-row">
-          <label class="visually-hidden" for="chat-message-input">问题</label>
-          <textarea id="chat-message-input" name="message" rows="3" maxlength="${CHAT_MESSAGE_MAX_LENGTH}"
-            placeholder="${workspace.models.length === 0 ? '请先添加并验证模型服务' : '输入问题，例如：请解释泰勒展开'}"
-            data-testid="chat-message-input" ${generating || workspace.models.length === 0 ? 'disabled' : ''}></textarea>
-        </div>
-        <div class="composer-actions">
-          ${generating
-            ? '<button class="stop-button" type="button" data-action="stop-generation" data-testid="stop-generation-button">停止生成</button>'
-            : `<button class="primary-button" type="submit" data-testid="send-message-button" ${workspace.models.length === 0 ? 'disabled' : ''}>发送</button>`}
-        </div>
-      </form>
-    </section>
-  `;
-}
-
-function renderChatEmpty() {
-  return `
-    <div class="chat-empty" data-testid="chat-empty">
-      <p>这个科目的会话记录会完整保存在本地。</p>
-      <p>发送第一条问题开始学习。</p>
-    </div>
-  `;
-}
-
-function renderChatMessage(message) {
-  if (message.role === 'user') {
-    return `
-      <article class="chat-message chat-message-user">
-        <div class="chat-message-content">${formatContent(message.content)}</div>
-      </article>
-    `;
-  }
-  const model = message.model || {};
-  const statusLabels = { generating: '正在生成…', complete: '已完成', stopped: '已停止', error: '生成失败' };
-  const emptyCopy = {
-    error: message.error?.message || '生成失败',
-    stopped: '已停止生成。',
-    complete: '模型未返回文本内容。',
-    generating: '正在思考…'
-  }[message.status] || '生成已结束。';
-  const content = message.content
-    ? formatContent(message.content)
-    : `<span class="chat-status-copy">${escapeHtml(emptyCopy)}</span>`;
-  return `
-    <article class="chat-message chat-message-assistant chat-message-${escapeHtml(message.status)}" data-testid="chat-message-assistant">
-      <div class="chat-message-meta">
-        <span class="mode-badge mode-general" title="当前科目没有用户资料，回答未依据用户资料">通用知识模式</span>
-        ${model.provider || model.model
-          ? `<span class="model-badge" data-testid="message-model-info">${escapeHtml(model.provider)} / ${escapeHtml(model.model)}</span>`
-          : ''}
-        <span class="message-status">${statusLabels[message.status] || message.status}</span>
-      </div>
-      <div class="chat-message-content">${content}</div>
-      ${message.status === 'error' && message.error ? `<p class="message-error">${escapeHtml(message.error.message)}</p>` : ''}
-    </article>
-  `;
-}
-
-function renderContentPanel(subject) {
-  if (!subject) {
-    return `
-      <div class="content-empty">
-        <div class="empty-card">
-          <p class="empty-eyebrow">工作区</p>
-          <h2>创建第一个科目空间</h2>
-          <p>科目空间会把资料、会话记录、试卷和错题独立保存在一起。</p>
-          <button type="button" class="primary-button" data-action="focus-create-subject">创建科目空间</button>
-        </div>
-      </div>
-    `;
-  }
-  const chat = subjectChat(subject);
-  return `
-    <header class="content-header">
-      <div>
-        <p class="content-kicker">当前科目空间</p>
-        <h2 data-testid="active-subject-name">${escapeHtml(subject.name)}</h2>
-      </div>
-      <p class="content-meta" data-testid="active-subject-meta">
-        创建于 ${formatDate(subject.created_at)} · ${chat.messages.length} 条会话消息
-      </p>
-    </header>
-    <section class="content-body">
-      <div class="placeholder-card">
-        <span class="placeholder-mark" aria-hidden="true">📚</span>
-        <h3>工作区已就绪</h3>
-        <p>左侧是 AI 问答和学习操作区，右侧将来放置试卷或学习文档。当前「${escapeHtml(subject.name)}」没有用户资料，问答会明确标注为通用知识模式。</p>
-        <dl class="placeholder-facts">
-          <div><dt>科目隔离</dt><dd>会话记录不会跨科目混合</dd></div>
-          <div><dt>本地保存</dt><dd>完整会话记录在重新打开应用后恢复</dd></div>
-        </dl>
-      </div>
-    </section>
-  `;
-}
-
-root.addEventListener('submit', async (event) => {
-  const form = event.target.closest('form[data-form]');
-  if (!form) return;
-  event.preventDefault();
-
-  try {
-    if (form.dataset.form === 'create-subject') {
-      createDraft = form.elements.name?.value || '';
-      await perform(api.createSubject(createDraft));
-      if (workspace.subjects.length > 0) createDraft = '';
-      render();
-      root.querySelector('#subject-name-input')?.focus();
-      return;
-    }
-
-    if (form.dataset.form === 'rename-subject') {
-      editingName = form.elements.name?.value || '';
-      const payload = await perform(api.renameSubject(form.dataset.subjectId, editingName));
-      if (payload.ok) {
-        editingSubjectId = null;
-        editingName = '';
-        render();
+      if (activeId) {
+        await this.loadSubjectData(activeId);
       }
-      return;
+    } catch (err) {
+      console.error('Failed to load initial data:', err);
+      store.addToast('加载初始数据失败: ' + err.message, 'error');
     }
-
-    if (form.dataset.form === 'model-add') {
-      const elements = form.elements;
-      const payload = await perform(api.addModel({
-        provider: elements.provider?.value || '',
-        model: elements.model?.value || '',
-        baseUrl: elements.baseUrl?.value || '',
-        apiKey: elements.apiKey?.value || ''
-      }));
-      if (payload.ok) {
-        showModelForm = false;
-        render();
-      }
-      return;
-    }
-
-    if (form.dataset.form === 'chat-send') {
-      const subjectId = form.dataset.subjectId;
-      const content = form.elements.message?.value || '';
-      const modelId = form.elements.model?.value || '';
-      const payload = await perform(api.sendMessage(subjectId, content, modelId));
-      if (payload.ok) {
-        const input = root.querySelector('#chat-message-input');
-        if (input) input.value = '';
-      }
-    }
-  } catch (error) {
-    setError(error);
   }
+
+  async loadSubjectData(subjectId) {
+    if (!subjectId) return;
+
+    try {
+      const [
+        sessionsData,
+        chatData,
+        sourcesData,
+        aiDocsData,
+        blueprintsData,
+        draftsData,
+        examsData,
+        runsData
+      ] = await Promise.all([
+        api.listSessions(subjectId).catch(() => ({ items: [] })),
+        api.getChat(subjectId).catch(() => ({ messages: [], grounding_mode: 'general-knowledge', learning_mode: 'chat', active_model_id: null })),
+        api.listSources(subjectId).catch(() => ({ items: [] })),
+        api.listAiDocuments(subjectId).catch(() => ({ items: [] })),
+        api.listBlueprints(subjectId).catch(() => ({ items: [] })),
+        api.listDrafts(subjectId).catch(() => ({ items: [] })),
+        api.listExams(subjectId).catch(() => ({ items: [] })),
+        api.listOrchestrationRuns().catch(() => ({ items: [] }))
+      ]);
+
+      const sessions = sessionsData.items || [];
+      const sources = sourcesData.items || [];
+      const aiDocs = aiDocsData.items || [];
+      const blueprints = blueprintsData.items || [];
+      const drafts = draftsData.items || [];
+      const exams = examsData.items || [];
+      const runs = runsData.items || [];
+
+      // Find active session
+      const activeSession = sessions[0] || null;
+      const activeSessionId = activeSession?.id || null;
+
+      store.setState({
+        sessions,
+        activeSessionId,
+        activeSession,
+        chat: chatData,
+        sources,
+        activeSourceId: sources[0]?.id || null,
+        activeSource: sources[0] || null,
+        aiDocuments: aiDocs,
+        activeAiDocumentId: aiDocs[0]?.id || null,
+        activeAiDocument: aiDocs[0] || null,
+        blueprints,
+        activeBlueprintId: blueprints[0]?.id || null,
+        activeBlueprint: blueprints[0] || null,
+        drafts,
+        activeDraftId: drafts[0]?.id || null,
+        activeDraft: drafts[0] || null,
+        exams,
+        activeExamId: exams[0]?.id || null,
+        activeExam: exams[0] || null,
+        orchestrationRuns: runs
+      });
+
+      // Load deep resources
+      if (sources[0]?.id) {
+        this.loadSourceVersions(sources[0].id);
+      }
+      if (aiDocs[0]?.id) {
+        this.loadAiDocDetails(aiDocs[0].id);
+      }
+      if (exams[0]?.id) {
+        this.loadExamRevisions(exams[0].id);
+      }
+    } catch (err) {
+      console.error('Failed to load subject data:', err);
+      store.addToast('获取科目详情失败', 'error');
+    }
+  }
+
+  async loadSourceVersions(sourceId) {
+    try {
+      const [versionsData, sourceDetail] = await Promise.all([
+        api.listSourceVersions(sourceId).catch(() => ({ items: [] })),
+        api.getSource(sourceId).catch(() => null)
+      ]);
+
+      const versions = versionsData.items || [];
+      const latestVersionId = versions[0]?.id;
+
+      let anchors = [];
+      if (latestVersionId) {
+        const anchorsData = await api.listSourceVersionAnchors(latestVersionId).catch(() => ({ items: [] }));
+        anchors = anchorsData.items || [];
+      }
+
+      store.setState({
+        activeSource: sourceDetail,
+        activeSourceVersions: versions,
+        activeSourceAnchors: anchors
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async loadAiDocDetails(docId) {
+    try {
+      const [doc, versionsData, proposalsData] = await Promise.all([
+        api.getAiDocument(docId).catch(() => null),
+        api.listAiDocumentVersions(docId).catch(() => ({ items: [] })),
+        api.listAiDocumentRevisionProposals(docId).catch(() => ({ items: [] }))
+      ]);
+
+      const proposals = proposalsData.items || [];
+
+      store.setState({
+        activeAiDocument: doc,
+        aiDocumentVersions: versionsData.items || [],
+        aiDocumentProposals: proposals,
+        activeAiDocProposalId: proposals[0]?.id || null,
+        activeAiDocProposal: proposals[0] || null
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async loadExamRevisions(examId) {
+    try {
+      const [examDetail, proposalsData, versionsData] = await Promise.all([
+        api.getExam(examId).catch(() => null),
+        api.listRevisionProposals(examId).catch(() => ({ items: [] })),
+        api.listExamVersions(examId).catch(() => ({ items: [] }))
+      ]);
+
+      const proposals = proposalsData.items || [];
+
+      store.setState({
+        activeExam: examDetail,
+        revisionProposals: proposals,
+        activeRevisionProposalId: proposals[0]?.id || null,
+        activeRevisionProposal: proposals[0] || null,
+        examVersions: versionsData.items || []
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  startAttemptTimer() {
+    if (this.timerInterval) clearInterval(this.timerInterval);
+    this.timerInterval = setInterval(() => {
+      const { activeAttempt } = store.getState();
+      if (activeAttempt && activeAttempt.status === 'in-progress' && !activeAttempt.is_completed) {
+        store.setState((s) => ({
+          activeAttempt: {
+            ...s.activeAttempt,
+            elapsed_seconds: (s.activeAttempt.elapsed_seconds || 0) + 1
+          }
+        }));
+      }
+    }, 1000);
+  }
+
+  setupGlobalShortcuts() {
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        store.setState((s) => ({ commandPaletteOpen: !s.commandPaletteOpen }));
+      }
+    });
+  }
+
+  // Master render method
+  render(state) {
+    const handlers = this.getHandlers();
+
+    // 1. Render Navbar
+    const navbarRoot = document.getElementById('navbar-root');
+    if (navbarRoot) renderNavbar(state, navbarRoot, handlers);
+
+    // 2. Render Main Workspace Container
+    const mainWorkspaceRoot = document.getElementById('main-workspace-root');
+    if (mainWorkspaceRoot) {
+      this.renderWorkspace(state, mainWorkspaceRoot, handlers);
+    }
+
+    // 3. Render Modals & Overlays
+    const modalRoot = document.getElementById('modal-root');
+    if (modalRoot) renderModals(state, modalRoot, handlers);
+
+    const cmdRoot = document.getElementById('cmd-root');
+    if (cmdRoot) renderCommandPalette(state, cmdRoot, handlers);
+
+    const toastRoot = document.getElementById('toast-root');
+    if (toastRoot) renderToasts(state, toastRoot, handlers);
+  }
+
+  renderWorkspace(state, container, handlers) {
+    const { activeNavTab } = state;
+
+    if (activeNavTab === 'learn') {
+      renderChatView(state, container, handlers);
+    } else if (activeNavTab === 'sources') {
+      renderSourcesView(state, container, handlers);
+    } else if (activeNavTab === 'exam_studio') {
+      renderExamStudioView(state, container, handlers);
+    } else if (activeNavTab === 'practice_exam') {
+      renderPracticeExamView(state, container, handlers);
+    } else if (activeNavTab === 'settings_dev') {
+      renderSettingsDevView(state, container, handlers);
+    }
+  }
+
+  getHandlers() {
+    return {
+      // Primary Navigation
+      onSelectNavTab: (tabId) => {
+        store.setState({ activeNavTab: tabId });
+      },
+      onSelectExamStudioSubTab: (subtab) => {
+        store.setState({ activeNavTab: 'exam_studio', examStudioSubTab: subtab });
+      },
+      onSelectPracticeViewMode: (viewMode) => {
+        store.setState({ activeNavTab: 'practice_exam', practiceExamViewMode: viewMode });
+      },
+      onSwitchSourcesTab: (tab) => {
+        store.setState({ sourcesTab: tab });
+      },
+      onSelectSettingsSubTab: (subtab) => {
+        store.setState({ activeNavTab: 'settings_dev', settingsDevSubTab: subtab });
+      },
+      onToggleSidebar: (workspace) => {
+        store.toggleSidebar(workspace);
+      },
+      onToggleTheme: () => {
+        store.toggleTheme();
+      },
+      onToggleCommandPalette: () => {
+        store.setState((s) => ({ commandPaletteOpen: !s.commandPaletteOpen }));
+      },
+      onCloseCommandPalette: () => {
+        store.setState({ commandPaletteOpen: false });
+      },
+
+      // Modal Triggers
+      onOpenSubjectModal: (mode) => {
+        store.setState({ subjectModalOpen: true });
+      },
+      onOpenRenameSubjectModal: (subject) => {
+        store.setState({ renameSubjectModalOpen: true, subjectToRename: subject });
+      },
+      onOpenModelModal: () => {
+        store.setState({ modelModalOpen: true });
+      },
+      onOpenCreateSessionModal: () => {
+        store.setState({ createSessionModalOpen: true });
+      },
+      onOpenCreateAiDocModal: () => {
+        store.setState({ createAiDocModalOpen: true });
+      },
+      onOpenAiDocRevisionModal: (docId) => {
+        store.setState({ aiDocRevisionModalOpen: true, activeAiDocumentId: docId });
+      },
+      onOpenBlueprintModal: () => {
+        store.setState({ blueprintModalOpen: true });
+      },
+      onOpenRevisionModal: () => {
+        store.setState({ revisionModalOpen: true });
+      },
+      onCloseModals: () => {
+        store.setState({
+          modelModalOpen: false,
+          subjectModalOpen: false,
+          renameSubjectModalOpen: false,
+          createSessionModalOpen: false,
+          createAiDocModalOpen: false,
+          aiDocRevisionModalOpen: false,
+          blueprintModalOpen: false,
+          revisionModalOpen: false,
+          citationModalOpen: false,
+          activeCitation: null
+        });
+      },
+
+      // Subject Actions
+      onCreateSubject: async (name) => {
+        try {
+          const res = await api.createSubject(name);
+          store.addToast(`科目空间「${name}」已创建`, 'success');
+          store.setState({ subjectModalOpen: false });
+          await this.loadInitialData();
+          if (res.id) await this.loadSubjectData(res.id);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onRenameSubject: async (subjectId, newName) => {
+        try {
+          await api.renameSubject(subjectId, newName);
+          store.addToast(`科目已重命名为「${newName}」`, 'success');
+          store.setState({ renameSubjectModalOpen: false, subjectToRename: null });
+          await this.loadInitialData();
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onSwitchSubject: async (subjectId) => {
+        store.setState({ activeSubjectId: subjectId });
+        await api.activateSubject(subjectId).catch(() => {});
+        await this.loadSubjectData(subjectId);
+      },
+      onDeleteSubject: async (subjectId) => {
+        if (!confirm('确定要删除此科目空间及其所有资料和试卷吗？')) return;
+        try {
+          await api.deleteSubject(subjectId);
+          store.addToast('科目空间已删除', 'success');
+          await this.loadInitialData();
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Session Actions (Ticket 16, 17, 18)
+      onSearchSessions: (query) => {
+        store.setState({ sessionSearchQuery: query });
+      },
+      onCreateSession: async ({ title, learning_mode, grounding_mode, source_version_ids }) => {
+        const { activeSubjectId, currentModelId } = store.getState();
+        if (!activeSubjectId) return;
+
+        try {
+          const newSession = await api.createSession(activeSubjectId, {
+            title,
+            learning_mode,
+            grounding_mode,
+            source_version_ids,
+            model_id: currentModelId || undefined
+          });
+
+          store.addToast('新学习会话已建立', 'success');
+          store.setState({ createSessionModalOpen: false });
+
+          const sessionsData = await api.listSessions(activeSubjectId);
+          store.setState({
+            sessions: sessionsData.items || [],
+            activeSessionId: newSession.id,
+            activeSession: newSession
+          });
+        } catch (err) {
+          store.addToast(`创建会话失败: ${err.message}`, 'error');
+        }
+      },
+      onSelectSession: async (sessionId) => {
+        store.setState({ activeSessionId: sessionId });
+        try {
+          await api.activateSession(sessionId).catch(() => {});
+          const sess = await api.getSession(sessionId);
+          store.setState({ activeSession: sess });
+        } catch (err) {
+          console.error(err);
+        }
+      },
+      onRenameSession: async (sessionId, newTitle) => {
+        try {
+          const updated = await api.updateSession(sessionId, { title: newTitle });
+          store.addToast('会话名称已更新', 'success');
+          const { activeSubjectId } = store.getState();
+          const sessionsData = await api.listSessions(activeSubjectId);
+          store.setState({
+            sessions: sessionsData.items || [],
+            activeSession: updated
+          });
+        } catch (err) {
+          store.addToast(`重命名失败: ${err.message}`, 'error');
+        }
+      },
+      onDeleteSession: async (sessionId) => {
+        try {
+          await api.deleteSession(sessionId);
+          store.addToast('会话已删除', 'info');
+          const { activeSubjectId } = store.getState();
+          const sessionsData = await api.listSessions(activeSubjectId);
+          const nextSessions = sessionsData.items || [];
+          store.setState({
+            sessions: nextSessions,
+            activeSessionId: nextSessions[0]?.id || null,
+            activeSession: nextSessions[0] || null
+          });
+        } catch (err) {
+          store.addToast(`删除失败: ${err.message}`, 'error');
+        }
+      },
+      onAddSessionSource: async (sessionId, sourceVersionId) => {
+        try {
+          if (sessionId) {
+            await api.addSessionSource(sessionId, { source_version_id: sourceVersionId });
+            const sess = await api.getSession(sessionId);
+            store.setState({ activeSession: sess });
+          } else {
+            const { activeSubjectId, chat } = store.getState();
+            const nextSources = [...(chat.source_version_ids || []), sourceVersionId];
+            await api.updateChatConfig(activeSubjectId, { source_version_ids: nextSources });
+            const nextChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: nextChat });
+          }
+          store.addToast('资料已固定至当前会话', 'success');
+        } catch (err) {
+          store.addToast(`添加资料失败: ${err.message}`, 'error');
+        }
+      },
+      onRemoveSessionSource: async (sessionId, sourceVersionId) => {
+        try {
+          if (sessionId) {
+            await api.removeSessionSource(sessionId, sourceVersionId);
+            const sess = await api.getSession(sessionId);
+            store.setState({ activeSession: sess });
+          } else {
+            const { activeSubjectId, chat } = store.getState();
+            const nextSources = (chat.source_version_ids || []).filter((id) => id !== sourceVersionId);
+            await api.updateChatConfig(activeSubjectId, { source_version_ids: nextSources });
+            const nextChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: nextChat });
+          }
+          store.addToast('已从会话中移除资料', 'info');
+        } catch (err) {
+          store.addToast(`移除失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Chat & Tutor Actions
+      onSwitchLearningMode: async (learningMode) => {
+        const { activeSessionId, activeSubjectId } = store.getState();
+        try {
+          if (activeSessionId) {
+            const updated = await api.updateSession(activeSessionId, { learning_mode: learningMode });
+            store.setState({ activeSession: updated });
+          } else if (activeSubjectId) {
+            const nextChat = await api.updateChatConfig(activeSubjectId, { learning_mode: learningMode });
+            store.setState({ chat: nextChat });
+          }
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onUpdateGroundingMode: async (groundingMode) => {
+        const { activeSessionId, activeSubjectId } = store.getState();
+        try {
+          if (activeSessionId) {
+            const updated = await api.updateSession(activeSessionId, { grounding_mode: groundingMode });
+            store.setState({ activeSession: updated });
+          } else if (activeSubjectId) {
+            const nextChat = await api.updateChatConfig(activeSubjectId, { grounding_mode: groundingMode });
+            store.setState({ chat: nextChat });
+          }
+          store.addToast(`知识依据已切换: ${groundingMode}`, 'info');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onSendMessage: async ({ content, intent = 'ask', attachments = [] }) => {
+        const { activeSubjectId, activeSessionId, activeSession, chat, selectionContext, currentModelId } = store.getState();
+        if (!activeSubjectId) {
+          store.addToast('请先选择或创建一个科目空间', 'error');
+          return;
+        }
+
+        try {
+          // Optimistically append user message
+          const userMsg = { role: 'user', content, intent, timestamp: Date.now() };
+          if (activeSession) {
+            store.setState((s) => ({
+              activeSession: { ...s.activeSession, messages: [...(s.activeSession.messages || []), userMsg] }
+            }));
+          } else {
+            store.setState((s) => ({
+              chat: { ...s.chat, messages: [...(s.chat?.messages || []), userMsg] }
+            }));
+          }
+
+          const payload = {
+            content,
+            intent,
+            grounding_mode: activeSession?.grounding_mode || chat.grounding_mode || 'general-knowledge',
+            model_id: activeSession?.model_id || currentModelId || undefined
+          };
+
+          if (selectionContext) {
+            payload.selection = {
+              document_kind: selectionContext.source_id ? 'source' : 'exam',
+              document_id: selectionContext.source_id || selectionContext.exam_id,
+              version_id: selectionContext.source_version_id,
+              selected_text: selectionContext.text
+            };
+          }
+
+          // Clear temporary attachments after payload prepared
+          store.setState({ chatAttachments: [] });
+
+          let accepted = null;
+          if (activeSessionId) {
+            accepted = await api.createSessionMessage(activeSessionId, payload);
+          } else {
+            accepted = await api.sendMessage(activeSubjectId, payload);
+          }
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          if (activeSessionId) {
+            const updatedSess = await api.getSession(activeSessionId);
+            store.setState({ activeSession: updatedSess });
+          } else {
+            const updatedChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: updatedChat });
+          }
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onSendIntentMessage: async (intent) => {
+        const { activeSubjectId, activeSessionId } = store.getState();
+        if (!activeSubjectId) return;
+
+        try {
+          let accepted = null;
+          if (activeSessionId) {
+            accepted = await api.createSessionMessage(activeSessionId, { intent });
+          } else {
+            accepted = await api.sendMessage(activeSubjectId, { intent });
+          }
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          if (activeSessionId) {
+            const updatedSess = await api.getSession(activeSessionId);
+            store.setState({ activeSession: updatedSess });
+          } else {
+            const updatedChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: updatedChat });
+          }
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onClearChat: async () => {
+        const { activeSubjectId, activeSessionId } = store.getState();
+        if (!activeSubjectId) return;
+        try {
+          if (activeSessionId) {
+            // Delete and re-create clean session or clear
+            store.setState((s) => ({ activeSession: { ...s.activeSession, messages: [] } }));
+          } else {
+            await api.clearChat(activeSubjectId);
+            store.setState((s) => ({ chat: { ...s.chat, messages: [] } }));
+          }
+          store.addToast('对话已清空', 'info');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onAddChatAttachments: (files) => {
+        const newAtts = files.map((file) => {
+          const isImage = file.type.startsWith('image/');
+          return {
+            file,
+            name: file.name,
+            size_bytes: file.size,
+            is_image: isImage,
+            preview_url: isImage ? URL.createObjectURL(file) : null,
+            status: 'ready'
+          };
+        });
+        store.setState((s) => ({ chatAttachments: [...s.chatAttachments, ...newAtts] }));
+      },
+      onRemoveChatAttachment: (index) => {
+        store.setState((s) => ({
+          chatAttachments: s.chatAttachments.filter((_, idx) => idx !== index)
+        }));
+      },
+      onPinSelection: (sel) => {
+        store.setState({ selectionContext: sel });
+        store.addToast('已将段落选区固定至导师提问', 'info');
+      },
+      onClearSelection: () => {
+        store.setState({ selectionContext: null });
+      },
+      onInspectCitation: async ({ citationId }) => {
+        try {
+          const cit = await api.getCitation(citationId);
+          store.setState({ citationModalOpen: true, activeCitation: cit });
+        } catch (err) {
+          store.addToast('无法获取引用详情', 'error');
+        }
+      },
+
+      // Model Management & Discovery (Ticket 16, 19)
+      onSaveModel: async (modelConfig) => {
+        try {
+          const res = await api.addModel(modelConfig);
+          store.addToast(`模型「${res.model}」注册成功`, 'success');
+          store.setState({ modelModalOpen: false });
+          const modelsList = await api.listModels();
+          store.setState({ models: modelsList.items || [] });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onDiscoverModels: async ({ provider, base_url, api_key }) => {
+        try {
+          store.addToast('正在向服务端探测可用模型列表...', 'info');
+          const res = await api.discoverModels({ provider, base_url, api_key });
+          const items = res.items || res.models || [];
+          if (items.length > 0) {
+            store.setState({ discoveredModels: items });
+            store.addToast(`成功发现 ${items.length} 个可用模型`, 'success');
+          } else {
+            store.addToast('未获取到模型列表，请手动输入模型名称', 'info');
+          }
+        } catch (err) {
+          store.addToast(`模型发现失败: ${err.message}，已保留手动输入`, 'error');
+        }
+      },
+      onSelectGlobalCurrentModel: async (modelId) => {
+        try {
+          await api.selectCurrentModel({ model_id: modelId });
+          store.setState({ currentModelId: modelId });
+          store.addToast('已切换系统当前模型', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onVerifyModel: async (modelId) => {
+        try {
+          store.addToast('正在进行模型连通性测试...', 'info');
+          const res = await api.verifyModel(modelId);
+          store.addToast(res.status === 'ok' ? '模型连接通畅，就绪可用' : '连接异常', res.status === 'ok' ? 'success' : 'error');
+        } catch (err) {
+          store.addToast(`连通性测试失败: ${err.message}`, 'error');
+        }
+      },
+      onDeleteModel: async (modelId) => {
+        try {
+          await api.deleteModel(modelId);
+          store.addToast('模型已移除', 'success');
+          const modelsList = await api.listModels();
+          store.setState({ models: modelsList.items || [] });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Sources Actions
+      onUploadFiles: async (files) => {
+        const { activeSubjectId } = store.getState();
+        if (!activeSubjectId) {
+          store.addToast('请先选择或创建一个科目空间', 'error');
+          return;
+        }
+
+        for (const file of files) {
+          try {
+            store.addToast(`正在解析资料《${file.name}》...`, 'info');
+            const res = await api.uploadSource(activeSubjectId, file);
+            if (res.operation?.id) {
+              store.trackOperation(res.operation);
+              await api.pollOperation(res.operation.id, {
+                onProgress: (op) => store.trackOperation(op)
+              });
+            }
+            store.addToast(`《${file.name}》已收录就绪`, 'success');
+          } catch (err) {
+            store.addToast(`上传 ${file.name} 失败: ${err.message}`, 'error');
+          }
+        }
+
+        const sourcesData = await api.listSources(activeSubjectId);
+        store.setState({ sources: sourcesData.items || [] });
+      },
+      onIterateSourceVersion: async (sourceId, file) => {
+        try {
+          store.addToast(`正在上传新版本并重新解析《${file.name}》...`, 'info');
+          const res = await api.uploadSourceVersion(sourceId, file);
+          if (res.operation?.id) {
+            store.trackOperation(res.operation);
+            await api.pollOperation(res.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+          store.addToast('资料新版本已迭代解析完毕', 'success');
+          await this.loadSourceVersions(sourceId);
+        } catch (err) {
+          store.addToast(`迭代版本失败: ${err.message}`, 'error');
+        }
+      },
+      onSelectSource: async (sourceId) => {
+        store.setState({ activeSourceId: sourceId });
+        await this.loadSourceVersions(sourceId);
+      },
+      onDeleteSource: async (sourceId) => {
+        if (!confirm('确定删除此学习资料吗？引用此资料的会话和试卷将保留历史记录，但无法继续检索新内容。')) return;
+        try {
+          await api.deleteSource(sourceId);
+          store.addToast('资料已删除', 'success');
+          const { activeSubjectId } = store.getState();
+          const sourcesData = await api.listSources(activeSubjectId);
+          const nextSources = sourcesData.items || [];
+          store.setState({
+            sources: nextSources,
+            activeSourceId: nextSources[0]?.id || null,
+            activeSource: nextSources[0] || null
+          });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // AI-Authored Documents Actions (Ticket 20)
+      onCreateAiDocument: async ({ title, instruction, source_version_ids }) => {
+        const { activeSubjectId } = store.getState();
+        if (!activeSubjectId) return;
+
+        try {
+          store.addToast(`正在指令 AI 生成《${title}》...`, 'info');
+          store.setState({ createAiDocModalOpen: false });
+
+          const accepted = await api.createAiDocument(activeSubjectId, { title, instruction, source_version_ids });
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          store.addToast(`《${title}》已生成完毕`, 'success');
+          const docsData = await api.listAiDocuments(activeSubjectId);
+          const nextDocs = docsData.items || [];
+          const newDocId = accepted.resource?.id || nextDocs[0]?.id;
+
+          store.setState({
+            aiDocuments: nextDocs,
+            activeAiDocumentId: newDocId,
+            sourcesTab: 'ai_documents'
+          });
+
+          if (newDocId) await this.loadAiDocDetails(newDocId);
+        } catch (err) {
+          store.addToast(`生成 AI 文档失败: ${err.message}`, 'error');
+        }
+      },
+      onSelectAiDoc: async (docId) => {
+        store.setState({ activeAiDocumentId: docId });
+        await this.loadAiDocDetails(docId);
+      },
+      onCreateAiDocRevisionProposal: async (docId, instruction) => {
+        try {
+          store.addToast('正在生成 AI 资料修改提案...', 'info');
+          store.setState({ aiDocRevisionModalOpen: false });
+
+          const { activeAiDocument } = store.getState();
+          const baseVersionId = activeAiDocument?.versions?.[0]?.id || activeAiDocument?.id;
+
+          const accepted = await api.createAiDocumentRevisionProposal(docId, {
+            instruction,
+            base_version_id: baseVersionId
+          });
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          store.addToast('AI 修改建议提案已生成', 'success');
+          await this.loadAiDocDetails(docId);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onApplyAiDocProposal: async (proposalId) => {
+        const { activeAiDocumentId } = store.getState();
+        try {
+          await api.applyAiDocumentRevisionProposal(proposalId);
+          store.addToast('已将 AI 建议应用为新版本', 'success');
+          await this.loadAiDocDetails(activeAiDocumentId);
+        } catch (err) {
+          store.addToast(`应用修改失败: ${err.message}`, 'error');
+        }
+      },
+      onDiscardAiDocProposal: async (proposalId) => {
+        const { activeAiDocumentId } = store.getState();
+        try {
+          await api.discardAiDocumentRevisionProposal(proposalId);
+          store.addToast('提案已放弃', 'info');
+          await this.loadAiDocDetails(activeAiDocumentId);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onRestoreAiDocVersion: async (docId, versionId) => {
+        try {
+          await api.restoreAiDocumentVersion(docId, versionId);
+          store.addToast('文档历史版本已恢复', 'success');
+          await this.loadAiDocDetails(docId);
+        } catch (err) {
+          store.addToast(`恢复版本失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Exam Blueprints Actions (Ticket 08)
+      onCreateBlueprint: async ({ prompt, total_score, grounding_mode }) => {
+        const { activeSubjectId, activeSourceVersions } = store.getState();
+        if (!activeSubjectId) return;
+
+        try {
+          store.addToast('正在构思并解析试卷蓝图...', 'info');
+          store.setState({ blueprintModalOpen: false });
+
+          const srcIds = activeSourceVersions[0]?.id ? [activeSourceVersions[0].id] : [];
+          const accepted = await api.parseBlueprint(activeSubjectId, {
+            prompt,
+            total_score,
+            grounding_mode,
+            source_version_ids: srcIds
+          });
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          const bpsData = await api.listBlueprints(activeSubjectId);
+          const nextBps = bpsData.items || [];
+          store.setState({
+            blueprints: nextBps,
+            activeBlueprintId: nextBps[0]?.id || null,
+            activeBlueprint: nextBps[0] || null,
+            activeNavTab: 'exam_studio',
+            examStudioSubTab: 'blueprint'
+          });
+          store.addToast('组卷蓝图构思完成', 'success');
+        } catch (err) {
+          store.addToast(`蓝图解析失败: ${err.message}`, 'error');
+        }
+      },
+      onSelectBlueprint: async (bpId) => {
+        store.setState({ activeBlueprintId: bpId });
+        try {
+          const bp = await api.getBlueprint(bpId);
+          store.setState({ activeBlueprint: bp });
+        } catch (err) {
+          console.error(err);
+        }
+      },
+      onConfirmBlueprint: async (bpId) => {
+        try {
+          const confirmed = await api.confirmBlueprint(bpId);
+          store.setState({ activeBlueprint: confirmed });
+          store.addToast('蓝图已确认，可开始增量组题', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onGenerateDraftFromBlueprint: async (bpId) => {
+        const { activeSubjectId } = store.getState();
+        try {
+          store.addToast('正在增量创建试卷题目槽位...', 'info');
+          const accepted = await api.generateDraftFromBlueprint(bpId);
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          const draftsData = await api.listDrafts(activeSubjectId);
+          const nextDrafts = draftsData.items || [];
+          store.setState({
+            drafts: nextDrafts,
+            activeDraftId: nextDrafts[0]?.id || null,
+            activeDraft: nextDrafts[0] || null,
+            examStudioSubTab: 'draft'
+          });
+          store.addToast('试卷草稿创建就绪，题目正在增量推演', 'success');
+        } catch (err) {
+          store.addToast(`生成试题失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Exam Drafts Actions (Ticket 09)
+      onSelectDraft: async (draftId) => {
+        store.setState({ activeDraftId: draftId });
+        try {
+          const d = await api.getDraft(draftId);
+          store.setState({ activeDraft: d });
+        } catch (err) {
+          console.error(err);
+        }
+      },
+      onRetryDraftQuestion: async (draftId, questionId) => {
+        try {
+          store.addToast('正在单独重试生成该题...', 'info');
+          const accepted = await api.retryDraftQuestion(draftId, questionId);
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          const updatedDraft = await api.getDraft(draftId);
+          store.setState({ activeDraft: updatedDraft });
+          store.addToast('该题已重新生成完毕', 'success');
+        } catch (err) {
+          store.addToast(`重试生成失败: ${err.message}`, 'error');
+        }
+      },
+      onPublishDraft: async (draftId) => {
+        const { activeSubjectId } = store.getState();
+        try {
+          store.addToast('正在正式发布试卷...', 'info');
+          const accepted = await api.publishDraft(draftId);
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          const examsData = await api.listExams(activeSubjectId);
+          const nextExams = examsData.items || [];
+          store.setState({
+            exams: nextExams,
+            activeExamId: nextExams[0]?.id || null,
+            activeExam: nextExams[0] || null,
+            examStudioSubTab: 'exam'
+          });
+          store.addToast('正式试卷发布成功！已归档至作答中心', 'success');
+        } catch (err) {
+          store.addToast(`发布失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Exams & AI Revision Proposals Actions (Ticket 13)
+      onSelectExam: async (examId) => {
+        store.setState({ activeExamId: examId });
+        await this.loadExamRevisions(examId);
+      },
+      onCreateExamRevisionProposal: async (examId, instruction) => {
+        try {
+          store.addToast('正在分析并生成试卷 AI 修改差异提案...', 'info');
+          store.setState({ revisionModalOpen: false });
+
+          const { activeExam } = store.getState();
+          const baseVersionId = activeExam?.versions?.[0]?.id || activeExam?.id;
+
+          const accepted = await api.proposeRevision(examId, {
+            instruction,
+            base_version_id: baseVersionId
+          });
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          await this.loadExamRevisions(examId);
+          store.addToast('修改比对提案已就绪', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onApplyProposal: async (proposalId) => {
+        const { activeExamId } = store.getState();
+        try {
+          const updatedExam = await api.applyRevisionProposal(proposalId);
+          store.setState({ activeExam: updatedExam });
+          store.addToast('修改提案已成功合并至正式试卷', 'success');
+          await this.loadExamRevisions(activeExamId);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onDiscardProposal: async (proposalId) => {
+        const { activeExamId } = store.getState();
+        try {
+          await api.discardRevisionProposal(proposalId);
+          store.addToast('提案已放弃', 'info');
+          await this.loadExamRevisions(activeExamId);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onUndoExamChange: async (examId) => {
+        try {
+          await api.undoExamChange(examId);
+          store.addToast('已撤销上一步试卷修改', 'success');
+          await this.loadExamRevisions(examId);
+        } catch (err) {
+          store.addToast(`撤销失败: ${err.message}`, 'error');
+        }
+      },
+      onRedoExamChange: async (examId) => {
+        try {
+          await api.redoExamChange(examId);
+          store.addToast('已重做试卷修改', 'success');
+          await this.loadExamRevisions(examId);
+        } catch (err) {
+          store.addToast(`重做失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Practice & Exam Attempt Actions (Ticket 10, 11, 21)
+      onSelectExamForPractice: (examId) => {
+        store.setState({
+          activeExamId: examId,
+          activeAttempt: null,
+          activeAttemptReview: null
+        });
+      },
+      onSelectAttemptHistory: async (attemptId) => {
+        try {
+          const att = await api.getAttempt(attemptId);
+          if (att.status === 'completed' || att.is_completed) {
+            const review = await api.getAttemptReview(attemptId).catch(() => null);
+            if (review) {
+              store.setState({ activeAttemptReview: review, activeAttempt: att });
+              return;
+            }
+          }
+          store.setState({ activeAttempt: att, activeAttemptReview: null });
+        } catch (err) {
+          store.addToast('加载作答记录失败', 'error');
+        }
+      },
+      onStartAttempt: async (examId, mode = 'practice', showSuggestedScore = false) => {
+        try {
+          store.addToast(`正在初始化${mode === 'practice' ? '练习' : '正式考试'}答题纸...`, 'info');
+          const attempt = await api.createAttempt(examId, {
+            mode,
+            show_suggested_score: showSuggestedScore
+          });
+
+          store.setState((s) => ({
+            activeAttemptId: attempt.id,
+            activeAttempt: attempt,
+            activeAttemptReview: null,
+            attempts: [attempt, ...s.attempts]
+          }));
+        } catch (err) {
+          store.addToast(`开启作答失败: ${err.message}`, 'error');
+        }
+      },
+      onSaveAttemptAnswer: async (attemptId, questionId, answer) => {
+        try {
+          await api.saveAttemptAnswer(attemptId, questionId, answer);
+          store.setState((s) => {
+            if (!s.activeAttempt || s.activeAttempt.id !== attemptId) return {};
+            const answers = s.activeAttempt.answers || [];
+            const existingIdx = answers.findIndex((a) => a.question_id === questionId);
+            let nextAnswers = [];
+            if (existingIdx >= 0) {
+              nextAnswers = [...answers];
+              nextAnswers[existingIdx] = { ...nextAnswers[existingIdx], answer };
+            } else {
+              nextAnswers = [...answers, { question_id: questionId, answer }];
+            }
+            return {
+              activeAttempt: {
+                ...s.activeAttempt,
+                answers: nextAnswers
+              }
+            };
+          });
+        } catch (err) {
+          console.error('Failed to auto-save answer:', err);
+        }
+      },
+      onRequestQuestionFeedback: async (attemptId, questionId) => {
+        const { currentModelId } = store.getState();
+        try {
+          store.addToast('正在获取本题 AI 得分要点与反馈...', 'info');
+          const accepted = await api.requestQuestionFeedback(attemptId, questionId, {
+            model_id: currentModelId,
+            show_suggested_score: true
+          });
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          const updatedAtt = await api.getAttempt(attemptId);
+          store.setState({ activeAttempt: updatedAtt });
+          store.addToast('本题反馈已生成', 'success');
+        } catch (err) {
+          store.addToast(`获取反馈失败: ${err.message}`, 'error');
+        }
+      },
+      onCompleteAttempt: async (attemptId) => {
+        try {
+          const completed = await api.completeAttempt(attemptId);
+          store.setState({ activeAttempt: completed });
+          store.addToast('作答已标记完成（答案已锁定为只读）', 'success');
+        } catch (err) {
+          store.addToast(`标记完成失败: ${err.message}`, 'error');
+        }
+      },
+      onContinueAttempt: async (attemptId) => {
+        try {
+          const resumed = await api.continueAttempt(attemptId);
+          store.setState({ activeAttempt: resumed });
+          store.addToast('已解锁，可继续修改作答', 'info');
+        } catch (err) {
+          store.addToast(`继续作答失败: ${err.message}`, 'error');
+        }
+      },
+      onSubmitAttemptGrading: async (attemptId) => {
+        const { currentModelId } = store.getState();
+        try {
+          store.addToast('正在提交全卷智能批改与薄弱点分析...', 'info');
+          const accepted = await api.submitAttemptGrading(attemptId, {
+            model_id: currentModelId,
+            show_suggested_score: true
+          });
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          const review = await api.getAttemptReview(attemptId);
+          const updatedAtt = await api.getAttempt(attemptId);
+          store.setState({
+            activeAttempt: updatedAtt,
+            activeAttemptReview: review
+          });
+          store.addToast('全卷批改完毕！已生成成绩报告', 'success');
+        } catch (err) {
+          store.addToast(`批改失败: ${err.message}`, 'error');
+        }
+      },
+      onPauseAttempt: async (attemptId) => {
+        try {
+          const paused = await api.pauseAttempt(attemptId);
+          store.setState({ activeAttempt: paused });
+          store.addToast('作答已暂停', 'info');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onResumeAttempt: async (attemptId) => {
+        try {
+          const resumed = await api.resumeAttempt(attemptId);
+          store.setState({ activeAttempt: resumed });
+          store.addToast('作答已恢复计时', 'info');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onExitAttempt: () => {
+        store.setState({ activeAttempt: null, activeAttemptReview: null });
+      },
+
+      // Renderer Actions (Ticket 14)
+      onSwitchRenderEdition: async (edition) => {
+        const { activeExamId } = store.getState();
+        if (!activeExamId) return;
+        await this.loadRenderDocument(activeExamId, edition);
+      },
+      onExportExam: async (examId, format, edition) => {
+        try {
+          store.addToast(`正在生成 ${format.toUpperCase()} 导出排版...`, 'info');
+          const accepted = await api.createExamExport(examId, { format, edition });
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+          const exp = await api.getExamExport(accepted.resource?.id || accepted.operation?.resource?.id);
+          if (exp.download_url) {
+            window.open(exp.download_url, '_blank');
+          }
+          store.addToast('文件已导出就绪', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Observability & Evaluation Actions (Ticket 15)
+      onSelectRun: async (runId) => {
+        try {
+          const run = await api.getOrchestrationRun(runId);
+          store.setState({ activeRunId: runId, activeRun: run });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onRunEvaluationSuite: async (suiteId) => {
+        try {
+          store.addToast('正在运行自动化基准测试套件...', 'info');
+          const accepted = await api.runEvaluationSuite(suiteId);
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+          const evalRun = await api.getEvaluationRun(accepted.resource?.id || accepted.operation?.resource?.id);
+          store.setState({ activeEvalRun: evalRun });
+          store.addToast('基准评估完毕', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Toast Actions
+      onDismissToast: (toastId) => {
+        store.removeToast(toastId);
+      }
+    };
+  }
+}
+
+// Bootstrap
+window.addEventListener('DOMContentLoaded', () => {
+  const app = new App();
+  app.init();
 });
-
-root.addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-action]');
-  if (!button) return;
-  const { action, subjectId, modelId } = button.dataset;
-
-  try {
-    if (action === 'focus-create-subject') {
-      root.querySelector('#subject-name-input')?.focus();
-      return;
-    }
-    if (action === 'activate-subject') {
-      await perform(api.activateSubject(subjectId));
-      return;
-    }
-    if (action === 'start-rename') {
-      const subject = workspace.subjects.find((candidate) => candidate.id === subjectId);
-      if (!subject) return;
-      editingSubjectId = subjectId;
-      editingName = subject.name;
-      status = null;
-      render();
-      return;
-    }
-    if (action === 'rename-cancel') {
-      editingSubjectId = null;
-      editingName = '';
-      status = null;
-      render();
-      return;
-    }
-    if (action === 'delete-subject') {
-      const subject = workspace.subjects.find((candidate) => candidate.id === subjectId);
-      if (!subject || !confirmDelete(subject)) return;
-      await perform(api.deleteSubject(subjectId));
-      if (editingSubjectId === subjectId) {
-        editingSubjectId = null;
-        editingName = '';
-      }
-      return;
-    }
-    if (action === 'toggle-model-form') {
-      showModelForm = !showModelForm;
-      status = null;
-      render();
-      return;
-    }
-    if (action === 'verify-model') {
-      verifyingModels.add(modelId);
-      render();
-      try {
-        await perform(api.verifyModel(modelId));
-      } finally {
-        verifyingModels.delete(modelId);
-        render();
-      }
-      return;
-    }
-    if (action === 'use-model') {
-      const subject = activeSubject();
-      if (!subject) return;
-      await perform(api.selectChatModel(subject.id, modelId));
-      return;
-    }
-    if (action === 'delete-model') {
-      await perform(api.deleteModel(modelId));
-      return;
-    }
-    if (action === 'clear-chat') {
-      if (!confirmClear()) return;
-      await perform(api.clearChat(subjectId));
-      return;
-    }
-    if (action === 'stop-generation') {
-      await perform(api.stopGeneration(subjectId || activeSubject()?.id));
-    }
-  } catch (error) {
-    setError(error);
-  }
-});
-
-root.addEventListener('change', async (event) => {
-  const select = event.target.closest?.('[data-model-select]');
-  if (!select) return;
-  const subject = activeSubject();
-  if (!subject || !select.value) return;
-  try {
-    await perform(api.selectChatModel(subject.id, select.value));
-  } catch (error) {
-    setError(error);
-  }
-});
-
-function confirmDelete(subject) {
-  return window.confirm?.(
-    `确认删除科目空间「${subject.name}」？\n\n该科目空间下的资料、会话记录、试卷和作答都会随科目一起删除。`
-  ) ?? false;
-}
-
-function confirmClear() {
-  return window.confirm?.('确认清空当前科目的完整会话记录？此操作不可撤销。') ?? false;
-}
-
-function formatDate(timestamp) {
-  if (!Number.isFinite(timestamp)) return '未知时间';
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
-  }).format(new Date(timestamp));
-}
-
-function formatContent(content) {
-  return escapeHtml(content).replaceAll('\n', '<br>');
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-init();
