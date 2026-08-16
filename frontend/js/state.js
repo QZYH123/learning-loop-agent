@@ -1,50 +1,63 @@
 /**
  * Central Reactive State Store for Learning Loop Agent
- * Strictly aligned with Issue 16, 17, 18, 19, 20, 21, 22
  */
 
 export class Store {
   constructor() {
     const savedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('lla_theme') : null;
-    const savedLeftCollapse = typeof localStorage !== 'undefined' ? localStorage.getItem('lla_sidebar_left_collapsed') === 'true' : false;
-    const savedRightCollapse = typeof localStorage !== 'undefined' ? localStorage.getItem('lla_sidebar_right_collapsed') === 'true' : false;
+    
+    // Load persisted sidebar collapse states
+    const getSavedCollapse = (workspace, defaultVal = false) => {
+      if (typeof localStorage === 'undefined') return defaultVal;
+      const v = localStorage.getItem(`lla_sidebar_${workspace}_collapsed`);
+      return v !== null ? v === 'true' : defaultVal;
+    };
 
     this.state = {
-      // Workspace & Subject Navigation
+      // Workspace & Navigation
       workspace: { subjects: [], active_subject_id: null },
       activeSubjectId: null,
       models: [],
       currentModelId: null,
       discoveredModels: [],
-
-      // 4 Primary Workspaces: 'learn' | 'sources' | 'quiz_gen' | 'attempts'
+      
+      // Primary Workspaces: 'learn' | 'sources' | 'exam_studio' | 'practice_exam' | 'settings_dev'
       activeNavTab: 'learn',
 
-      // Collapsible sidebar states (Left chat, Right content)
+      // Collapsible sidebars per workspace
       sidebarCollapsed: {
-        left: savedLeftCollapse,
-        right: savedRightCollapse
+        learn: getSavedCollapse('learn', false),
+        sources: getSavedCollapse('sources', false),
+        exam_studio: getSavedCollapse('exam_studio', false),
+        practice_exam: getSavedCollapse('practice_exam', false)
       },
-
-      // Sub-tabs for specific workspaces
+      
+      // Sub-views for specific workspaces
+      examStudioSubTab: 'blueprint', // 'blueprint' | 'draft' | 'preview_export'
+      practiceExamViewMode: 'library', // 'library' | 'attempt' | 'review'
       sourcesTab: 'user_sources', // 'user_sources' | 'ai_documents'
-      examStudioSubTab: 'blueprint', // 'blueprint' | 'draft' | 'exams'
+      settingsDevSubTab: 'models', // 'models' | 'observability' | 'benchmarks'
 
       // Sessions State (Ticket 16, 17, 18)
       sessions: [],
       activeSessionId: null,
       activeSession: null,
+      sessionSources: [],
+      sessionSearchQuery: '',
 
       // Active Chat / Tutor State
       chat: {
         messages: [],
         active_model_id: null,
-        chat_style: 'default', // 'default' | 'socratic' | 'crash-course'
-        grounding_mode: 'general-knowledge',
+        grounding_mode: 'general-knowledge', // 'strict' | 'general-knowledge' | 'supplemental'
+        learning_mode: 'chat', // 'chat' | 'socratic' | 'crash-course'
+        socratic_state: null,
         source_version_ids: []
       },
       chatAttachments: [], // Temporary attachments for current message
-      selectionContext: null, // Pinned context { text, anchor_id, source_version_id, question_id }
+      onlySpecifiedSources: false,
+      selectionContext: null, // Pinned context { text, anchor_id, source_version_id, question_id, asset_id }
+      learningArtifacts: [],
 
       // User Sources State (Ticket 03, 04, 05)
       sources: [],
@@ -62,7 +75,7 @@ export class Store {
       aiDocumentProposals: [],
       activeAiDocProposalId: null,
       activeAiDocProposal: null,
-
+      
       // Exam Studio State (Ticket 08, 09, 13)
       blueprints: [],
       activeBlueprintId: null,
@@ -83,7 +96,24 @@ export class Store {
       activeAttempt: null,
       activeAttemptReview: null,
 
-      // Global Operations, Modals & Theme
+      revisionProposals: [],
+      activeRevisionProposalId: null,
+      activeRevisionProposal: null,
+
+      // Document Rendering & Export (Ticket 14)
+      renderDocument: null,
+      renderEdition: 'questions', // 'questions' | 'solutions'
+
+      // Observability & Evaluation (Ticket 15)
+      orchestrationRuns: [],
+      activeRunId: null,
+      activeRun: null,
+
+      evaluationSuites: [],
+      activeEvalRunId: null,
+      activeEvalRun: null,
+
+      // Global HUD & Modals
       activeOperations: new Map(),
       toasts: [],
       commandPaletteOpen: false,
@@ -95,6 +125,7 @@ export class Store {
       createAiDocModalOpen: false,
       aiDocRevisionModalOpen: false,
       blueprintModalOpen: false,
+      revisionModalOpen: false,
       citationModalOpen: false,
       activeCitation: null,
       theme: savedTheme || 'paper'
@@ -128,7 +159,7 @@ export class Store {
     }
   }
 
-  // Toast Notification Helper
+  // Toast Helper
   addToast(message, type = 'info', duration = 3500) {
     const id = 'toast_' + Math.random().toString(36).slice(2, 9);
     const toast = { id, message, type, timestamp: Date.now() };
@@ -160,23 +191,23 @@ export class Store {
   }
 
   // Sidebar Collapse Helper
-  toggleSidebar(side = 'left') {
-    const current = !!this.state.sidebarCollapsed[side];
+  toggleSidebar(workspace) {
+    const current = !!this.state.sidebarCollapsed[workspace];
     const next = !current;
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(`lla_sidebar_${side}_collapsed`, String(next));
+      localStorage.setItem(`lla_sidebar_${workspace}_collapsed`, String(next));
     }
     this.setState((s) => ({
       sidebarCollapsed: {
         ...s.sidebarCollapsed,
-        [side]: next
+        [workspace]: next
       }
     }));
   }
 
   // Theme Toggle Helper
   toggleTheme() {
-    const nextTheme = this.state.theme === 'paper' ? 'dark' : 'paper';
+    const nextTheme = this.state.theme === 'paper' ? 'chalkboard' : 'paper';
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('lla_theme', nextTheme);
     }
@@ -184,6 +215,29 @@ export class Store {
       document.documentElement.setAttribute('data-theme', nextTheme);
     }
     this.setState({ theme: nextTheme });
+  }
+
+  // Helper selectors
+  getActiveSubject() {
+    const { workspace, activeSubjectId } = this.state;
+    return workspace.subjects?.find((s) => s.id === activeSubjectId) || null;
+  }
+
+  getActiveModel() {
+    const { models, currentModelId, chat } = this.state;
+    const targetId = currentModelId || chat?.active_model_id;
+    return models?.find((m) => m.id === targetId) || models?.[0] || null;
+  }
+
+  getAttemptAnswer(attempt, questionId) {
+    if (!attempt || !Array.isArray(attempt.answers)) return null;
+    const item = attempt.answers.find((a) => a.question_id === questionId);
+    return item?.answer || null;
+  }
+
+  getAttemptFeedback(attempt, questionId) {
+    if (!attempt || !Array.isArray(attempt.feedback)) return null;
+    return attempt.feedback.find((f) => f.question_id === questionId) || null;
   }
 }
 

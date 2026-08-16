@@ -1,126 +1,233 @@
 /**
  * Command Palette Component (Ctrl+K)
+ * Real-time filter search, keyboard Arrow Up/Down & Enter execution.
  */
 
 import { icons } from '../icons.js';
 
 export function renderCommandPalette(state, container, handlers) {
-  if (!state.commandPaletteOpen) {
+  const { commandPaletteOpen, workspace, activeSubjectId } = state;
+  if (!commandPaletteOpen) {
     container.innerHTML = '';
     return;
   }
 
-  const { activeNavTab, workspace, activeSubjectId, models, currentModelId } = state;
   const activeSubject = workspace.subjects?.find((s) => s.id === activeSubjectId);
-  const activeModel = models?.find((m) => m.id === currentModelId) || models?.[0];
 
-  const commands = [
-    { id: 'nav-learn', label: '切换到「学习」工作区', category: '导航', icon: icons.book(15), action: () => handlers.onSelectNavTab?.('learn') },
-    { id: 'nav-sources', label: '切换到「资料」工作区', category: '导航', icon: icons.layers(15), action: () => handlers.onSelectNavTab?.('sources') },
-    { id: 'nav-quiz_gen', label: '切换到「组卷」工作区', category: '导航', icon: icons.compass(15), action: () => handlers.onSelectNavTab?.('quiz_gen') },
-    { id: 'nav-attempts', label: '切换到「作答」工作区', category: '导航', icon: icons.target(15), action: () => handlers.onSelectNavTab?.('attempts') },
-    { id: 'act-model-config', label: '打开模型配置', category: '模型', icon: icons.cpu(15), action: () => handlers.onOpenModelModal?.() },
-    { id: 'act-create-session', label: '新建学习会话', category: '学习', icon: icons.plus(15), action: () => handlers.onOpenCreateSessionModal?.() },
-    { id: 'act-create-subject', label: '新建科目空间', category: '科目', icon: icons.plus(15), action: () => handlers.onOpenSubjectModal?.('create') },
-    { id: 'act-create-aidoc', label: '新建 AI 资料文档', category: '资料', icon: icons.fileText(15), action: () => handlers.onOpenCreateAiDocModal?.() },
-    { id: 'act-create-blueprint', label: '新建组卷蓝图', category: '组卷', icon: icons.plus(15), action: () => handlers.onOpenBlueprintModal?.() },
-    { id: 'act-toggle-theme', label: '切换浅色/暗色主题', category: '视图', icon: icons.sun(15), action: () => handlers.onToggleTheme?.() }
+  const allCommands = [
+    {
+      id: 'cmd-learn',
+      title: '进入学习与导师问答',
+      category: '工作区导航',
+      icon: 'messageSquare',
+      action: () => handlers.onSelectNavTab?.('learn')
+    },
+    {
+      id: 'cmd-sources',
+      title: '打开资料金库与讲义管理',
+      category: '工作区导航',
+      icon: 'folder',
+      action: () => handlers.onSelectNavTab?.('sources')
+    },
+    {
+      id: 'cmd-studio-bp',
+      title: '设计新试卷蓝图',
+      category: '组卷工坊',
+      icon: 'compass',
+      action: () => {
+        handlers.onSelectNavTab?.('exam_studio');
+        handlers.onOpenBlueprintModal?.();
+      }
+    },
+    {
+      id: 'cmd-studio-draft',
+      title: '查看试题编辑草稿',
+      category: '组卷工坊',
+      icon: 'edit3',
+      action: () => {
+        handlers.onSelectNavTab?.('exam_studio');
+        handlers.onSelectExamStudioSubTab?.('draft');
+      }
+    },
+    {
+      id: 'cmd-practice',
+      title: '开启试卷自由练习模式',
+      category: '作答中心',
+      icon: 'bookOpen',
+      action: () => {
+        handlers.onSelectNavTab?.('practice_exam');
+        if (state.activeExamId) handlers.onStartAttempt?.(state.activeExamId, 'practice');
+      }
+    },
+    {
+      id: 'cmd-exam',
+      title: '开启全真考场计时模式',
+      category: '作答中心',
+      icon: 'play',
+      action: () => {
+        handlers.onSelectNavTab?.('practice_exam');
+        if (state.activeExamId) handlers.onStartAttempt?.(state.activeExamId, 'exam');
+      }
+    },
+    {
+      id: 'cmd-revision',
+      title: '提出 AI 试卷结构化修改建议',
+      category: '试卷工具',
+      icon: 'sparkles',
+      action: () => {
+        handlers.onSelectNavTab?.('practice_exam');
+        handlers.onOpenRevisionModal?.();
+      }
+    },
+    {
+      id: 'cmd-models',
+      title: '配置与注册 AI 模型服务',
+      category: '系统设置',
+      icon: 'sliders',
+      action: () => handlers.onOpenModelModal?.()
+    },
+    {
+      id: 'cmd-rename-sub',
+      title: `重命名科目空间 (${activeSubject?.name || '当前科目'})`,
+      category: '空间管理',
+      icon: 'edit3',
+      action: () => handlers.onOpenRenameSubjectModal?.(activeSubject)
+    },
+    {
+      id: 'cmd-create-sub',
+      title: '新建科目空间',
+      category: '空间管理',
+      icon: 'plus',
+      action: () => handlers.onOpenSubjectModal?.('create')
+    },
+    {
+      id: 'cmd-theme',
+      title: '切换纸张/暗调黑板视觉主题',
+      category: '个性化',
+      icon: 'sun',
+      action: () => handlers.onToggleTheme?.()
+    }
   ];
 
+  let selectedIndex = 0;
+  let filteredCommands = [...allCommands];
+
   container.innerHTML = `
-    <div class="cmd-palette-backdrop" id="cmd-backdrop">
-      <div class="cmd-palette-modal" role="dialog" aria-modal="true" aria-label="快捷命令">
-        <div class="cmd-input-row">
-          <span class="cmd-search-icon">${icons.search(16)}</span>
-          <input
-            type="text"
-            class="cmd-search-input"
-            id="cmd-palette-input"
-            placeholder="搜索命令或工作区... (Esc 退出)"
-            autocomplete="off"
-            autofocus
-          />
-          <button type="button" class="btn-icon-subtle" id="cmd-close-btn" title="关闭">${icons.x(14)}</button>
+    <div class="modal-overlay" id="cmd-modal-overlay">
+      <div class="cmd-palette-box" id="cmd-palette-box">
+        <div class="cmd-input-bar">
+          ${icons.search(18)}
+          <input type="text" class="cmd-input-field" id="cmd-search-input" placeholder="键入指令、搜索页面或快速操作 (↑↓ 选择，Enter 执行，Esc 退出)..." autofocus />
+          <span class="brand-tag">ESC</span>
         </div>
 
-        <div class="cmd-results-list" id="cmd-results">
-          ${commands
-            .map(
-              (cmd, idx) => `
-            <div class="cmd-item ${idx === 0 ? 'is-focused' : ''}" data-cmd-id="${cmd.id}" role="button" tabindex="0">
-              <span class="cmd-item-icon">${cmd.icon}</span>
-              <span class="cmd-item-title">${escapeHtml(cmd.label)}</span>
-              <span class="cmd-item-category">${escapeHtml(cmd.category)}</span>
-            </div>
-          `
-            )
-            .join('')}
+        <div style="padding: 10px; max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;" id="cmd-results-list">
+          ${renderCommandListHtml(filteredCommands, selectedIndex)}
         </div>
       </div>
     </div>
   `;
 
-  const input = container.querySelector('#cmd-palette-input');
+  const input = container.querySelector('#cmd-search-input');
+  const resultsContainer = container.querySelector('#cmd-results-list');
+  const overlay = container.querySelector('#cmd-modal-overlay');
+
+  if (overlay) {
+    overlay.onclick = (e) => {
+      if (e.target === overlay) handlers.onCloseCommandPalette?.();
+    };
+  }
+
   if (input) {
     input.focus();
-    input.oninput = () => {
-      const q = input.value.toLowerCase().trim();
-      const filtered = commands.filter((c) => c.label.toLowerCase().includes(q) || c.category.toLowerCase().includes(q));
-      const resultsContainer = container.querySelector('#cmd-results');
-      if (resultsContainer) {
-        resultsContainer.innerHTML = filtered.length === 0
-          ? `<div class="cmd-empty-hint">未找到匹配命令</div>`
-          : filtered
-              .map(
-                (cmd, idx) => `
-              <div class="cmd-item ${idx === 0 ? 'is-focused' : ''}" data-cmd-id="${cmd.id}" role="button" tabindex="0">
-                <span class="cmd-item-icon">${cmd.icon}</span>
-                <span class="cmd-item-title">${escapeHtml(cmd.label)}</span>
-                <span class="cmd-item-category">${escapeHtml(cmd.category)}</span>
-              </div>
-            `
-              )
-              .join('');
 
-        attachCmdItemEvents();
+    // Input filter
+    input.oninput = () => {
+      const query = input.value.trim().toLowerCase();
+      filteredCommands = allCommands.filter((cmd) => {
+        return cmd.title.toLowerCase().includes(query) || cmd.category.toLowerCase().includes(query);
+      });
+      selectedIndex = 0;
+      updateResults();
+    };
+
+    // Keyboard navigation
+    input.onkeydown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handlers.onCloseCommandPalette?.();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (filteredCommands.length > 0) {
+          selectedIndex = (selectedIndex + 1) % filteredCommands.length;
+          updateResults();
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (filteredCommands.length > 0) {
+          selectedIndex = (selectedIndex - 1 + filteredCommands.length) % filteredCommands.length;
+          updateResults();
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const target = filteredCommands[selectedIndex];
+        if (target) {
+          handlers.onCloseCommandPalette?.();
+          target.action();
+        }
       }
     };
   }
 
-  function attachCmdItemEvents() {
-    container.querySelectorAll('.cmd-item').forEach((el) => {
-      el.onclick = () => {
-        const cid = el.getAttribute('data-cmd-id');
-        const found = commands.find((c) => c.id === cid);
-        if (found) {
+  function updateResults() {
+    if (resultsContainer) {
+      resultsContainer.innerHTML = renderCommandListHtml(filteredCommands, selectedIndex);
+      attachItemClicks();
+    }
+  }
+
+  function attachItemClicks() {
+    container.querySelectorAll('.cmd-item-row').forEach((row, idx) => {
+      row.onclick = () => {
+        const cmd = filteredCommands[idx];
+        if (cmd) {
           handlers.onCloseCommandPalette?.();
-          found.action();
+          cmd.action();
         }
       };
     });
   }
 
-  attachCmdItemEvents();
-
-  const backdrop = container.querySelector('#cmd-backdrop');
-  if (backdrop) {
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) handlers.onCloseCommandPalette?.();
-    };
-  }
-
-  const closeBtn = container.querySelector('#cmd-close-btn');
-  if (closeBtn) {
-    closeBtn.onclick = () => handlers.onCloseCommandPalette?.();
-  }
+  attachItemClicks();
 }
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+function renderCommandListHtml(commands, activeIndex) {
+  if (commands.length === 0) {
+    return `<div style="padding: 24px; text-align: center; color: var(--ink-muted); font-size: 13px;">无匹配的指令</div>`;
+  }
+
+  return commands
+    .map((cmd, idx) => {
+      const isAct = idx === activeIndex;
+      const iconFn = icons[cmd.icon] || icons.command;
+      return `
+      <div class="cmd-item-row ${isAct ? 'is-keyboard-active' : ''}" data-cmd-index="${idx}">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          ${iconFn(16)}
+          <span style="font-weight: 600; font-size: 13px;">${escapeHtml(cmd.title)}</span>
+        </div>
+        <span style="font-size: 11px; font-weight: 700; color: var(--ink-muted);">${escapeHtml(cmd.category)}</span>
+      </div>
+    `;
+    })
+    .join('');
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }

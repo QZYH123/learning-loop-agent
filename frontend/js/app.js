@@ -1,19 +1,18 @@
 /**
  * Main Application Orchestrator for Learning Loop Agent
- * Strictly aligned with Issue 16–22, ADR 0003, ADR 0004, ADR 0005:
- * - 4 Primary Workspaces: 学习 (learn), 资料 (sources), 组卷 (quiz_gen), 作答 (attempts)
- * - Identical two-column skeleton: Left AI Chat + Right Workspace Content
- * - Simple but useful interaction experience
+ * Strictly aligned with Tickets 03–22:
+ * 4+1 Information Architecture, real contract alignment, complete error/loading states,
+ * and reliable asynchronous flows. Strictly ZERO emojis throughout.
  */
 
 import { api } from './api.js';
 import { store } from './state.js';
 import { renderNavbar } from './components/navbar.js';
-import { renderChatPanel } from './components/chat_panel.js';
-import { renderLearnView } from './components/learn_view.js';
+import { renderChatView } from './components/chat_view.js';
 import { renderSourcesView } from './components/sources_view.js';
-import { renderQuizGenView } from './components/quiz_gen_view.js';
-import { renderAttemptsView } from './components/attempts_view.js';
+import { renderExamStudioView } from './components/exam_studio_view.js';
+import { renderPracticeExamView } from './components/practice_exam_view.js';
+import { renderSettingsDevView } from './components/settings_dev_view.js';
 import { renderModals } from './components/modals.js';
 import { renderCommandPalette } from './components/command_palette.js';
 import { renderToasts } from './components/toast.js';
@@ -31,7 +30,7 @@ class App {
     // Subscribe store to trigger re-renders
     store.subscribe((state) => this.render(state));
 
-    // Load initial workspace and models
+    // Load initial workspace, models, eval suites
     await this.loadInitialData();
     this.startAttemptTimer();
   }
@@ -47,17 +46,18 @@ class App {
       </div>
     `;
 
-    // Apply saved theme
+    // Apply active theme
     const theme = store.getState().theme || 'paper';
     document.documentElement.setAttribute('data-theme', theme);
   }
 
   async loadInitialData() {
     try {
-      const [workspace, modelsList, currentModelRes] = await Promise.all([
+      const [workspace, modelsList, currentModelRes, evalSuites] = await Promise.all([
         api.getWorkspace().catch(() => ({ subjects: [], active_subject_id: null })),
         api.listModels().catch(() => ({ items: [] })),
-        api.getCurrentModel().catch(() => null)
+        api.getCurrentModel().catch(() => null),
+        api.listEvaluationSuites().catch(() => ({ items: [] }))
       ]);
 
       const subjects = workspace.subjects || [];
@@ -69,7 +69,8 @@ class App {
         workspace,
         activeSubjectId: activeId,
         models,
-        currentModelId
+        currentModelId,
+        evaluationSuites: evalSuites.items || []
       });
 
       if (activeId) {
@@ -92,15 +93,17 @@ class App {
         aiDocsData,
         blueprintsData,
         draftsData,
-        examsData
+        examsData,
+        runsData
       ] = await Promise.all([
         api.listSessions(subjectId).catch(() => ({ items: [] })),
-        api.getChat(subjectId).catch(() => ({ messages: [], grounding_mode: 'general-knowledge', chat_style: 'default', active_model_id: null })),
+        api.getChat(subjectId).catch(() => ({ messages: [], grounding_mode: 'general-knowledge', learning_mode: 'chat', active_model_id: null })),
         api.listSources(subjectId).catch(() => ({ items: [] })),
         api.listAiDocuments(subjectId).catch(() => ({ items: [] })),
         api.listBlueprints(subjectId).catch(() => ({ items: [] })),
         api.listDrafts(subjectId).catch(() => ({ items: [] })),
-        api.listExams(subjectId).catch(() => ({ items: [] }))
+        api.listExams(subjectId).catch(() => ({ items: [] })),
+        api.listOrchestrationRuns().catch(() => ({ items: [] }))
       ]);
 
       const sessions = sessionsData.items || [];
@@ -109,21 +112,11 @@ class App {
       const blueprints = blueprintsData.items || [];
       const drafts = draftsData.items || [];
       const exams = examsData.items || [];
+      const runs = runsData.items || [];
 
       // Find active session
-      let activeSession = sessions[0] || null;
-      let activeSessionId = activeSession?.id || null;
-
-      // If no session exists, create a default one
-      if (!activeSession && subjectId) {
-        try {
-          activeSession = await api.createSession(subjectId, { title: '学习会话' });
-          activeSessionId = activeSession.id;
-          sessions.unshift(activeSession);
-        } catch (e) {
-          // ignore
-        }
-      }
+      const activeSession = sessions[0] || null;
+      const activeSessionId = activeSession?.id || null;
 
       store.setState({
         sessions,
@@ -144,7 +137,8 @@ class App {
         activeDraft: drafts[0] || null,
         exams,
         activeExamId: exams[0]?.id || null,
-        activeExam: exams[0] || null
+        activeExam: exams[0] || null,
+        orchestrationRuns: runs
       });
 
       // Load deep resources
@@ -153,6 +147,9 @@ class App {
       }
       if (aiDocs[0]?.id) {
         this.loadAiDocDetails(aiDocs[0].id);
+      }
+      if (exams[0]?.id) {
+        this.loadExamRevisions(exams[0].id);
       }
     } catch (err) {
       console.error('Failed to load subject data:', err);
@@ -208,6 +205,28 @@ class App {
     }
   }
 
+  async loadExamRevisions(examId) {
+    try {
+      const [examDetail, proposalsData, versionsData] = await Promise.all([
+        api.getExam(examId).catch(() => null),
+        api.listRevisionProposals(examId).catch(() => ({ items: [] })),
+        api.listExamVersions(examId).catch(() => ({ items: [] }))
+      ]);
+
+      const proposals = proposalsData.items || [];
+
+      store.setState({
+        activeExam: examDetail,
+        revisionProposals: proposals,
+        activeRevisionProposalId: proposals[0]?.id || null,
+        activeRevisionProposal: proposals[0] || null,
+        examVersions: versionsData.items || []
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   startAttemptTimer() {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = setInterval(() => {
@@ -232,18 +251,18 @@ class App {
     });
   }
 
-  // Master Render Method
+  // Master render method
   render(state) {
     const handlers = this.getHandlers();
 
-    // 1. Render Top Navbar
+    // 1. Render Navbar
     const navbarRoot = document.getElementById('navbar-root');
     if (navbarRoot) renderNavbar(state, navbarRoot, handlers);
 
-    // 2. Render 2-Column Workspace Container
+    // 2. Render Main Workspace Container
     const mainWorkspaceRoot = document.getElementById('main-workspace-root');
     if (mainWorkspaceRoot) {
-      this.renderMasterWorkspace(state, mainWorkspaceRoot, handlers);
+      this.renderWorkspace(state, mainWorkspaceRoot, handlers);
     }
 
     // 3. Render Modals & Overlays
@@ -257,38 +276,19 @@ class App {
     if (toastRoot) renderToasts(state, toastRoot, handlers);
   }
 
-  renderMasterWorkspace(state, container, handlers) {
-    const { activeNavTab, sidebarCollapsed = {} } = state;
-    const isLeftCollapsed = !!sidebarCollapsed.left;
+  renderWorkspace(state, container, handlers) {
+    const { activeNavTab } = state;
 
-    container.innerHTML = `
-      <div class="workspace-twocol-skeleton ${isLeftCollapsed ? 'is-left-collapsed' : ''}">
-        <!-- Left: AI Chat Panel (Same across all 4 workspaces) -->
-        <aside class="workspace-left-chat ${isLeftCollapsed ? 'is-collapsed' : ''}" id="workspace-left-chat-root"></aside>
-
-        <!-- Right: Current Workspace Content -->
-        <section class="workspace-right-content" id="workspace-right-content-root"></section>
-      </div>
-    `;
-
-    // Render Left AI Chat
-    const leftChatRoot = container.querySelector('#workspace-left-chat-root');
-    if (leftChatRoot) {
-      renderChatPanel(state, leftChatRoot, handlers);
-    }
-
-    // Render Right Content according to active workspace
-    const rightContentRoot = container.querySelector('#workspace-right-content-root');
-    if (rightContentRoot) {
-      if (activeNavTab === 'learn') {
-        renderLearnView(state, rightContentRoot, handlers);
-      } else if (activeNavTab === 'sources') {
-        renderSourcesView(state, rightContentRoot, handlers);
-      } else if (activeNavTab === 'quiz_gen') {
-        renderQuizGenView(state, rightContentRoot, handlers);
-      } else if (activeNavTab === 'attempts') {
-        renderAttemptsView(state, rightContentRoot, handlers);
-      }
+    if (activeNavTab === 'learn') {
+      renderChatView(state, container, handlers);
+    } else if (activeNavTab === 'sources') {
+      renderSourcesView(state, container, handlers);
+    } else if (activeNavTab === 'exam_studio') {
+      renderExamStudioView(state, container, handlers);
+    } else if (activeNavTab === 'practice_exam') {
+      renderPracticeExamView(state, container, handlers);
+    } else if (activeNavTab === 'settings_dev') {
+      renderSettingsDevView(state, container, handlers);
     }
   }
 
@@ -299,13 +299,19 @@ class App {
         store.setState({ activeNavTab: tabId });
       },
       onSelectExamStudioSubTab: (subtab) => {
-        store.setState({ activeNavTab: 'quiz_gen', examStudioSubTab: subtab });
+        store.setState({ activeNavTab: 'exam_studio', examStudioSubTab: subtab });
+      },
+      onSelectPracticeViewMode: (viewMode) => {
+        store.setState({ activeNavTab: 'practice_exam', practiceExamViewMode: viewMode });
       },
       onSwitchSourcesTab: (tab) => {
         store.setState({ sourcesTab: tab });
       },
-      onToggleSidebar: (side) => {
-        store.toggleSidebar(side);
+      onSelectSettingsSubTab: (subtab) => {
+        store.setState({ activeNavTab: 'settings_dev', settingsDevSubTab: subtab });
+      },
+      onToggleSidebar: (workspace) => {
+        store.toggleSidebar(workspace);
       },
       onToggleTheme: () => {
         store.toggleTheme();
@@ -318,14 +324,14 @@ class App {
       },
 
       // Modal Triggers
-      onOpenSubjectModal: () => {
+      onOpenSubjectModal: (mode) => {
         store.setState({ subjectModalOpen: true });
       },
       onOpenRenameSubjectModal: (subject) => {
         store.setState({ renameSubjectModalOpen: true, subjectToRename: subject });
       },
       onOpenModelModal: () => {
-        store.setState({ modelModalOpen: true, discoveredModels: [] });
+        store.setState({ modelModalOpen: true });
       },
       onOpenCreateSessionModal: () => {
         store.setState({ createSessionModalOpen: true });
@@ -339,6 +345,9 @@ class App {
       onOpenBlueprintModal: () => {
         store.setState({ blueprintModalOpen: true });
       },
+      onOpenRevisionModal: () => {
+        store.setState({ revisionModalOpen: true });
+      },
       onCloseModals: () => {
         store.setState({
           modelModalOpen: false,
@@ -348,6 +357,7 @@ class App {
           createAiDocModalOpen: false,
           aiDocRevisionModalOpen: false,
           blueprintModalOpen: false,
+          revisionModalOpen: false,
           citationModalOpen: false,
           activeCitation: null
         });
@@ -391,156 +401,181 @@ class App {
         }
       },
 
-      // Model Management Actions (Ticket 19 & ADR 0005)
-      onSaveModelConfig: async (payload) => {
+      // Session Actions (Ticket 16, 17, 18)
+      onSearchSessions: (query) => {
+        store.setState({ sessionSearchQuery: query });
+      },
+      onCreateSession: async ({ title, learning_mode, grounding_mode, source_version_ids }) => {
+        const { activeSubjectId, currentModelId } = store.getState();
+        if (!activeSubjectId) return;
+
         try {
-          const res = await api.createModel(payload);
-          store.addToast(`模型「${payload.name || payload.model}」已保存`, 'success');
+          const newSession = await api.createSession(activeSubjectId, {
+            title,
+            learning_mode,
+            grounding_mode,
+            source_version_ids,
+            model_id: currentModelId || undefined
+          });
 
-          // If no active model, select it
-          const { currentModelId } = store.getState();
-          if (!currentModelId && res.id) {
-            await api.selectCurrentModel(res.id).catch(() => {});
-            store.setState({ currentModelId: res.id });
-          }
+          store.addToast('新学习会话已建立', 'success');
+          store.setState({ createSessionModalOpen: false });
 
-          const modelsList = await api.listModels().catch(() => ({ items: [] }));
+          const sessionsData = await api.listSessions(activeSubjectId);
           store.setState({
-            models: modelsList.items || [],
-            modelModalOpen: false
+            sessions: sessionsData.items || [],
+            activeSessionId: newSession.id,
+            activeSession: newSession
           });
         } catch (err) {
-          store.addToast(`保存模型失败: ${err.message}`, 'error');
+          store.addToast(`创建会话失败: ${err.message}`, 'error');
         }
       },
-      onSelectCurrentModel: async (modelId) => {
+      onSelectSession: async (sessionId) => {
+        store.setState({ activeSessionId: sessionId });
         try {
-          await api.selectCurrentModel(modelId);
-          store.setState({ currentModelId: modelId });
-          store.addToast('已切换当前使用模型', 'success');
+          await api.activateSession(sessionId).catch(() => {});
+          const sess = await api.getSession(sessionId);
+          store.setState({ activeSession: sess });
         } catch (err) {
-          store.addToast(`切换模型失败: ${err.message}`, 'error');
+          console.error(err);
         }
       },
-      onDeleteModel: async (modelId) => {
-        if (!confirm('确定要删除此模型配置吗？')) return;
+      onRenameSession: async (sessionId, newTitle) => {
         try {
-          await api.deleteModel(modelId);
-          store.addToast('模型配置已删除', 'info');
-          const modelsList = await api.listModels().catch(() => ({ items: [] }));
-          const models = modelsList.items || [];
-          const { currentModelId } = store.getState();
-          const nextModelId = currentModelId === modelId ? (models[0]?.id || null) : currentModelId;
-          store.setState({ models, currentModelId: nextModelId });
+          const updated = await api.updateSession(sessionId, { title: newTitle });
+          store.addToast('会话名称已更新', 'success');
+          const { activeSubjectId } = store.getState();
+          const sessionsData = await api.listSessions(activeSubjectId);
+          store.setState({
+            sessions: sessionsData.items || [],
+            activeSession: updated
+          });
         } catch (err) {
-          store.addToast(`删除模型失败: ${err.message}`, 'error');
+          store.addToast(`重命名失败: ${err.message}`, 'error');
         }
       },
-      onTestModelConnection: async (payload, callback) => {
+      onDeleteSession: async (sessionId) => {
         try {
-          const t0 = Date.now();
-          const res = await api.discoverModels(payload);
-          const latency_ms = Date.now() - t0;
-          callback({ ok: true, latency_ms });
+          await api.deleteSession(sessionId);
+          store.addToast('会话已删除', 'info');
+          const { activeSubjectId } = store.getState();
+          const sessionsData = await api.listSessions(activeSubjectId);
+          const nextSessions = sessionsData.items || [];
+          store.setState({
+            sessions: nextSessions,
+            activeSessionId: nextSessions[0]?.id || null,
+            activeSession: nextSessions[0] || null
+          });
         } catch (err) {
-          callback({ ok: false, error: err.message });
+          store.addToast(`删除失败: ${err.message}`, 'error');
         }
       },
-      onDiscoverModels: async (payload) => {
+      onAddSessionSource: async (sessionId, sourceVersionId) => {
         try {
-          store.addToast('正在获取可用模型列表...', 'info');
-          const res = await api.discoverModels(payload);
-          const list = res.models || res.items || [];
-          store.setState({ discoveredModels: list });
-          if (list.length > 0) {
-            store.addToast(`已发现 ${list.length} 个模型`, 'success');
+          if (sessionId) {
+            await api.addSessionSource(sessionId, { source_version_id: sourceVersionId });
+            const sess = await api.getSession(sessionId);
+            store.setState({ activeSession: sess });
           } else {
-            store.addToast('未发现模型，请手动输入模型名称', 'info');
+            const { activeSubjectId, chat } = store.getState();
+            const nextSources = [...(chat.source_version_ids || []), sourceVersionId];
+            await api.updateChatConfig(activeSubjectId, { source_version_ids: nextSources });
+            const nextChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: nextChat });
           }
+          store.addToast('资料已固定至当前会话', 'success');
         } catch (err) {
-          store.addToast(`获取模型失败: ${err.message}，仍可手动输入`, 'warning');
+          store.addToast(`添加资料失败: ${err.message}`, 'error');
+        }
+      },
+      onRemoveSessionSource: async (sessionId, sourceVersionId) => {
+        try {
+          if (sessionId) {
+            await api.removeSessionSource(sessionId, sourceVersionId);
+            const sess = await api.getSession(sessionId);
+            store.setState({ activeSession: sess });
+          } else {
+            const { activeSubjectId, chat } = store.getState();
+            const nextSources = (chat.source_version_ids || []).filter((id) => id !== sourceVersionId);
+            await api.updateChatConfig(activeSubjectId, { source_version_ids: nextSources });
+            const nextChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: nextChat });
+          }
+          store.addToast('已从会话中移除资料', 'info');
+        } catch (err) {
+          store.addToast(`移除失败: ${err.message}`, 'error');
         }
       },
 
       // Chat & Tutor Actions
-      onSendMessage: async (content) => {
-        const {
-          activeSubjectId,
-          activeSessionId,
-          activeSession,
-          chat,
-          chatAttachments,
-          selectionContext,
-          activeNavTab
-        } = store.getState();
-
+      onSwitchLearningMode: async (learningMode) => {
+        const { activeSessionId, activeSubjectId } = store.getState();
+        try {
+          if (activeSessionId) {
+            const updated = await api.updateSession(activeSessionId, { learning_mode: learningMode });
+            store.setState({ activeSession: updated });
+          } else if (activeSubjectId) {
+            const nextChat = await api.updateChatConfig(activeSubjectId, { learning_mode: learningMode });
+            store.setState({ chat: nextChat });
+          }
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onUpdateGroundingMode: async (groundingMode) => {
+        const { activeSessionId, activeSubjectId } = store.getState();
+        try {
+          if (activeSessionId) {
+            const updated = await api.updateSession(activeSessionId, { grounding_mode: groundingMode });
+            store.setState({ activeSession: updated });
+          } else if (activeSubjectId) {
+            const nextChat = await api.updateChatConfig(activeSubjectId, { grounding_mode: groundingMode });
+            store.setState({ chat: nextChat });
+          }
+          store.addToast(`知识依据已切换: ${groundingMode}`, 'info');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onSendMessage: async ({ content, intent = 'ask', attachments = [] }) => {
+        const { activeSubjectId, activeSessionId, activeSession, chat, selectionContext, currentModelId } = store.getState();
         if (!activeSubjectId) {
-          store.addToast('请先选择或创建科目空间', 'warning');
+          store.addToast('请先选择或创建一个科目空间', 'error');
           return;
         }
 
-        const chatStyle = activeSession?.chat_style || chat?.chat_style || 'default';
-        const sourceVersionIds = activeSession?.source_version_ids || chat?.source_version_ids || [];
-        const attachmentIds = chatAttachments.map((a) => a.id);
-
-        // Optimistically add user message
-        const userMsg = {
-          role: 'user',
-          content,
-          created_at: Date.now()
-        };
-
-        store.setState((s) => {
-          const currentMsgs = s.activeSession?.messages || s.chat?.messages || [];
-          const updatedMsgs = [...currentMsgs, userMsg];
-
-          return {
-            chatAttachments: [],
-            selectionContext: null,
-            activeSession: s.activeSession ? { ...s.activeSession, messages: updatedMsgs } : null,
-            chat: { ...s.chat, messages: updatedMsgs }
-          };
-        });
-
-        // If in Quiz Gen workspace, also auto-handle natural language quiz requests
-        if (activeNavTab === 'quiz_gen' && content.length >= 3) {
-          api.parseBlueprint(activeSubjectId, content)
-            .then(async (accepted) => {
-              if (accepted.operation?.id) {
-                store.trackOperation(accepted.operation);
-                await api.pollOperation(accepted.operation.id, {
-                  onProgress: (op) => store.trackOperation(op)
-                });
-              }
-              const bp = await api.getBlueprint(accepted.resource?.id || accepted.operation?.resource?.id).catch(() => null);
-              if (bp) {
-                const blueprintsList = await api.listBlueprints(activeSubjectId).catch(() => ({ items: [] }));
-                store.setState({
-                  blueprints: blueprintsList.items || [],
-                  activeBlueprintId: bp.id,
-                  activeBlueprint: bp,
-                  examStudioSubTab: 'blueprint'
-                });
-                store.addToast('已根据您的要求生成试卷设置', 'success');
-              }
-            })
-            .catch(() => {});
-        }
-
-        // Send message to backend
         try {
+          // Optimistically append user message
+          const userMsg = { role: 'user', content, intent, timestamp: Date.now() };
+          if (activeSession) {
+            store.setState((s) => ({
+              activeSession: { ...s.activeSession, messages: [...(s.activeSession.messages || []), userMsg] }
+            }));
+          } else {
+            store.setState((s) => ({
+              chat: { ...s.chat, messages: [...(s.chat?.messages || []), userMsg] }
+            }));
+          }
+
           const payload = {
             content,
-            chat_style: chatStyle,
-            source_version_ids: sourceVersionIds,
-            selection: selectionContext ? {
-              text: selectionContext.text,
-              anchor_id: selectionContext.anchor_id || null,
-              source_version_id: selectionContext.source_version_id || null,
-              question_id: selectionContext.question_id || null
-            } : null,
-            attachment_ids: attachmentIds
+            intent,
+            grounding_mode: activeSession?.grounding_mode || chat.grounding_mode || 'general-knowledge',
+            model_id: activeSession?.model_id || currentModelId || undefined
           };
+
+          if (selectionContext) {
+            payload.selection = {
+              document_kind: selectionContext.source_id ? 'source' : 'exam',
+              document_id: selectionContext.source_id || selectionContext.exam_id,
+              version_id: selectionContext.source_version_id,
+              selected_text: selectionContext.text
+            };
+          }
+
+          // Clear temporary attachments after payload prepared
+          store.setState({ chatAttachments: [] });
 
           let accepted = null;
           if (activeSessionId) {
@@ -556,227 +591,229 @@ class App {
             });
           }
 
-          // Reload session messages
           if (activeSessionId) {
-            const updatedSession = await api.getSession(activeSessionId);
-            store.setState((s) => ({
-              activeSession: updatedSession,
-              sessions: s.sessions.map((sess) => (sess.id === activeSessionId ? updatedSession : sess))
-            }));
+            const updatedSess = await api.getSession(activeSessionId);
+            store.setState({ activeSession: updatedSess });
           } else {
             const updatedChat = await api.getChat(activeSubjectId);
             store.setState({ chat: updatedChat });
           }
         } catch (err) {
-          store.addToast(`发送失败: ${err.message}`, 'error');
+          store.addToast(err.message, 'error');
         }
       },
-      onStopGeneration: async () => {
-        const { activeOperations, activeSubjectId } = store.getState();
-        for (const [opId, op] of activeOperations.entries()) {
-          if (op.status === 'running' || op.status === 'queued') {
-            await api.cancelOperation(opId).catch(() => {});
+      onSendIntentMessage: async (intent) => {
+        const { activeSubjectId, activeSessionId } = store.getState();
+        if (!activeSubjectId) return;
+
+        try {
+          let accepted = null;
+          if (activeSessionId) {
+            accepted = await api.createSessionMessage(activeSessionId, { intent });
+          } else {
+            accepted = await api.sendMessage(activeSubjectId, { intent });
           }
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          if (activeSessionId) {
+            const updatedSess = await api.getSession(activeSessionId);
+            store.setState({ activeSession: updatedSess });
+          } else {
+            const updatedChat = await api.getChat(activeSubjectId);
+            store.setState({ chat: updatedChat });
+          }
+        } catch (err) {
+          store.addToast(err.message, 'error');
         }
-        if (activeSubjectId) {
-          await api.stopChat(activeSubjectId).catch(() => {});
-        }
-        store.setState({ activeOperations: new Map() });
-        store.addToast('生成已停止', 'info');
-      },
-      onSwitchChatStyle: (style) => {
-        store.setState((s) => ({
-          activeSession: s.activeSession ? { ...s.activeSession, chat_style: style } : null,
-          chat: { ...s.chat, chat_style: style }
-        }));
       },
       onClearChat: async () => {
         const { activeSubjectId, activeSessionId } = store.getState();
-        if (!confirm('确定要清空当前会话记录吗？')) return;
-        if (activeSubjectId) {
-          await api.clearChat(activeSubjectId).catch(() => {});
-        }
-        store.setState((s) => ({
-          activeSession: s.activeSession ? { ...s.activeSession, messages: [] } : null,
-          chat: { ...s.chat, messages: [] }
-        }));
-        store.addToast('会话已清空', 'info');
-      },
-      onClearSelectionContext: () => {
-        store.setState({ selectionContext: null });
-      },
-      onUploadChatAttachment: async (file) => {
-        const { activeSubjectId } = store.getState();
         if (!activeSubjectId) return;
         try {
-          store.addToast('正在上传附件...', 'info');
-          const att = await api.uploadChatAttachment(activeSubjectId, file);
-          store.setState((s) => ({
-            chatAttachments: [...s.chatAttachments, att]
-          }));
-          store.addToast('附件已添加', 'success');
-        } catch (err) {
-          store.addToast(`附件上传失败: ${err.message}`, 'error');
-        }
-      },
-      onRemoveChatAttachment: (attId) => {
-        store.setState((s) => ({
-          chatAttachments: s.chatAttachments.filter((a) => a.id !== attId)
-        }));
-      },
-      onInspectCitation: (citation) => {
-        store.setState({
-          citationModalOpen: true,
-          activeCitation: citation
-        });
-      },
-
-      // Session Management
-      onSwitchSession: async (sessionId) => {
-        try {
-          const sess = await api.getSession(sessionId);
-          store.setState({
-            activeSessionId: sessionId,
-            activeSession: sess
-          });
-        } catch (err) {
-          store.addToast('切换会话失败', 'error');
-        }
-      },
-      onCreateSession: async ({ title, source_version_ids }) => {
-        const { activeSubjectId } = store.getState();
-        if (!activeSubjectId) return;
-        try {
-          const sess = await api.createSession(activeSubjectId, { title, source_version_ids });
-          store.setState((s) => ({
-            sessions: [sess, ...s.sessions],
-            activeSessionId: sess.id,
-            activeSession: sess,
-            createSessionModalOpen: false
-          }));
-          store.addToast(`已开启新会话「${title}」`, 'success');
-        } catch (err) {
-          store.addToast(`创建会话失败: ${err.message}`, 'error');
-        }
-      },
-      onDeleteSession: async (sessionId) => {
-        if (!confirm('确定要删除此会话吗？')) return;
-        try {
-          await api.deleteSession(sessionId);
-          store.setState((s) => {
-            const filtered = s.sessions.filter((sess) => sess.id !== sessionId);
-            return {
-              sessions: filtered,
-              activeSessionId: filtered[0]?.id || null,
-              activeSession: filtered[0] || null
-            };
-          });
-          store.addToast('会话已删除', 'info');
+          if (activeSessionId) {
+            // Delete and re-create clean session or clear
+            store.setState((s) => ({ activeSession: { ...s.activeSession, messages: [] } }));
+          } else {
+            await api.clearChat(activeSubjectId);
+            store.setState((s) => ({ chat: { ...s.chat, messages: [] } }));
+          }
+          store.addToast('对话已清空', 'info');
         } catch (err) {
           store.addToast(err.message, 'error');
         }
       },
-
-      // Learn View Actions
-      onSelectSource: async (sourceId) => {
-        store.setState({ activeSourceId: sourceId, activeAiDocument: null, activeAiDocumentId: null });
-        await this.loadSourceVersions(sourceId);
-      },
-      onSelectAiDocument: async (docId) => {
-        store.setState({ activeAiDocumentId: docId, activeSource: null, activeSourceId: null });
-        await this.loadAiDocDetails(docId);
-      },
-      onTogglePinSource: (sourceId) => {
-        store.setState((s) => {
-          if (!s.activeSession) return {};
-          const currentPins = s.activeSession.source_version_ids || [];
-          const nextPins = currentPins.includes(sourceId)
-            ? currentPins.filter((id) => id !== sourceId)
-            : [...currentPins, sourceId];
-
+      onAddChatAttachments: (files) => {
+        const newAtts = files.map((file) => {
+          const isImage = file.type.startsWith('image/');
           return {
-            activeSession: { ...s.activeSession, source_version_ids: nextPins }
+            file,
+            name: file.name,
+            size_bytes: file.size,
+            is_image: isImage,
+            preview_url: isImage ? URL.createObjectURL(file) : null,
+            status: 'ready'
           };
         });
-        store.addToast('已更新会话参考资料范围', 'info');
+        store.setState((s) => ({ chatAttachments: [...s.chatAttachments, ...newAtts] }));
       },
-      onClearActiveAnchor: () => {
-        store.setState({ activeAnchor: null });
+      onRemoveChatAttachment: (index) => {
+        store.setState((s) => ({
+          chatAttachments: s.chatAttachments.filter((_, idx) => idx !== index)
+        }));
       },
-      onExportCurrentDocument: () => {
-        const { activeAiDocument, activeSource } = store.getState();
-        const item = activeAiDocument || activeSource;
-        if (!item) return;
-
-        const content = item.content || item.text_content || '';
-        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${item.title || item.name || 'document'}.md`;
-        a.click();
-        URL.revokeObjectURL(url);
-        store.addToast('已导出 Markdown 文件', 'success');
+      onPinSelection: (sel) => {
+        store.setState({ selectionContext: sel });
+        store.addToast('已将段落选区固定至导师提问', 'info');
       },
-
-      // Sources & AI Docs Actions
-      onUploadSource: async (file) => {
-        const { activeSubjectId } = store.getState();
-        if (!activeSubjectId) return;
+      onClearSelection: () => {
+        store.setState({ selectionContext: null });
+      },
+      onInspectCitation: async ({ citationId }) => {
         try {
-          store.addToast('正在上传并解析资料...', 'info');
-          const accepted = await api.uploadSource(activeSubjectId, file);
-          if (accepted.operation?.id) {
-            store.trackOperation(accepted.operation);
-            await api.pollOperation(accepted.operation.id, {
-              onProgress: (op) => store.trackOperation(op)
-            });
-          }
-
-          const sourcesList = await api.listSources(activeSubjectId);
-          const sources = sourcesList.items || [];
-          const created = sources[0];
-
-          store.setState({
-            sources,
-            activeSourceId: created?.id || null,
-            activeSource: created || null,
-            sourcesTab: 'user_sources'
-          });
-
-          if (created?.id) {
-            await this.loadSourceVersions(created.id);
-          }
-          store.addToast('资料上传与解析完毕', 'success');
+          const cit = await api.getCitation(citationId);
+          store.setState({ citationModalOpen: true, activeCitation: cit });
         } catch (err) {
-          store.addToast(`资料上传失败: ${err.message}`, 'error');
+          store.addToast('无法获取引用详情', 'error');
         }
       },
-      onDeleteSource: async (sourceId) => {
-        if (!confirm('确定要删除此资料吗？')) return;
+
+      // Model Management & Discovery (Ticket 16, 19)
+      onSaveModel: async (modelConfig) => {
         try {
-          await api.deleteSource(sourceId);
-          store.addToast('资料已删除', 'info');
-          const { activeSubjectId } = store.getState();
-          if (activeSubjectId) {
-            const sourcesList = await api.listSources(activeSubjectId);
-            const sources = sourcesList.items || [];
-            store.setState({
-              sources,
-              activeSourceId: sources[0]?.id || null,
-              activeSource: sources[0] || null
-            });
-          }
+          const res = await api.addModel(modelConfig);
+          store.addToast(`模型「${res.model}」注册成功`, 'success');
+          store.setState({ modelModalOpen: false });
+          const modelsList = await api.listModels();
+          store.setState({ models: modelsList.items || [] });
         } catch (err) {
           store.addToast(err.message, 'error');
         }
       },
-      onCreateAiDocument: async ({ title, content }) => {
+      onDiscoverModels: async ({ provider, base_url, api_key }) => {
+        try {
+          store.addToast('正在向服务端探测可用模型列表...', 'info');
+          const res = await api.discoverModels({ provider, base_url, api_key });
+          const items = res.items || res.models || [];
+          if (items.length > 0) {
+            store.setState({ discoveredModels: items });
+            store.addToast(`成功发现 ${items.length} 个可用模型`, 'success');
+          } else {
+            store.addToast('未获取到模型列表，请手动输入模型名称', 'info');
+          }
+        } catch (err) {
+          store.addToast(`模型发现失败: ${err.message}，已保留手动输入`, 'error');
+        }
+      },
+      onSelectGlobalCurrentModel: async (modelId) => {
+        try {
+          await api.selectCurrentModel({ model_id: modelId });
+          store.setState({ currentModelId: modelId });
+          store.addToast('已切换系统当前模型', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onVerifyModel: async (modelId) => {
+        try {
+          store.addToast('正在进行模型连通性测试...', 'info');
+          const res = await api.verifyModel(modelId);
+          store.addToast(res.status === 'ok' ? '模型连接通畅，就绪可用' : '连接异常', res.status === 'ok' ? 'success' : 'error');
+        } catch (err) {
+          store.addToast(`连通性测试失败: ${err.message}`, 'error');
+        }
+      },
+      onDeleteModel: async (modelId) => {
+        try {
+          await api.deleteModel(modelId);
+          store.addToast('模型已移除', 'success');
+          const modelsList = await api.listModels();
+          store.setState({ models: modelsList.items || [] });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Sources Actions
+      onUploadFiles: async (files) => {
+        const { activeSubjectId } = store.getState();
+        if (!activeSubjectId) {
+          store.addToast('请先选择或创建一个科目空间', 'error');
+          return;
+        }
+
+        for (const file of files) {
+          try {
+            store.addToast(`正在解析资料《${file.name}》...`, 'info');
+            const res = await api.uploadSource(activeSubjectId, file);
+            if (res.operation?.id) {
+              store.trackOperation(res.operation);
+              await api.pollOperation(res.operation.id, {
+                onProgress: (op) => store.trackOperation(op)
+              });
+            }
+            store.addToast(`《${file.name}》已收录就绪`, 'success');
+          } catch (err) {
+            store.addToast(`上传 ${file.name} 失败: ${err.message}`, 'error');
+          }
+        }
+
+        const sourcesData = await api.listSources(activeSubjectId);
+        store.setState({ sources: sourcesData.items || [] });
+      },
+      onIterateSourceVersion: async (sourceId, file) => {
+        try {
+          store.addToast(`正在上传新版本并重新解析《${file.name}》...`, 'info');
+          const res = await api.uploadSourceVersion(sourceId, file);
+          if (res.operation?.id) {
+            store.trackOperation(res.operation);
+            await api.pollOperation(res.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+          store.addToast('资料新版本已迭代解析完毕', 'success');
+          await this.loadSourceVersions(sourceId);
+        } catch (err) {
+          store.addToast(`迭代版本失败: ${err.message}`, 'error');
+        }
+      },
+      onSelectSource: async (sourceId) => {
+        store.setState({ activeSourceId: sourceId });
+        await this.loadSourceVersions(sourceId);
+      },
+      onDeleteSource: async (sourceId) => {
+        if (!confirm('确定删除此学习资料吗？引用此资料的会话和试卷将保留历史记录，但无法继续检索新内容。')) return;
+        try {
+          await api.deleteSource(sourceId);
+          store.addToast('资料已删除', 'success');
+          const { activeSubjectId } = store.getState();
+          const sourcesData = await api.listSources(activeSubjectId);
+          const nextSources = sourcesData.items || [];
+          store.setState({
+            sources: nextSources,
+            activeSourceId: nextSources[0]?.id || null,
+            activeSource: nextSources[0] || null
+          });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // AI-Authored Documents Actions (Ticket 20)
+      onCreateAiDocument: async ({ title, instruction, source_version_ids }) => {
         const { activeSubjectId } = store.getState();
         if (!activeSubjectId) return;
+
         try {
-          store.addToast('正在创建 AI 文档...', 'info');
-          const accepted = await api.createAiDocument(activeSubjectId, { title, content });
+          store.addToast(`正在指令 AI 生成《${title}》...`, 'info');
+          store.setState({ createAiDocModalOpen: false });
+
+          const accepted = await api.createAiDocument(activeSubjectId, { title, instruction, source_version_ids });
           if (accepted.operation?.id) {
             store.trackOperation(accepted.operation);
             await api.pollOperation(accepted.operation.id, {
@@ -784,30 +821,39 @@ class App {
             });
           }
 
-          const docsList = await api.listAiDocuments(activeSubjectId);
-          const aiDocs = docsList.items || [];
-          const created = aiDocs[0];
+          store.addToast(`《${title}》已生成完毕`, 'success');
+          const docsData = await api.listAiDocuments(activeSubjectId);
+          const nextDocs = docsData.items || [];
+          const newDocId = accepted.resource?.id || nextDocs[0]?.id;
 
           store.setState({
-            aiDocuments: aiDocs,
-            activeAiDocumentId: created?.id || null,
-            activeAiDocument: created || null,
-            createAiDocModalOpen: false,
+            aiDocuments: nextDocs,
+            activeAiDocumentId: newDocId,
             sourcesTab: 'ai_documents'
           });
 
-          if (created?.id) {
-            await this.loadAiDocDetails(created.id);
-          }
-          store.addToast(`AI 文档「${title}」已创建`, 'success');
+          if (newDocId) await this.loadAiDocDetails(newDocId);
         } catch (err) {
-          store.addToast(`创建文档失败: ${err.message}`, 'error');
+          store.addToast(`生成 AI 文档失败: ${err.message}`, 'error');
         }
       },
-      onProposeAiDocRevision: async (docId, instruction) => {
+      onSelectAiDoc: async (docId) => {
+        store.setState({ activeAiDocumentId: docId });
+        await this.loadAiDocDetails(docId);
+      },
+      onCreateAiDocRevisionProposal: async (docId, instruction) => {
         try {
-          store.addToast('AI 正在生成文档修改提案...', 'info');
-          const accepted = await api.createAiDocumentRevisionProposal(docId, { instruction });
+          store.addToast('正在生成 AI 资料修改提案...', 'info');
+          store.setState({ aiDocRevisionModalOpen: false });
+
+          const { activeAiDocument } = store.getState();
+          const baseVersionId = activeAiDocument?.versions?.[0]?.id || activeAiDocument?.id;
+
+          const accepted = await api.createAiDocumentRevisionProposal(docId, {
+            instruction,
+            base_version_id: baseVersionId
+          });
+
           if (accepted.operation?.id) {
             store.trackOperation(accepted.operation);
             await api.pollOperation(accepted.operation.id, {
@@ -815,52 +861,59 @@ class App {
             });
           }
 
+          store.addToast('AI 修改建议提案已生成', 'success');
           await this.loadAiDocDetails(docId);
-          store.setState({ aiDocRevisionModalOpen: false });
-          store.addToast('修改提案已生成，请在右侧查看差异预览', 'success');
         } catch (err) {
-          store.addToast(`生成修改提案失败: ${err.message}`, 'error');
+          store.addToast(err.message, 'error');
         }
       },
       onApplyAiDocProposal: async (proposalId) => {
+        const { activeAiDocumentId } = store.getState();
         try {
-          const doc = await api.applyAiDocumentRevisionProposal(proposalId);
-          store.setState({ activeAiDocument: doc, activeAiDocProposal: null });
-          await this.loadAiDocDetails(doc.id);
-          store.addToast('已应用修改，生成了新版本', 'success');
+          await api.applyAiDocumentRevisionProposal(proposalId);
+          store.addToast('已将 AI 建议应用为新版本', 'success');
+          await this.loadAiDocDetails(activeAiDocumentId);
         } catch (err) {
           store.addToast(`应用修改失败: ${err.message}`, 'error');
         }
       },
       onDiscardAiDocProposal: async (proposalId) => {
+        const { activeAiDocumentId } = store.getState();
         try {
           await api.discardAiDocumentRevisionProposal(proposalId);
-          store.setState({ activeAiDocProposal: null });
-          const { activeAiDocumentId } = store.getState();
-          if (activeAiDocumentId) await this.loadAiDocDetails(activeAiDocumentId);
-          store.addToast('已放弃修改提案', 'info');
+          store.addToast('提案已放弃', 'info');
+          await this.loadAiDocDetails(activeAiDocumentId);
         } catch (err) {
           store.addToast(err.message, 'error');
         }
       },
       onRestoreAiDocVersion: async (docId, versionId) => {
         try {
-          const doc = await api.restoreAiDocumentVersion(docId, versionId);
-          store.setState({ activeAiDocument: doc });
+          await api.restoreAiDocumentVersion(docId, versionId);
+          store.addToast('文档历史版本已恢复', 'success');
           await this.loadAiDocDetails(docId);
-          store.addToast('已恢复至选定版本', 'success');
         } catch (err) {
           store.addToast(`恢复版本失败: ${err.message}`, 'error');
         }
       },
 
-      // Quiz Gen Actions
-      onCreateBlueprint: async ({ title, prompt }) => {
-        const { activeSubjectId } = store.getState();
+      // Exam Blueprints Actions (Ticket 08)
+      onCreateBlueprint: async ({ prompt, total_score, grounding_mode }) => {
+        const { activeSubjectId, activeSourceVersions } = store.getState();
         if (!activeSubjectId) return;
+
         try {
-          store.addToast('正在设计试卷蓝图...', 'info');
-          const accepted = await api.parseBlueprint(activeSubjectId, prompt);
+          store.addToast('正在构思并解析试卷蓝图...', 'info');
+          store.setState({ blueprintModalOpen: false });
+
+          const srcIds = activeSourceVersions[0]?.id ? [activeSourceVersions[0].id] : [];
+          const accepted = await api.parseBlueprint(activeSubjectId, {
+            prompt,
+            total_score,
+            grounding_mode,
+            source_version_ids: srcIds
+          });
+
           if (accepted.operation?.id) {
             store.trackOperation(accepted.operation);
             await api.pollOperation(accepted.operation.id, {
@@ -868,38 +921,44 @@ class App {
             });
           }
 
-          const bpList = await api.listBlueprints(activeSubjectId);
-          const bps = bpList.items || [];
-          const created = bps[0];
-
+          const bpsData = await api.listBlueprints(activeSubjectId);
+          const nextBps = bpsData.items || [];
           store.setState({
-            blueprints: bps,
-            activeBlueprintId: created?.id || null,
-            activeBlueprint: created || null,
-            blueprintModalOpen: false,
+            blueprints: nextBps,
+            activeBlueprintId: nextBps[0]?.id || null,
+            activeBlueprint: nextBps[0] || null,
+            activeNavTab: 'exam_studio',
             examStudioSubTab: 'blueprint'
           });
-          store.addToast('组卷蓝图已生成', 'success');
+          store.addToast('组卷蓝图构思完成', 'success');
         } catch (err) {
-          store.addToast(`生成蓝图失败: ${err.message}`, 'error');
+          store.addToast(`蓝图解析失败: ${err.message}`, 'error');
         }
       },
-      onConfirmBlueprint: async (blueprintId) => {
+      onSelectBlueprint: async (bpId) => {
+        store.setState({ activeBlueprintId: bpId });
         try {
-          const bp = await api.confirmBlueprint(blueprintId);
-          store.setState((s) => ({
-            activeBlueprint: bp,
-            blueprints: s.blueprints.map((b) => (b.id === blueprintId ? bp : b))
-          }));
-          store.addToast('试卷设置已确认，可以开始组题', 'success');
+          const bp = await api.getBlueprint(bpId);
+          store.setState({ activeBlueprint: bp });
         } catch (err) {
-          store.addToast(`确认蓝图失败: ${err.message}`, 'error');
+          console.error(err);
         }
       },
-      onGenerateDraftFromBlueprint: async (blueprintId) => {
+      onConfirmBlueprint: async (bpId) => {
         try {
-          store.addToast('正在按蓝图逐题生成试卷草稿...', 'info');
-          const accepted = await api.generateDraftFromBlueprint(blueprintId);
+          const confirmed = await api.confirmBlueprint(bpId);
+          store.setState({ activeBlueprint: confirmed });
+          store.addToast('蓝图已确认，可开始增量组题', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onGenerateDraftFromBlueprint: async (bpId) => {
+        const { activeSubjectId } = store.getState();
+        try {
+          store.addToast('正在增量创建试卷题目槽位...', 'info');
+          const accepted = await api.generateDraftFromBlueprint(bpId);
+
           if (accepted.operation?.id) {
             store.trackOperation(accepted.operation);
             await api.pollOperation(accepted.operation.id, {
@@ -907,26 +966,35 @@ class App {
             });
           }
 
-          const { activeSubjectId } = store.getState();
-          const draftsList = await api.listDrafts(activeSubjectId);
-          const drafts = draftsList.items || [];
-          const created = drafts[0];
-
+          const draftsData = await api.listDrafts(activeSubjectId);
+          const nextDrafts = draftsData.items || [];
           store.setState({
-            drafts,
-            activeDraftId: created?.id || null,
-            activeDraft: created || null,
+            drafts: nextDrafts,
+            activeDraftId: nextDrafts[0]?.id || null,
+            activeDraft: nextDrafts[0] || null,
             examStudioSubTab: 'draft'
           });
-          store.addToast('试题草稿生成完毕', 'success');
+          store.addToast('试卷草稿创建就绪，题目正在增量推演', 'success');
         } catch (err) {
-          store.addToast(`生成草稿失败: ${err.message}`, 'error');
+          store.addToast(`生成试题失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Exam Drafts Actions (Ticket 09)
+      onSelectDraft: async (draftId) => {
+        store.setState({ activeDraftId: draftId });
+        try {
+          const d = await api.getDraft(draftId);
+          store.setState({ activeDraft: d });
+        } catch (err) {
+          console.error(err);
         }
       },
       onRetryDraftQuestion: async (draftId, questionId) => {
         try {
-          store.addToast('正在重新生成该题目...', 'info');
+          store.addToast('正在单独重试生成该题...', 'info');
           const accepted = await api.retryDraftQuestion(draftId, questionId);
+
           if (accepted.operation?.id) {
             store.trackOperation(accepted.operation);
             await api.pollOperation(accepted.operation.id, {
@@ -935,84 +1003,149 @@ class App {
           }
 
           const updatedDraft = await api.getDraft(draftId);
-          store.setState((s) => ({
-            activeDraft: updatedDraft,
-            drafts: s.drafts.map((d) => (d.id === draftId ? updatedDraft : d))
-          }));
-          store.addToast('题目已重新生成', 'success');
+          store.setState({ activeDraft: updatedDraft });
+          store.addToast('该题已重新生成完毕', 'success');
         } catch (err) {
-          store.addToast(`重试题目失败: ${err.message}`, 'error');
+          store.addToast(`重试生成失败: ${err.message}`, 'error');
         }
       },
       onPublishDraft: async (draftId) => {
+        const { activeSubjectId } = store.getState();
         try {
-          store.addToast('正在发布为正式试卷...', 'info');
-          const exam = await api.publishDraft(draftId);
-          const { activeSubjectId } = store.getState();
-          const examsList = await api.listExams(activeSubjectId);
+          store.addToast('正在正式发布试卷...', 'info');
+          const accepted = await api.publishDraft(draftId);
 
-          store.setState({
-            exams: examsList.items || [],
-            activeExamId: exam.id,
-            activeExam: exam,
-            examStudioSubTab: 'exams'
-          });
-          store.addToast('试卷已正式发布！可在已发试卷或作答区查看', 'success');
-        } catch (err) {
-          store.addToast(`发布试卷失败: ${err.message}`, 'error');
-        }
-      },
-      onSelectBlueprint: async (bpId) => {
-        const bp = await api.getBlueprint(bpId).catch(() => null);
-        store.setState({ activeBlueprintId: bpId, activeBlueprint: bp });
-      },
-      onSelectDraft: async (draftId) => {
-        const draft = await api.getDraft(draftId).catch(() => null);
-        store.setState({ activeDraftId: draftId, activeDraft: draft });
-      },
-      onSelectExam: async (examId) => {
-        const exam = await api.getExam(examId).catch(() => null);
-        store.setState({ activeExamId: examId, activeExam: exam, activeAttempt: null, activeAttemptReview: null });
-      },
-      onExportExam: async (examId, format = 'pdf', edition = 'questions') => {
-        try {
-          store.addToast(`正在生成 ${format.toUpperCase()} 导出排版...`, 'info');
-          const accepted = await api.createExamExport(examId, { format, edition });
           if (accepted.operation?.id) {
             store.trackOperation(accepted.operation);
             await api.pollOperation(accepted.operation.id, {
               onProgress: (op) => store.trackOperation(op)
             });
           }
-          const exp = await api.getExamExport(accepted.resource?.id || accepted.operation?.resource?.id);
-          if (exp.download_url) {
-            window.open(exp.download_url, '_blank');
-          }
-          store.addToast('试卷排版已就绪', 'success');
+
+          const examsData = await api.listExams(activeSubjectId);
+          const nextExams = examsData.items || [];
+          store.setState({
+            exams: nextExams,
+            activeExamId: nextExams[0]?.id || null,
+            activeExam: nextExams[0] || null,
+            examStudioSubTab: 'exam'
+          });
+          store.addToast('正式试卷发布成功！已归档至作答中心', 'success');
         } catch (err) {
-          store.addToast(`导出失败: ${err.message}`, 'error');
+          store.addToast(`发布失败: ${err.message}`, 'error');
         }
       },
 
-      // Attempts & Practice Actions (Ticket 10, 11, 21)
-      onStartAttempt: async (examId, mode = 'practice') => {
+      // Exams & AI Revision Proposals Actions (Ticket 13)
+      onSelectExam: async (examId) => {
+        store.setState({ activeExamId: examId });
+        await this.loadExamRevisions(examId);
+      },
+      onCreateExamRevisionProposal: async (examId, instruction) => {
         try {
-          store.addToast(`正在初始化${mode === 'practice' ? '练习' : '考试'}答卷...`, 'info');
+          store.addToast('正在分析并生成试卷 AI 修改差异提案...', 'info');
+          store.setState({ revisionModalOpen: false });
+
+          const { activeExam } = store.getState();
+          const baseVersionId = activeExam?.versions?.[0]?.id || activeExam?.id;
+
+          const accepted = await api.proposeRevision(examId, {
+            instruction,
+            base_version_id: baseVersionId
+          });
+
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+
+          await this.loadExamRevisions(examId);
+          store.addToast('修改比对提案已就绪', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onApplyProposal: async (proposalId) => {
+        const { activeExamId } = store.getState();
+        try {
+          const updatedExam = await api.applyRevisionProposal(proposalId);
+          store.setState({ activeExam: updatedExam });
+          store.addToast('修改提案已成功合并至正式试卷', 'success');
+          await this.loadExamRevisions(activeExamId);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onDiscardProposal: async (proposalId) => {
+        const { activeExamId } = store.getState();
+        try {
+          await api.discardRevisionProposal(proposalId);
+          store.addToast('提案已放弃', 'info');
+          await this.loadExamRevisions(activeExamId);
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onUndoExamChange: async (examId) => {
+        try {
+          await api.undoExamChange(examId);
+          store.addToast('已撤销上一步试卷修改', 'success');
+          await this.loadExamRevisions(examId);
+        } catch (err) {
+          store.addToast(`撤销失败: ${err.message}`, 'error');
+        }
+      },
+      onRedoExamChange: async (examId) => {
+        try {
+          await api.redoExamChange(examId);
+          store.addToast('已重做试卷修改', 'success');
+          await this.loadExamRevisions(examId);
+        } catch (err) {
+          store.addToast(`重做失败: ${err.message}`, 'error');
+        }
+      },
+
+      // Practice & Exam Attempt Actions (Ticket 10, 11, 21)
+      onSelectExamForPractice: (examId) => {
+        store.setState({
+          activeExamId: examId,
+          activeAttempt: null,
+          activeAttemptReview: null
+        });
+      },
+      onSelectAttemptHistory: async (attemptId) => {
+        try {
+          const att = await api.getAttempt(attemptId);
+          if (att.status === 'completed' || att.is_completed) {
+            const review = await api.getAttemptReview(attemptId).catch(() => null);
+            if (review) {
+              store.setState({ activeAttemptReview: review, activeAttempt: att });
+              return;
+            }
+          }
+          store.setState({ activeAttempt: att, activeAttemptReview: null });
+        } catch (err) {
+          store.addToast('加载作答记录失败', 'error');
+        }
+      },
+      onStartAttempt: async (examId, mode = 'practice', showSuggestedScore = false) => {
+        try {
+          store.addToast(`正在初始化${mode === 'practice' ? '练习' : '正式考试'}答题纸...`, 'info');
           const attempt = await api.createAttempt(examId, {
             mode,
-            show_suggested_score: mode === 'practice'
+            show_suggested_score: showSuggestedScore
           });
 
           store.setState((s) => ({
-            activeNavTab: 'attempts',
-            activeExamId: examId,
             activeAttemptId: attempt.id,
             activeAttempt: attempt,
             activeAttemptReview: null,
             attempts: [attempt, ...s.attempts]
           }));
         } catch (err) {
-          store.addToast(`开启答卷失败: ${err.message}`, 'error');
+          store.addToast(`开启作答失败: ${err.message}`, 'error');
         }
       },
       onSaveAttemptAnswer: async (attemptId, questionId, answer) => {
@@ -1029,29 +1162,21 @@ class App {
             } else {
               nextAnswers = [...answers, { question_id: questionId, answer }];
             }
-
-            // Mark feedback as expired if answer modified after feedback
-            const feedbacks = s.activeAttempt.feedback || [];
-            const nextFeedbacks = feedbacks.map((f) =>
-              f.question_id === questionId ? { ...f, is_expired: true } : f
-            );
-
             return {
               activeAttempt: {
                 ...s.activeAttempt,
-                answers: nextAnswers,
-                feedback: nextFeedbacks
+                answers: nextAnswers
               }
             };
           });
         } catch (err) {
-          console.error('Auto-save answer error:', err);
+          console.error('Failed to auto-save answer:', err);
         }
       },
       onRequestQuestionFeedback: async (attemptId, questionId) => {
         const { currentModelId } = store.getState();
         try {
-          store.addToast('正在获取本题 AI 得分要点与解析...', 'info');
+          store.addToast('正在获取本题 AI 得分要点与反馈...', 'info');
           const accepted = await api.requestQuestionFeedback(attemptId, questionId, {
             model_id: currentModelId,
             show_suggested_score: true
@@ -1066,9 +1191,9 @@ class App {
 
           const updatedAtt = await api.getAttempt(attemptId);
           store.setState({ activeAttempt: updatedAtt });
-          store.addToast('本题解析与反馈已生成', 'success');
+          store.addToast('本题反馈已生成', 'success');
         } catch (err) {
-          store.addToast(`获取解析失败: ${err.message}`, 'error');
+          store.addToast(`获取反馈失败: ${err.message}`, 'error');
         }
       },
       onCompleteAttempt: async (attemptId) => {
@@ -1116,31 +1241,82 @@ class App {
           store.addToast(`批改失败: ${err.message}`, 'error');
         }
       },
-      onSelectAttempt: async (attemptId) => {
+      onPauseAttempt: async (attemptId) => {
         try {
-          const att = await api.getAttempt(attemptId);
-          if (att.is_completed || att.status === 'completed') {
-            const review = await api.getAttemptReview(attemptId).catch(() => null);
-            store.setState({ activeAttempt: att, activeAttemptReview: review });
-            return;
-          }
-          store.setState({ activeAttempt: att, activeAttemptReview: null });
+          const paused = await api.pauseAttempt(attemptId);
+          store.setState({ activeAttempt: paused });
+          store.addToast('作答已暂停', 'info');
         } catch (err) {
-          store.addToast('加载作答记录失败', 'error');
+          store.addToast(err.message, 'error');
         }
       },
-      onSelectTextForQuestion: (selectedText) => {
-        store.setState({
-          selectionContext: { text: selectedText }
-        });
-        const textarea = document.querySelector('#chat-input-textarea');
-        if (textarea) {
-          textarea.focus();
+      onResumeAttempt: async (attemptId) => {
+        try {
+          const resumed = await api.resumeAttempt(attemptId);
+          store.setState({ activeAttempt: resumed });
+          store.addToast('作答已恢复计时', 'info');
+        } catch (err) {
+          store.addToast(err.message, 'error');
         }
-        store.addToast('已将选中文字附加入对话上下文', 'info');
+      },
+      onExitAttempt: () => {
+        store.setState({ activeAttempt: null, activeAttemptReview: null });
       },
 
-      // Toast Dismiss
+      // Renderer Actions (Ticket 14)
+      onSwitchRenderEdition: async (edition) => {
+        const { activeExamId } = store.getState();
+        if (!activeExamId) return;
+        await this.loadRenderDocument(activeExamId, edition);
+      },
+      onExportExam: async (examId, format, edition) => {
+        try {
+          store.addToast(`正在生成 ${format.toUpperCase()} 导出排版...`, 'info');
+          const accepted = await api.createExamExport(examId, { format, edition });
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+          const exp = await api.getExamExport(accepted.resource?.id || accepted.operation?.resource?.id);
+          if (exp.download_url) {
+            window.open(exp.download_url, '_blank');
+          }
+          store.addToast('文件已导出就绪', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Observability & Evaluation Actions (Ticket 15)
+      onSelectRun: async (runId) => {
+        try {
+          const run = await api.getOrchestrationRun(runId);
+          store.setState({ activeRunId: runId, activeRun: run });
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+      onRunEvaluationSuite: async (suiteId) => {
+        try {
+          store.addToast('正在运行自动化基准测试套件...', 'info');
+          const accepted = await api.runEvaluationSuite(suiteId);
+          if (accepted.operation?.id) {
+            store.trackOperation(accepted.operation);
+            await api.pollOperation(accepted.operation.id, {
+              onProgress: (op) => store.trackOperation(op)
+            });
+          }
+          const evalRun = await api.getEvaluationRun(accepted.resource?.id || accepted.operation?.resource?.id);
+          store.setState({ activeEvalRun: evalRun });
+          store.addToast('基准评估完毕', 'success');
+        } catch (err) {
+          store.addToast(err.message, 'error');
+        }
+      },
+
+      // Toast Actions
       onDismissToast: (toastId) => {
         store.removeToast(toastId);
       }
@@ -1148,7 +1324,7 @@ class App {
   }
 }
 
-// Bootstrap Application
+// Bootstrap
 window.addEventListener('DOMContentLoaded', () => {
   const app = new App();
   app.init();

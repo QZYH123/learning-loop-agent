@@ -1,122 +1,173 @@
 /**
  * Unified API Client for Learning Loop Agent
- * Strictly adhering to OpenAPI 3.1 schema and backend endpoints.
+ * Strictly aligned with FastAPI routes and OpenAPI 3.1 contract.
  */
 
-const BASE_URL = '';
+export class ApiError extends Error {
+  constructor(message, code = 'INTERNAL_ERROR', status = 500, details = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+    this.status = status;
+    this.details = details;
+  }
+}
 
-class ApiClient {
-  async request(path, options = {}) {
-    const url = `${BASE_URL}${path}`;
-    const headers = {
-      ...options.headers
-    };
+async function apiRequest(endpoint, options = {}) {
+  const url = endpoint.startsWith('http') ? endpoint : endpoint;
+  const headers = {
+    Accept: 'application/json',
+    ...(options.headers || {})
+  };
 
-    if (!(options.body instanceof FormData)) {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    const config = {
-      ...options,
-      headers
-    };
-
-    const res = await fetch(url, config);
-
-    if (res.status === 204) {
-      return null;
-    }
-
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      const errorMsg = data?.detail || data?.message || `HTTP error ${res.status}`;
-      throw new Error(errorMsg);
-    }
-
-    return data;
+  if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
   }
 
+  const response = await fetch(url, { ...options, headers });
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  let payload = null;
+
+  if (contentType.includes('application/json')) {
+    payload = await response.json().catch(() => null);
+  } else {
+    payload = await response.text().catch(() => null);
+  }
+
+  if (!response.ok) {
+    const msg =
+      (payload && typeof payload === 'object' && (payload.detail || payload.message || payload.error?.message)) ||
+      `HTTP error ${response.status}`;
+    const code = (payload && typeof payload === 'object' && payload.error?.code) || 'API_ERROR';
+    throw new ApiError(msg, code, response.status, payload);
+  }
+
+  return payload;
+}
+
+export const api = {
   // --- Workspace & Subjects ---
-  async getWorkspace() {
-    return this.request('/api/workspace');
-  }
+  getWorkspace() {
+    return apiRequest('/api/workspace');
+  },
 
-  async createSubject(name) {
-    return this.request('/api/workspace/subjects', {
+  listSubjects() {
+    return apiRequest('/api/subjects').catch(() => ({ items: [] }));
+  },
+
+  createSubject(name) {
+    return apiRequest('/api/subjects', {
       method: 'POST',
       body: JSON.stringify({ name })
     });
-  }
+  },
 
-  async deleteSubject(subjectId) {
-    return this.request(`/api/workspace/subjects/${encodeURIComponent(subjectId)}`, {
+  getSubject(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}`);
+  },
+
+  renameSubject(subjectId, name) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name })
+    });
+  },
+
+  deleteSubject(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}`, {
       method: 'DELETE'
     });
-  }
+  },
 
-  async renameSubject(subjectId, newName) {
-    return this.request(`/api/workspace/subjects/${encodeURIComponent(subjectId)}/rename`, {
-      method: 'POST',
-      body: JSON.stringify({ name: newName })
-    });
-  }
-
-  async activateSubject(subjectId) {
-    return this.request('/api/workspace/active-subject', {
-      method: 'POST',
-      body: JSON.stringify({ subject_id: subjectId })
-    });
-  }
-
-  // --- Models (Issue 19 & ADR 0005) ---
-  async listModels() {
-    return this.request('/api/models');
-  }
-
-  async createModel(payload) {
-    return this.request('/api/models', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-  }
-
-  async getCurrentModel() {
-    return this.request('/api/models/current');
-  }
-
-  async selectCurrentModel(modelId) {
-    return this.request('/api/models/current', {
-      method: 'POST',
-      body: JSON.stringify({ model_id: modelId })
-    });
-  }
-
-  async deleteModel(modelId) {
-    return this.request(`/api/models/${encodeURIComponent(modelId)}`, {
-      method: 'DELETE'
-    });
-  }
-
-  async discoverModels(payload) {
-    return this.request('/api/models/discover', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-  }
-
-  // --- Operations (Async Task Polling) ---
-  async getOperation(operationId) {
-    return this.request(`/api/operations/${encodeURIComponent(operationId)}`);
-  }
-
-  async cancelOperation(operationId) {
-    return this.request(`/api/operations/${encodeURIComponent(operationId)}/cancel`, {
+  activateSubject(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/activate`, {
       method: 'POST'
     });
-  }
+  },
 
-  async pollOperation(operationId, { intervalMs = 300, maxAttempts = 120, onProgress = null } = {}) {
+  listArtifacts(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/artifacts`).catch(() => ({ items: [] }));
+  },
+
+  // --- Model Management & Discovery (Issue 19, ADR 0005) ---
+  listModels() {
+    return apiRequest('/api/models').catch(() => ({ items: [] }));
+  },
+
+  createModel(config) {
+    return apiRequest('/api/models', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: config.provider || 'openai',
+        api_format: config.api_format || 'openai-chat-completions',
+        model: config.model,
+        base_url: config.base_url || 'https://api.openai.com/v1',
+        api_key: config.api_key || undefined,
+        name: config.name || config.model
+      })
+    });
+  },
+
+  addModel(config) {
+    return this.createModel(config);
+  },
+
+  getModel(modelId) {
+    return apiRequest(`/api/models/${encodeURIComponent(modelId)}`);
+  },
+
+  deleteModel(modelId) {
+    return apiRequest(`/api/models/${encodeURIComponent(modelId)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  getCurrentModel() {
+    return apiRequest('/api/models/current');
+  },
+
+  selectCurrentModel(modelId) {
+    return apiRequest('/api/models/current', {
+      method: 'PUT',
+      body: JSON.stringify({ model_id: modelId })
+    });
+  },
+
+  verifyModel(modelId) {
+    return apiRequest(`/api/models/${encodeURIComponent(modelId)}/verify`, {
+      method: 'POST'
+    });
+  },
+
+  discoverModels({ provider, api_format, base_url, api_key }) {
+    return apiRequest('/api/models/discover', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: provider || 'openai',
+        api_format: api_format || 'openai-chat-completions',
+        base_url: base_url || 'https://api.openai.com/v1',
+        api_key: api_key || undefined
+      })
+    });
+  },
+
+  // --- Async Operations & Polling ---
+  getOperation(operationId) {
+    return apiRequest(`/api/operations/${encodeURIComponent(operationId)}`);
+  },
+
+  cancelOperation(operationId) {
+    return apiRequest(`/api/operations/${encodeURIComponent(operationId)}/cancel`, {
+      method: 'POST'
+    });
+  },
+
+  async pollOperation(operationId, { intervalMs = 250, maxAttempts = 120, onProgress = null } = {}) {
     let attempts = 0;
     while (attempts < maxAttempts) {
       const op = await this.getOperation(operationId);
@@ -126,277 +177,319 @@ class ApiClient {
         return op;
       }
       if (op.status === 'failed' || op.status === 'canceled') {
-        throw new Error(op.error?.message || `Operation ${op.status}`);
+        const errorMsg = op.error?.message || `Operation ${op.status}`;
+        throw new ApiError(errorMsg, op.error?.code || 'OPERATION_FAILED', 400, op.error);
       }
 
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
       attempts++;
     }
-    throw new Error('Operation timed out');
-  }
+    throw new ApiError('异步任务执行超时', 'OPERATION_TIMEOUT', 408);
+  },
 
-  // --- Sessions (Ticket 16, 17, 18) ---
-  async listSessions(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/sessions`);
-  }
+  // --- Multi-Session (Ticket 16, 17, 18) ---
+  listSessions(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/sessions`).catch(() => ({ items: [] }));
+  },
 
-  async createSession(subjectId, { title, source_version_ids = [] }) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/sessions`, {
+  createSession(subjectId, { title, learning_mode = 'chat', chat_style = 'default', grounding_mode = 'general-knowledge', source_version_ids = [] }) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/sessions`, {
       method: 'POST',
-      body: JSON.stringify({ title, source_version_ids })
+      body: JSON.stringify({
+        title: title || '学习会话',
+        learning_mode: learning_mode || chat_style || 'chat',
+        chat_style: chat_style || learning_mode || 'default',
+        grounding_mode,
+        source_version_ids
+      })
     });
-  }
+  },
 
-  async getSession(sessionId) {
-    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
-  }
+  getSession(sessionId) {
+    return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  },
 
-  async deleteSession(sessionId) {
-    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+  updateSession(sessionId, updates) {
+    return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates)
+    });
+  },
+
+  deleteSession(sessionId) {
+    return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE'
     });
-  }
+  },
 
-  async createSessionMessage(sessionId, payload) {
-    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
-      method: 'POST',
-      body: JSON.stringify(payload)
+  activateSession(sessionId) {
+    return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, {
+      method: 'POST'
     });
-  }
+  },
+
+  createSessionMessage(sessionId, { content, chat_style = 'default', selection = null, source_version_ids = [], attachment_ids = [] }) {
+    return apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        content,
+        chat_style,
+        selection,
+        source_version_ids,
+        attachment_ids
+      })
+    });
+  },
 
   // --- General Subject Chat & Attachments ---
-  async getChat(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/chat`);
-  }
+  getChat(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/chat`);
+  },
 
-  async sendMessage(subjectId, payload) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/chat/messages`, {
+  sendMessage(subjectId, { content, chat_style = 'default', selection = null, source_version_ids = [], attachment_ids = [] }) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/chat/messages`, {
       method: 'POST',
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        content,
+        chat_style,
+        selection,
+        source_version_ids,
+        attachment_ids
+      })
     });
-  }
+  },
 
-  async stopChat(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/chat/stop`, {
+  stopChat(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/chat/stop`, {
       method: 'POST'
     });
-  }
+  },
 
-  async clearChat(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/chat/clear`, {
-      method: 'POST'
-    });
-  }
-
-  async uploadChatAttachment(subjectId, file) {
-    const formData = new FormData();
-    formData.append('file', file);
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/chat/attachments`, {
-      method: 'POST',
-      body: formData
-    });
-  }
-
-  // --- User Sources ---
-  async listSources(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/sources`);
-  }
-
-  async uploadSource(subjectId, file) {
-    const formData = new FormData();
-    formData.append('file', file);
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/sources/upload`, {
-      method: 'POST',
-      body: formData
-    });
-  }
-
-  async getSource(sourceId) {
-    return this.request(`/api/sources/${encodeURIComponent(sourceId)}`);
-  }
-
-  async deleteSource(sourceId) {
-    return this.request(`/api/sources/${encodeURIComponent(sourceId)}`, {
+  clearChat(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/chat`, {
       method: 'DELETE'
     });
-  }
+  },
 
-  async listSourceVersions(sourceId) {
-    return this.request(`/api/sources/${encodeURIComponent(sourceId)}/versions`);
-  }
+  uploadChatAttachment(subjectId, file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/attachments`, {
+      method: 'POST',
+      body: formData
+    });
+  },
 
-  async listSourceVersionAnchors(versionId) {
-    return this.request(`/api/source-versions/${encodeURIComponent(versionId)}/anchors`);
-  }
+  // --- User Sources ---
+  listSources(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/sources`).catch(() => ({ items: [] }));
+  },
+
+  uploadSource(subjectId, file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/sources`, {
+      method: 'POST',
+      body: formData
+    });
+  },
+
+  getSource(sourceId) {
+    return apiRequest(`/api/sources/${encodeURIComponent(sourceId)}`);
+  },
+
+  deleteSource(sourceId) {
+    return apiRequest(`/api/sources/${encodeURIComponent(sourceId)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  listSourceVersions(sourceId) {
+    return apiRequest(`/api/sources/${encodeURIComponent(sourceId)}/versions`).catch(() => ({ items: [] }));
+  },
+
+  listSourceVersionAnchors(versionId) {
+    return apiRequest(`/api/source-versions/${encodeURIComponent(versionId)}/anchors`).catch(() => ({ items: [] }));
+  },
 
   // --- AI-Authored Documents (Ticket 20) ---
-  async listAiDocuments(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/ai-documents`);
-  }
+  listAiDocuments(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/documents`).catch(() => ({ items: [] }));
+  },
 
-  async createAiDocument(subjectId, payload) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/ai-documents`, {
+  createAiDocument(subjectId, payload) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/documents`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-  }
+  },
 
-  async getAiDocument(documentId) {
-    return this.request(`/api/ai-documents/${encodeURIComponent(documentId)}`);
-  }
+  getAiDocument(documentId) {
+    return apiRequest(`/api/documents/${encodeURIComponent(documentId)}`);
+  },
 
-  async listAiDocumentVersions(documentId) {
-    return this.request(`/api/ai-documents/${encodeURIComponent(documentId)}/versions`);
-  }
+  listAiDocumentVersions(documentId) {
+    return apiRequest(`/api/documents/${encodeURIComponent(documentId)}/versions`).catch(() => ({ items: [] }));
+  },
 
-  async listAiDocumentRevisionProposals(documentId) {
-    return this.request(`/api/ai-documents/${encodeURIComponent(documentId)}/revision-proposals`);
-  }
+  listAiDocumentRevisionProposals(documentId) {
+    return apiRequest(`/api/documents/${encodeURIComponent(documentId)}/revision-proposals`).catch(() => ({ items: [] }));
+  },
 
-  async createAiDocumentRevisionProposal(documentId, payload) {
-    return this.request(`/api/ai-documents/${encodeURIComponent(documentId)}/revision-proposals`, {
+  createAiDocumentRevisionProposal(documentId, payload) {
+    return apiRequest(`/api/documents/${encodeURIComponent(documentId)}/revision-proposals`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-  }
+  },
 
-  async applyAiDocumentRevisionProposal(proposalId) {
-    return this.request(`/api/ai-document-proposals/${encodeURIComponent(proposalId)}/apply`, {
+  applyAiDocumentRevisionProposal(proposalId) {
+    return apiRequest(`/api/document-revision-proposals/${encodeURIComponent(proposalId)}/apply`, {
       method: 'POST'
     });
-  }
+  },
 
-  async discardAiDocumentRevisionProposal(proposalId) {
-    return this.request(`/api/ai-document-proposals/${encodeURIComponent(proposalId)}/discard`, {
+  discardAiDocumentRevisionProposal(proposalId) {
+    return apiRequest(`/api/document-revision-proposals/${encodeURIComponent(proposalId)}/discard`, {
       method: 'POST'
     });
-  }
+  },
 
-  async restoreAiDocumentVersion(documentId, versionId) {
-    return this.request(`/api/ai-documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}/restore`, {
+  restoreAiDocumentVersion(documentId, versionId) {
+    return apiRequest(`/api/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}/restore`, {
       method: 'POST'
     });
-  }
+  },
 
   // --- Exam Studio: Blueprints, Drafts, Exams (Ticket 08, 09, 13) ---
-  async listBlueprints(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/exam-blueprints`);
-  }
+  listBlueprints(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/exam-blueprints`).catch(() => ({ items: [] }));
+  },
 
-  async parseBlueprint(subjectId, prompt) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/exam-blueprints/parse`, {
+  createBlueprint(subjectId, payload) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/exam-blueprints`, {
       method: 'POST',
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify(payload)
     });
-  }
+  },
 
-  async getBlueprint(blueprintId) {
-    return this.request(`/api/exam-blueprints/${encodeURIComponent(blueprintId)}`);
-  }
+  getBlueprint(blueprintId) {
+    return apiRequest(`/api/exam-blueprints/${encodeURIComponent(blueprintId)}`);
+  },
 
-  async confirmBlueprint(blueprintId) {
-    return this.request(`/api/exam-blueprints/${encodeURIComponent(blueprintId)}/confirm`, {
+  confirmBlueprint(blueprintId) {
+    return apiRequest(`/api/exam-blueprints/${encodeURIComponent(blueprintId)}/confirm`, {
       method: 'POST'
     });
-  }
+  },
 
-  async generateDraftFromBlueprint(blueprintId) {
-    return this.request(`/api/exam-blueprints/${encodeURIComponent(blueprintId)}/generate-draft`, {
+  generateDraftFromBlueprint(blueprintId) {
+    return apiRequest(`/api/exam-blueprints/${encodeURIComponent(blueprintId)}/generate`, {
       method: 'POST'
     });
-  }
+  },
 
-  async listDrafts(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/exam-drafts`);
-  }
+  listDrafts(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/exam-drafts`).catch(() => ({ items: [] }));
+  },
 
-  async getDraft(draftId) {
-    return this.request(`/api/exam-drafts/${encodeURIComponent(draftId)}`);
-  }
+  getDraft(draftId) {
+    return apiRequest(`/api/exam-drafts/${encodeURIComponent(draftId)}`);
+  },
 
-  async retryDraftQuestion(draftId, questionId) {
-    return this.request(`/api/exam-drafts/${encodeURIComponent(draftId)}/questions/${encodeURIComponent(questionId)}/retry`, {
+  retryDraftQuestion(draftId, questionId) {
+    return apiRequest(`/api/exam-drafts/${encodeURIComponent(draftId)}/questions/${encodeURIComponent(questionId)}/retry`, {
       method: 'POST'
     });
-  }
+  },
 
-  async publishDraft(draftId) {
-    return this.request(`/api/exam-drafts/${encodeURIComponent(draftId)}/publish`, {
+  publishDraft(draftId) {
+    return apiRequest(`/api/exam-drafts/${encodeURIComponent(draftId)}/publish`, {
       method: 'POST'
     });
-  }
+  },
 
-  async listExams(subjectId) {
-    return this.request(`/api/subjects/${encodeURIComponent(subjectId)}/exams`);
-  }
+  listExams(subjectId) {
+    return apiRequest(`/api/subjects/${encodeURIComponent(subjectId)}/exams`).catch(() => ({ items: [] }));
+  },
 
-  async getExam(examId) {
-    return this.request(`/api/exams/${encodeURIComponent(examId)}`);
-  }
+  getExam(examId) {
+    return apiRequest(`/api/exams/${encodeURIComponent(examId)}`);
+  },
 
-  async listExamVersions(examId) {
-    return this.request(`/api/exams/${encodeURIComponent(examId)}/versions`);
-  }
+  listExamVersions(examId) {
+    return apiRequest(`/api/exams/${encodeURIComponent(examId)}/versions`).catch(() => ({ items: [] }));
+  },
 
-  async createExamExport(examId, { format = 'pdf', edition = 'questions' }) {
-    return this.request(`/api/exams/${encodeURIComponent(examId)}/exports`, {
+  createExamExport(examId, { format = 'pdf', edition = 'questions' }) {
+    return apiRequest(`/api/exams/${encodeURIComponent(examId)}/exports`, {
       method: 'POST',
       body: JSON.stringify({ format, edition })
     });
-  }
+  },
 
-  async getExamExport(exportId) {
-    return this.request(`/api/exam-exports/${encodeURIComponent(exportId)}`);
-  }
+  getExamExport(exportId) {
+    return apiRequest(`/api/exports/${encodeURIComponent(exportId)}`);
+  },
 
   // --- Attempts, Practice & Grading (Ticket 10, 11, 21) ---
-  async createAttempt(examId, payload = {}) {
-    return this.request(`/api/exams/${encodeURIComponent(examId)}/attempts`, {
+  createAttempt(examId, payload = {}) {
+    return apiRequest(`/api/exams/${encodeURIComponent(examId)}/attempts`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-  }
+  },
 
-  async getAttempt(attemptId) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}`);
-  }
+  getAttempt(attemptId) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}`);
+  },
 
-  async saveAttemptAnswer(attemptId, questionId, answer) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}/answers`, {
+  saveAttemptAnswer(attemptId, questionId, answer) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/answers/${encodeURIComponent(questionId)}`, {
       method: 'PUT',
-      body: JSON.stringify({ question_id: questionId, answer })
+      body: JSON.stringify({ answer })
     });
-  }
+  },
 
-  async requestQuestionFeedback(attemptId, questionId, payload = {}) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}/questions/${encodeURIComponent(questionId)}/feedback`, {
+  requestQuestionFeedback(attemptId, questionId, payload = {}) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/answers/${encodeURIComponent(questionId)}/feedback`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-  }
+  },
 
-  async completeAttempt(attemptId) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}/complete`, {
+  completeAttempt(attemptId) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/complete`, {
       method: 'POST'
     });
-  }
+  },
 
-  async continueAttempt(attemptId) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}/continue`, {
+  continueAttempt(attemptId) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/continue`, {
       method: 'POST'
     });
-  }
+  },
 
-  async submitAttemptGrading(attemptId, payload = {}) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}/grade`, {
+  submitAttemptGrading(attemptId, payload = {}) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/grade`, {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-  }
+  },
 
-  async getAttemptReview(attemptId) {
-    return this.request(`/api/attempts/${encodeURIComponent(attemptId)}/review`);
-  }
-}
+  getAttemptReview(attemptId) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/review`);
+  },
 
-export const api = new ApiClient();
+  pauseAttempt(attemptId) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/pause`, {
+      method: 'POST'
+    });
+  },
+
+  resumeAttempt(attemptId) {
+    return apiRequest(`/api/attempts/${encodeURIComponent(attemptId)}/resume`, {
+      method: 'POST'
+    });
+  }
+};
