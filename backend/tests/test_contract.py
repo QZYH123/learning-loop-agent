@@ -156,6 +156,35 @@ def test_issue16_contract_covers_context_lifecycle_boundaries():
     assert "completion_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
     assert "grading_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
 
+    example_schemas = {
+        "OperationAccepted",
+        "SourceAnchorList",
+        "SessionInput",
+        "SessionPatch",
+        "Session",
+        "SessionList",
+        "SessionSource",
+        "SessionSourceList",
+        "SessionSourceInput",
+        "SessionSourcePatch",
+        "TempAttachment",
+        "ModelService",
+        "ModelDiscoveryInput",
+        "ModelDiscoveryResponse",
+        "ModelSelection",
+        "AiDocumentCreateInput",
+        "AiDocumentVersion",
+        "AiDocumentVersionList",
+        "AiDocument",
+        "AiDocumentList",
+        "AiDocumentRevisionInput",
+        "AiDocumentRevisionProposal",
+        "AiDocumentRevisionProposalList",
+        "Attempt",
+    }
+    definitions = schemas["components"]["schemas"]
+    assert all("example" in definitions[name] for name in example_schemas)
+
 
 def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
     from backend.app.main import create_app

@@ -67,9 +67,33 @@ class AttachmentService:
             raise LearningError(404, "ATTACHMENT_NOT_FOUND", "附件内容不存在")
         return path.read_bytes(), attachment["mime_type"]
 
+    def claim(self, subject_id: str, attachment_ids: list[str], message_id: str) -> None:
+        subject = self._subject(subject_id)
+        claims = subject.get("data", {}).get("attachment_message_ids", {})
+        if any(attachment_id in claims for attachment_id in attachment_ids):
+            raise LearningError(409, "RESOURCE_CONFLICT", "临时附件已用于其他消息")
+        self.workspace_service.update_subject_data(
+            subject_id,
+            lambda data: {
+                **data,
+                "attachment_message_ids": {
+                    **data.get("attachment_message_ids", {}),
+                    **{attachment_id: message_id for attachment_id in attachment_ids},
+                },
+            },
+        )
+
     def delete(self, attachment_id: str) -> None:
         subject, attachment = self._find(attachment_id)
-        self.workspace_service.update_subject_data(subject["id"], lambda data: {**data, "attachments": [item for item in data.get("attachments", []) if item.get("id") != attachment_id]})
+        self.workspace_service.update_subject_data(subject["id"], lambda data: {
+            **data,
+            "attachments": [item for item in data.get("attachments", []) if item.get("id") != attachment_id],
+            "attachment_message_ids": {
+                key: value
+                for key, value in data.get("attachment_message_ids", {}).items()
+                if key != attachment_id
+            },
+        })
         (self.directory / f"{attachment_id}.bin").unlink(missing_ok=True)
 
     def _find(self, attachment_id: str) -> tuple[dict, dict]:

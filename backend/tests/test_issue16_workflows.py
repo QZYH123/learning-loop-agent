@@ -126,6 +126,16 @@ def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
         assert "attachment evidence" in prompt
         assert "只能依据" in prompt
 
+        reused = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "再次解释",
+            "model_id": model_id,
+            "grounding_mode": "strict",
+            "attachment_ids": [attachment["id"]],
+        })
+        assert reused.status_code == 409
+        assert reused.json()["error"]["code"] == "RESOURCE_CONFLICT"
+
         follow_up = client.post(f"/api/sessions/{session['id']}/messages", json={
             "intent": "ask",
             "content": "Limits 是什么？",

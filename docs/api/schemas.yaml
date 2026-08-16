@@ -189,6 +189,22 @@ components:
           anyOf:
             - $ref: '#/components/schemas/ResourceRef'
             - type: 'null'
+      example:
+        operation:
+          id: operation-1
+          kind: chat-generation
+          status: queued
+          cancelable: true
+          progress: {completed: 0, total: 1, message: 等待处理}
+          subject_id: subject-1
+          resource: {type: chat-message, id: message-1}
+          result: null
+          error: null
+          created_at: 1735689600000
+          updated_at: 1735689600000
+          started_at: null
+          completed_at: null
+        resource: {type: chat-message, id: message-1}
 
     SubjectInput:
       type: object
@@ -324,6 +340,16 @@ components:
         validation: {$ref: '#/components/schemas/ModelValidation'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: model-1
+        provider: Ollama
+        model: qwen2.5:7b
+        base_url: http://localhost:11434/v1
+        has_api_key: false
+        capabilities: {text: true, vision: false, source: configured}
+        validation: {status: unknown, checked_at: null, message: null}
+        created_at: 1735689600000
+        updated_at: 1735689600000
 
     ModelServiceList:
       type: object
@@ -495,6 +521,14 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/SourceAnchor'}
+      example:
+        items:
+          - id: anchor-1
+            source_id: source-1
+            source_version_id: source-version-1
+            location: {kind: section, label: Limits, section_path: [Limits], page: null, slide: null, block_index: 0, asset_id: null}
+            content: [{id: block-1, type: markdown, text: Limits describe nearby behavior.}]
+            available: true
 
     Citation:
       type: object
@@ -823,6 +857,7 @@ components:
       minProperties: 1
       properties:
         title: {type: string, minLength: 1, maxLength: 200}
+      example: {title: 极限复习}
 
     Session:
       type: object
@@ -842,6 +877,15 @@ components:
           items: {$ref: '#/components/schemas/ChatMessage'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: session-1
+        subject_id: subject-1
+        title: 高等数学复习
+        active: true
+        source_version_ids: [source-version-1]
+        messages: []
+        created_at: 1735689600000
+        updated_at: 1735689600000
 
     SessionList:
       type: object
@@ -855,6 +899,7 @@ components:
           anyOf:
             - $ref: '#/components/schemas/Identifier'
             - type: 'null'
+      example: {items: [], active_session_id: null}
 
     SessionSource:
       type: object
@@ -867,6 +912,13 @@ components:
         version_number: {type: integer, minimum: 1}
         status: {type: string, enum: [processing, ready, failed, unavailable]}
         added_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        source_version_id: source-version-1
+        source_id: source-1
+        source_name: limits.md
+        version_number: 1
+        status: ready
+        added_at: 1735689600000
 
     SessionSourceList:
       type: object
@@ -876,6 +928,7 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/SessionSource'}
+      example: {items: []}
 
     SessionSourceInput:
       type: object
@@ -883,6 +936,7 @@ components:
       required: [source_version_id]
       properties:
         source_version_id: {$ref: '#/components/schemas/Identifier'}
+      example: {source_version_id: source-version-1}
 
     SessionSourcePatch:
       type: object
@@ -890,6 +944,7 @@ components:
       required: [source_version_id]
       properties:
         source_version_id: {$ref: '#/components/schemas/Identifier'}
+      example: {source_version_id: source-version-2}
 
     TempAttachment:
       type: object
@@ -977,6 +1032,7 @@ components:
       required: [model_id]
       properties:
         model_id: {$ref: '#/components/schemas/Identifier'}
+      example: {model_id: model-1}
 
     AiDocumentCreateInput:
       type: object
@@ -1014,6 +1070,14 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Citation'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: ai-document-version-1
+        document_id: ai-document-1
+        number: 1
+        status: ready
+        content: [{id: block-1, type: markdown, text: '# 电磁学摘要'}]
+        upstream_citations: []
+        created_at: 1735689600000
 
     AiDocumentVersionList:
       type: object
@@ -1023,6 +1087,7 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/AiDocumentVersion'}
+      example: {items: []}
 
     AiDocument:
       type: object
@@ -1039,6 +1104,15 @@ components:
           items: {$ref: '#/components/schemas/AiDocumentVersion'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: ai-document-1
+        subject_id: subject-1
+        title: 电磁学摘要
+        generated_by: ai
+        current_version_id: ai-document-version-1
+        versions: []
+        created_at: 1735689600000
+        updated_at: 1735689600000
 
     AiDocumentList:
       type: object
@@ -1048,6 +1122,7 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/AiDocument'}
+      example: {items: []}
 
     AiDocumentRevisionInput:
       type: object
@@ -1057,6 +1132,10 @@ components:
         base_version_id: {$ref: '#/components/schemas/Identifier'}
         instruction: {type: string, minLength: 1, maxLength: 10000}
         model_id: {$ref: '#/components/schemas/Identifier'}
+      example:
+        base_version_id: ai-document-version-1
+        instruction: 补充一个例题
+        model_id: model-1
 
     AiDocumentChange:
       type: object
@@ -1086,6 +1165,19 @@ components:
             - type: 'null'
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: ai-document-proposal-1
+        document_id: ai-document-1
+        base_version_id: ai-document-version-1
+        status: ready
+        changes:
+          - path: /content
+            operation: replace
+            before: [{id: block-1, type: markdown, text: 原内容}]
+            after: [{id: block-1, type: markdown, text: 新内容}]
+        error: null
+        created_at: 1735689600000
+        updated_at: 1735689600000
 
     AiDocumentRevisionProposalList:
       type: object
@@ -1095,6 +1187,7 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/AiDocumentRevisionProposal'}
+      example: {items: []}
 
     CrashCourseInput:
       type: object
@@ -1886,6 +1979,30 @@ components:
           anyOf:
             - $ref: '#/components/schemas/ApiError'
             - type: 'null'
+      example:
+        id: attempt-1
+        exam_id: exam-1
+        exam_version_id: exam-version-1
+        mode: exam
+        status: in-progress
+        completion_status: in-progress
+        grading_status: not-requested
+        unanswered_question_ids: []
+        show_suggested_score: false
+        paper:
+          exam_id: exam-1
+          exam_version_id: exam-version-1
+          title: 高等数学练习
+          instructions: []
+          questions: []
+          total_score: 0
+        answers: []
+        feedback: []
+        created_at: 1735689600000
+        updated_at: 1735689600000
+        submitted_at: null
+        completed_at: null
+        grading_error: null
 
     AttemptReviewItem:
       type: object

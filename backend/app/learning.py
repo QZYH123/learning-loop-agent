@@ -300,6 +300,9 @@ class LearningService:
 
         timestamp = self._now()
         content = payload.get("content") or self._intent_label(intent)
+        user_id = self._ids("message")
+        if attachment_ids:
+            self.attachments.claim(subject_id, attachment_ids, user_id)
         source_context = {
             "source_version_ids": source_ids,
             "focused_source_version_ids": focused_ids,
@@ -310,7 +313,7 @@ class LearningService:
             "citations": [],
         }
         user_message = {
-            "id": self._ids("message"),
+            "id": user_id,
             "role": "user",
             "intent": intent,
             "content": [self._markdown_block(content)],
@@ -569,7 +572,10 @@ class LearningService:
             "citations": [],
         }
         content = payload.get("content") or self._intent_label(payload["intent"])
-        user_message = {"id": self._ids("message"), "role": "user", "intent": payload["intent"], "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
+        user_id = self._ids("message")
+        if attachment_ids:
+            self.attachments.claim(subject["id"], attachment_ids, user_id)
+        user_message = {"id": user_id, "role": "user", "intent": payload["intent"], "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
         assistant_id = self._ids("message")
         assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
         updated_session = {**session, "messages": [*session.get("messages", []), user_message, assistant], "updated_at": timestamp}
