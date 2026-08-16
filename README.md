@@ -8,6 +8,8 @@
 - `04`–`07` 后端：富文档与图片解析、来源检索和引用、契约版学习会话、苏格拉底状态及章节速成产物
 - `08`–`12` 后端：组卷蓝图、增量试卷、发布、考试/练习作答、主观反馈和固定版本选区问答
 - `13`–`15` 后端：试卷版本与 AI 修改提案、统一渲染与导出、编排运行和固定评估
+- `16` 契约：多会话、消息资料上下文、模型发现、AI 资料文档和独立作答/批改状态
+- `17`–`21` 后端：多会话与临时附件、模型配置与发现、AI 资料文档版本、作答完成与批改解耦
 
 ## 技术栈
 
@@ -40,9 +42,9 @@ pytest -q
 
 ## API 契约
 
-项目采用契约先行。Ticket 01–15 的目标 HTTP 契约见 [`docs/api.md`](docs/api.md)，
-机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 01–15 后端已按目标
-契约实现。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
+项目采用契约先行。Ticket 01–16 的目标 HTTP 契约见 [`docs/api.md`](docs/api.md)，
+机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 17–21 复用 Ticket 16
+定义的工作流契约，后端已按目标契约实现。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
 
 ## 结构
 
@@ -55,7 +57,10 @@ backend/app/operations.py     可持久化的通用异步任务生命周期
 backend/app/sources.py        资料上传、解析缓存和文件持久化
 backend/app/source_parsers.py PDF、DOCX、PPTX、文本和图片解析
 backend/app/learning.py       契约版科目、模型、依据会话和学习产物服务
+backend/app/attachments.py    消息级临时附件、过期与单消息占用
+backend/app/ai_documents.py   AI 资料文档、修改提案和版本恢复
 backend/app/core_api.py       科目、模型、会话和学习产物路由
+backend/app/issue16_api.py    多会话、附件、模型发现和 AI 资料文档路由
 backend/app/exams.py          蓝图、试卷草稿、试卷、作答和反馈状态机
 backend/app/exam_api.py       组卷、试卷和作答路由
 backend/app/exam_models.py    题目、试卷和作答契约模型

@@ -62,6 +62,43 @@ def test_sessions_keep_explicit_source_scope_and_message_snapshot(tmp_path):
         assert current["messages"][-1]["source_context"]["only_use_specified_sources"] is True
         assert current["messages"][-1]["source_context"]["source_version_ids"] == [version_id]
 
+        source_id = client.get(f"/api/source-versions/{version_id}").json()["source_id"]
+        changed = client.post(
+            f"/api/sources/{source_id}/versions",
+            files={"file": ("notes.md", b"# Limits\nUpdated content.", "text/markdown")},
+        ).json()
+        wait_for(lambda: client.get(f"/api/operations/{changed['operation']['id']}").json()["status"] == "succeeded")
+        new_version_id = client.get(f"/api/sources/{source_id}").json()["current_version"]["id"]
+        assert client.get(f"/api/sessions/{session['id']}").json()["source_version_ids"] == [version_id]
+
+        updated = client.patch(
+            f"/api/sessions/{session['id']}/sources/{version_id}",
+            json={"source_version_id": new_version_id},
+        ).json()
+        assert updated["source_version_id"] == new_version_id
+        second = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "空白会话"}).json()
+        assert second["messages"] == []
+        assert second["source_version_ids"] == []
+        assert client.post(f"/api/sessions/{session['id']}/activate").json()["active"] is True
+
+    reopened, _ = make_client(tmp_path, model_client=model_client)
+    with reopened:
+        restored = reopened.get(f"/api/sessions/{session['id']}").json()
+        assert restored["source_version_ids"] == [new_version_id]
+        assert restored["messages"][-1]["source_context"]["source_version_ids"] == [version_id]
+        assert restored["messages"][-1]["model"]["model_id"] == model_id
+        assert reopened.get(f"/api/sessions/{second['id']}").json()["messages"] == []
+        renamed = reopened.patch(f"/api/sessions/{second['id']}", json={"title": "重命名会话"})
+        assert renamed.json()["title"] == "重命名会话"
+        assert reopened.delete(f"/api/sessions/{session['id']}/sources/{new_version_id}").status_code == 204
+        assert reopened.get(f"/api/sessions/{session['id']}/sources").json()["items"] == []
+        added = reopened.post(f"/api/sessions/{session['id']}/sources", json={
+            "source_version_id": new_version_id,
+        })
+        assert added.status_code == 201
+        assert reopened.delete(f"/api/sessions/{second['id']}").status_code == 204
+        assert reopened.get(f"/api/sessions/{second['id']}").status_code == 404
+
 
 def test_focused_source_is_retrieved_before_other_session_sources(tmp_path):
     model_client = ImmediateFakeModelClient()
@@ -146,6 +183,18 @@ def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
         messages = model_client.chat_calls[-1]["messages"]
         assert any(message["role"] == "assistant" and message["content"] == "结合资料回答" for message in messages)
         assert "The limit of x is x." not in messages[-1]["content"]
+
+    reopened, _ = make_client(tmp_path, model_client=model_client)
+    with reopened:
+        reused = reopened.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "重启后再次解释",
+            "model_id": model_id,
+            "grounding_mode": "strict",
+            "attachment_ids": [attachment["id"]],
+        })
+        assert reused.status_code == 409
+        assert reused.json()["error"]["code"] == "RESOURCE_CONFLICT"
 
 
 def test_running_session_cannot_be_deleted(tmp_path):
@@ -234,6 +283,13 @@ def test_attempt_completion_does_not_start_grading_and_can_resume(tmp_path):
         assert client.get(f"/api/attempts/{exam_attempt['id']}").json()["feedback"]
         assert client.get(f"/api/attempts/{exam_attempt['id']}/review").status_code == 200
 
+    reopened, _ = make_client(tmp_path, model_client=model_client)
+    with reopened:
+        restored = reopened.get(f"/api/attempts/{attempt['id']}").json()
+        assert restored["completion_status"] == "in-progress"
+        assert restored["grading_status"] == "stale"
+        assert reopened.get(f"/api/attempts/{exam_attempt['id']}/review").status_code == 200
+
 
 def test_model_discovery_failure_keeps_manual_fallback(tmp_path):
     client, _ = make_client(tmp_path)
@@ -265,6 +321,44 @@ def test_model_discovery_does_not_guess_vision_from_model_name(tmp_path, monkeyp
         })
         assert response.status_code == 200
         assert response.json()["models"][0]["capabilities"] == {"text": True, "vision": False}
+
+
+def test_ollama_discovery_is_ephemeral_and_does_not_persist_credentials(tmp_path, monkeypatch):
+    captured = {}
+
+    class DiscoveryResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"models": [{"name": "qwen2.5:7b"}]}
+
+    def fake_get(url, headers, timeout):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return DiscoveryResponse()
+
+    monkeypatch.setattr("backend.app.learning.httpx.get", fake_get)
+    client, _ = make_client(tmp_path)
+    with client:
+        response = client.post("/api/models/discover", json={
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "api_key": "temporary-secret",
+        })
+        assert response.status_code == 200
+        assert response.json()["models"] == [{
+            "name": "qwen2.5:7b",
+            "capabilities": {"text": True, "vision": False},
+        }]
+        assert captured == {
+            "url": "http://localhost:11434/api/tags",
+            "headers": {"Authorization": "Bearer temporary-secret"},
+            "timeout": 8.0,
+        }
+        assert client.get("/api/models").json()["items"] == []
+
+    workspace_file = tmp_path / "data" / "workspace.json"
+    assert not workspace_file.exists() or "temporary-secret" not in workspace_file.read_text(encoding="utf-8")
 
 
 def test_current_model_selection_applies_to_existing_chat(tmp_path):
@@ -356,6 +450,40 @@ def test_attachment_and_ai_document_lifecycle(tmp_path):
         assert len(applied.json()["versions"]) == 2
         source_versions = client.get(f"/api/sources/{document['id']}/versions").json()["items"]
         assert len(source_versions) == 2
+        read_only = client.post(
+            f"/api/sources/{document['id']}/versions",
+            files={"file": ("override.md", b"direct edit", "text/markdown")},
+        )
+        assert read_only.status_code == 409
+        assert read_only.json()["error"]["code"] == "AI_DOCUMENT_READ_ONLY"
+
+        restored = client.post(
+            f"/api/documents/{document['id']}/versions/{document['current_version_id']}/restore"
+        ).json()
+        assert len(restored["versions"]) == 3
+        assert restored["versions"][-1]["content"] == document["versions"][0]["content"]
+        source_versions = client.get(f"/api/sources/{document['id']}/versions").json()["items"]
+        assert len(source_versions) == 3
+        anchors = client.get(
+            f"/api/source-versions/{restored['current_version_id']}/anchors"
+        ).json()["items"]
+        assert anchors[0]["location"]["label"].startswith("AI 生成：")
+
+        discarded = client.post(f"/api/documents/{document['id']}/revision-proposals", json={
+            "base_version_id": restored["current_version_id"],
+            "instruction": "改写标题",
+            "model_id": model_id,
+        }).json()
+        wait_for(lambda: client.get(
+            f"/api/operations/{discarded['operation']['id']}"
+        ).json()["status"] == "succeeded")
+        assert client.post(
+            f"/api/document-revision-proposals/{discarded['resource']['id']}/discard"
+        ).status_code == 204
+        proposal = client.get(
+            f"/api/document-revision-proposals/{discarded['resource']['id']}"
+        ).json()
+        assert proposal["status"] == "discarded"
 
 
 def test_failed_ai_document_generation_does_not_leave_ready_document(tmp_path):
