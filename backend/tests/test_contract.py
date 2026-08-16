@@ -45,6 +45,20 @@ def resolve_ref(reference, openapi, schemas, current_document):
     raise AssertionError(f"unsupported contract reference: {reference}")
 
 
+def normalized_schema(value):
+    if isinstance(value, dict):
+        if "$ref" in value:
+            return {"$ref": value["$ref"].rsplit("/", 1)[-1]}
+        return {
+            key: normalized_schema(child)
+            for key, child in value.items()
+            if key != "title"
+        }
+    if isinstance(value, list):
+        return [normalized_schema(child) for child in value]
+    return value
+
+
 def iter_operations(openapi):
     for path, path_item in openapi["paths"].items():
         for method, operation in path_item.items():
@@ -143,6 +157,32 @@ def test_issue16_contract_covers_context_lifecycle_boundaries():
     assert "grading_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
 
 
+def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
+    from backend.app.main import create_app
+
+    _, target_schemas = load_contract()
+    target = target_schemas["components"]["schemas"]
+    actual = create_app(data_dir=tmp_path).openapi()["components"]["schemas"]
+
+    unique_fields = {
+        "SessionInput": ["source_version_ids"],
+        "ChatMessageInput": ["source_version_ids", "focused_source_version_ids", "attachment_ids"],
+        "AiDocumentCreateInput": ["source_version_ids"],
+    }
+    for model_name, field_names in unique_fields.items():
+        for field_name in field_names:
+            assert target[model_name]["properties"][field_name]["uniqueItems"] is True
+            assert actual[model_name]["properties"][field_name]["uniqueItems"] is True
+
+    assert "null" not in str(actual["SessionInput"]["properties"]["title"])
+    assert {"completion_status", "grading_status"} <= set(actual["Attempt"]["required"])
+    assert {"before", "after"} <= set(actual["AiDocumentChange"]["required"])
+    capabilities_ref = actual["DiscoveredModel"]["properties"]["capabilities"]["$ref"]
+    capabilities = actual[capabilities_ref.rsplit("/", 1)[-1]]
+    assert capabilities["additionalProperties"] is False
+    assert set(capabilities["properties"]) == {"text", "vision"}
+
+
 def test_error_codes_are_closed_and_upper_snake_case():
     _, schemas = load_contract()
     error_codes = schemas["components"]["schemas"]["ErrorCode"]["enum"]
@@ -176,6 +216,10 @@ def test_implemented_backend_operations_match_target_contract(tmp_path):
         actual_operation = implemented["paths"][path][method]
         assert actual_operation["operationId"] == target_operation["operationId"]
 
+        target_errors = {status for status in target_operation["responses"] if not str(status).startswith("2")}
+        actual_errors = {status for status in actual_operation["responses"] if not str(status).startswith("2")}
+        assert target_errors <= actual_errors
+
         target_success = {status for status in target_operation["responses"] if str(status).startswith("2")}
         actual_success = {status for status in actual_operation["responses"] if str(status).startswith("2")}
         assert actual_success == target_success
@@ -195,6 +239,8 @@ def test_implemented_backend_operations_match_target_contract(tmp_path):
             )
             if target_schema and "$ref" in target_schema:
                 assert actual_schema["$ref"].rsplit("/", 1)[-1] == target_schema["$ref"].rsplit("/", 1)[-1]
+            elif target_schema:
+                assert normalized_schema(actual_schema) == normalized_schema(target_schema)
 
         target_media = set(target_operation.get("requestBody", {}).get("content", {}))
         actual_media = set(actual_operation.get("requestBody", {}).get("content", {}))

@@ -430,8 +430,8 @@ class Attempt(ContractModel):
     exam_version_id: str
     mode: Literal["exam", "practice"]
     status: Literal["in-progress", "paused", "grading", "submitted"]
-    completion_status: Literal["in-progress", "completed"] = "in-progress"
-    grading_status: Literal["not-requested", "queued", "grading", "completed", "failed", "stale"] = "not-requested"
+    completion_status: Literal["in-progress", "completed"]
+    grading_status: Literal["not-requested", "queued", "grading", "completed", "failed", "stale"]
     show_suggested_score: bool
     paper: AttemptPaper
     answers: list[AttemptAnswer]

@@ -5,7 +5,6 @@ import asyncio
 import time
 import uuid
 
-from .api_models import AiDocument, AiDocumentChange, AiDocumentRevisionProposal
 from .learning import LearningError
 from .model_client import ModelClientError
 from .operations import OperationFailure
@@ -32,23 +31,12 @@ class AiDocumentService:
         return self.get_document(document_id).get("versions", [])
 
     def create_document(self, subject_id: str, payload: dict) -> dict:
-        subject = self._subject(subject_id)
+        self._subject(subject_id)
         self._validate_sources(subject_id, payload.get("source_version_ids", []), payload["grounding_mode"])
         profile = self._model(payload["model_id"])
         timestamp = self._now()
         document_id = self._ids("ai-document")
         version_id = self._ids("ai-document-version")
-        document = {
-            "id": document_id,
-            "subject_id": subject_id,
-            "title": payload["title"],
-            "generated_by": "ai",
-            "current_version_id": version_id,
-            "versions": [{"id": version_id, "document_id": document_id, "number": 1, "status": "ready", "content": [], "upstream_citations": [], "created_at": timestamp}],
-            "created_at": timestamp,
-            "updated_at": timestamp,
-        }
-        self._mutate(subject_id, lambda data: {**data, "ai_documents": [*data.get("ai_documents", []), document]})
         resource = {"type": "ai-document", "id": document_id}
 
         async def worker():
@@ -59,8 +47,20 @@ class AiDocumentService:
                 response = await self.model_client.chat(profile, [{"role": "user", "content": f"创建资料文档：{payload['instruction']}\n资料片段：{self._anchor_text(anchors)}"}])
                 citations = [self.sources.create_citation(anchor) for anchor in anchors]
                 version = {"id": version_id, "document_id": document_id, "number": 1, "status": "ready", "content": [{"id": self._ids("block"), "type": "markdown", "text": response.get("text") or ""}], "upstream_citations": citations, "created_at": timestamp}
-                updated = {**document, "versions": [version], "updated_at": self._now()}
-                self._replace_document(subject_id, document_id, updated)
+                document = {
+                    "id": document_id,
+                    "subject_id": subject_id,
+                    "title": payload["title"],
+                    "generated_by": "ai",
+                    "current_version_id": version_id,
+                    "versions": [version],
+                    "created_at": timestamp,
+                    "updated_at": self._now(),
+                }
+                self._mutate(subject_id, lambda data: {
+                    **data,
+                    "ai_documents": [*data.get("ai_documents", []), document],
+                })
                 return resource
             except asyncio.CancelledError:
                 raise
@@ -99,12 +99,40 @@ class AiDocumentService:
 
         async def worker():
             try:
-                response = await self.model_client.chat(profile, [{"role": "user", "content": payload["instruction"]}])
-                current = document["versions"][-1].get("content", [])
+                base_version = next(
+                    item
+                    for item in document["versions"]
+                    if item["id"] == proposal["base_version_id"]
+                )
+                current = base_version.get("content", [])
+                citation_context = "\n".join(
+                    f"[{citation['source_name']} - {citation['location']['label']}] {citation.get('excerpt') or ''}"
+                    for citation in base_version.get("upstream_citations", [])
+                )
+                prompt = (
+                    f"请按要求修改资料文档。\n\n修改要求：{payload['instruction']}"
+                    f"\n\n当前文档内容：\n{self._content_text(current) or '无'}"
+                    f"\n\n当前文档引用依据：\n{citation_context or '无'}"
+                )
+                response = await self.model_client.chat(profile, [{"role": "user", "content": prompt}])
                 change = {"path": "/content", "operation": "replace", "before": current, "after": [{"id": self._ids("block"), "type": "markdown", "text": response.get("text") or ""}]}
                 ready = {**proposal, "status": "ready", "changes": [change], "updated_at": self._now()}
                 self._replace_proposal(subject["id"], proposal["id"], ready)
                 return resource
+            except asyncio.CancelledError:
+                failed = {
+                    **proposal,
+                    "status": "failed",
+                    "error": {
+                        "code": "AI_DOCUMENT_PROPOSAL_INVALID",
+                        "message": "修改提案生成已取消",
+                        "retryable": True,
+                        "details": {},
+                    },
+                    "updated_at": self._now(),
+                }
+                self._replace_proposal(subject["id"], proposal["id"], failed)
+                raise
             except (LearningError, ModelClientError) as exc:
                 failed = {**proposal, "status": "failed", "error": {"code": "AI_DOCUMENT_PROPOSAL_INVALID", "message": str(exc), "retryable": True, "details": {}}, "updated_at": self._now()}
                 self._replace_proposal(subject["id"], proposal["id"], failed)
@@ -177,6 +205,14 @@ class AiDocumentService:
     @staticmethod
     def _anchor_text(anchors: list[dict]) -> str:
         return "\n".join(block.get("text", "") for anchor in anchors for block in anchor.get("content", []) if block.get("type") == "markdown")
+
+    @staticmethod
+    def _content_text(blocks: list[dict]) -> str:
+        return "\n".join(
+            block.get("text", "")
+            for block in blocks
+            if block.get("type") == "markdown"
+        )
 
     def _mutate(self, subject_id: str, update) -> None:
         if self.workspace_service.update_subject_data(subject_id, update) is None:

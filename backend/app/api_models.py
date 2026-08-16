@@ -446,11 +446,11 @@ class ChatMessageInput(ContractModel):
     only_use_specified_sources: bool = False
     attachment_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
 
-    @field_validator("source_version_ids")
+    @field_validator("source_version_ids", "focused_source_version_ids", "attachment_ids")
     @classmethod
-    def source_versions_must_be_unique(cls, value):
+    def context_ids_must_be_unique(cls, value):
         if value is not None and len(value) != len(set(value)):
-            raise ValueError("source_version_ids must contain unique items")
+            raise ValueError("context id lists must contain unique items")
         return value
 
     @model_validator(mode="after")
@@ -510,8 +510,18 @@ class Chat(ContractModel):
 
 
 class SessionInput(ContractModel):
-    title: str | None = Field(default=None, min_length=1, max_length=200)
-    source_version_ids: list[str] = Field(default_factory=list)
+    title: str = Field(default=None, min_length=1, max_length=200)
+    source_version_ids: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
 
 
 class SessionPatch(PatchModel):
@@ -575,9 +585,14 @@ class ModelDiscoveryInput(ContractModel):
     manual_model_name: str | None = Field(default=None, max_length=120)
 
 
+class DiscoveredModelCapabilities(ContractModel):
+    text: bool
+    vision: bool
+
+
 class DiscoveredModel(ContractModel):
     name: str
-    capabilities: dict[str, bool]
+    capabilities: DiscoveredModelCapabilities
 
 
 class ModelDiscoveryResponse(ContractModel):
@@ -594,9 +609,16 @@ class ModelSelection(ContractModel):
 class AiDocumentCreateInput(ContractModel):
     title: str = Field(min_length=1, max_length=200)
     instruction: str = Field(min_length=1, max_length=10000)
-    source_version_ids: list[str] = Field(default_factory=list)
+    source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
     model_id: str
+
+    @field_validator("source_version_ids")
+    @classmethod
+    def source_versions_must_be_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("source_version_ids must contain unique items")
+        return value
 
 
 class AiDocumentVersion(ContractModel):
@@ -607,6 +629,10 @@ class AiDocumentVersion(ContractModel):
     content: list[ContentBlock]
     upstream_citations: list[Citation]
     created_at: int
+
+
+class AiDocumentVersionList(ContractModel):
+    items: list[AiDocumentVersion]
 
 
 class AiDocument(ContractModel):
@@ -633,8 +659,8 @@ class AiDocumentRevisionInput(ContractModel):
 class AiDocumentChange(ContractModel):
     path: str = Field(min_length=1)
     operation: Literal["add", "replace", "remove"]
-    before: Any = None
-    after: Any = None
+    before: Any
+    after: Any
 
 
 class AiDocumentRevisionProposal(ContractModel):

@@ -198,9 +198,9 @@ class LearningService:
                 name = item.get("name") or item.get("id")
                 if not name:
                     continue
-                models.append({"name": name, "capabilities": {"text": True, "vision": "vision" in name.casefold()}})
+                models.append({"name": name, "capabilities": {"text": True, "vision": False}})
             return {"provider": provider, "models": models, "manual_model_allowed": True, "error": None}
-        except (httpx.HTTPError, ValueError, TypeError) as exc:
+        except (httpx.HTTPError, ValueError, TypeError):
             return {
                 "provider": provider,
                 "models": [],
@@ -276,11 +276,7 @@ class LearningService:
         if payload.get("focused_source_version_ids") and len(focused_ids) != len(payload["focused_source_version_ids"]):
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
         attachment_ids = list(payload.get("attachment_ids") or [])
-        if self.attachments:
-            for attachment_id in attachment_ids:
-                attachment = self.attachments.require(subject_id, attachment_id)
-                if attachment.get("vision_required") and not profile.get("capabilities", {}).get("vision"):
-                    raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片附件，请更换具备视觉能力的模型")
+        attachment_inputs = self._attachment_inputs(subject_id, attachment_ids, profile)
         selection = payload.get("selection")
         selection_context = None
         if selection:
@@ -378,7 +374,15 @@ class LearningService:
                     )
                     return {"type": "chat-message", "id": assistant_id}
                 citations = [*selected_citations, *[self.source_library.create_citation(anchor) for anchor in anchors]]
-                messages = self._grounded_messages(chat, payload, anchors, grounding_mode, profile, selection_context)
+                messages = self._grounded_messages(
+                    chat,
+                    payload,
+                    anchors,
+                    grounding_mode,
+                    profile,
+                    selection_context,
+                    attachment_inputs,
+                )
                 response = await self.model_client.chat(profile, messages)
                 result = (
                     "general-knowledge"
@@ -463,7 +467,11 @@ class LearningService:
 
     def delete_session(self, session_id: str) -> None:
         subject, session = self._find_session(session_id)
-        if self.operations.has_active("session", session_id):
+        message_ids = {item["id"] for item in session.get("messages", [])}
+        if self.operations.has_active("session", session_id) or any(
+            self.operations.has_active("chat-message", message_id)
+            for message_id in message_ids
+        ):
             raise LearningError(409, "OPERATION_IN_PROGRESS", "会话仍有任务在运行")
         data = subject.get("data", {})
         remaining = [item for item in data.get("sessions", []) if item["id"] != session_id]
@@ -522,11 +530,7 @@ class LearningService:
         if payload.get("focused_source_version_ids") and len(focused_ids) != len(payload["focused_source_version_ids"]):
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
         attachment_ids = list(payload.get("attachment_ids") or [])
-        if self.attachments:
-            for attachment_id in attachment_ids:
-                attachment = self.attachments.require(subject["id"], attachment_id)
-                if attachment.get("vision_required") and not profile.get("capabilities", {}).get("vision"):
-                    raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片附件，请更换具备视觉能力的模型")
+        attachment_inputs = self._attachment_inputs(subject["id"], attachment_ids, profile)
         timestamp = self._now()
         context = {
             "source_version_ids": selected_ids,
@@ -556,10 +560,24 @@ class LearningService:
                     self._update_session_message(subject["id"], session_id, assistant_id, {"status": "complete", "content": [self._markdown_block(text)], "grounding_result": "not-covered", "completed_at": self._now(), "updated_at": self._now()})
                     return {"type": "chat-message", "id": assistant_id}
                 citations = [self.source_library.create_citation(anchor) for anchor in anchors]
-                prompt = f"请回答用户问题。\n资料片段：\n{self._anchors_text(anchors) or '无'}\n用户输入：{content}"
-                response = await self.model_client.chat(profile, [{"role": "user", "content": prompt}])
+                prompt = (
+                    f"{self._grounding_instruction(context['grounding_mode'])}"
+                    f"\n\n资料片段：\n{self._anchors_text(anchors) or '无'}"
+                    f"\n\n用户输入：{content}"
+                )
+                model_content = self._grounded_content(
+                    prompt,
+                    anchors,
+                    profile,
+                    attachments=attachment_inputs,
+                )
+                response = await self.model_client.chat(profile, [{"role": "user", "content": model_content}])
                 final_context = {**context, "citations": citations}
-                result = "general-knowledge" if context["grounding_mode"] == "general-knowledge" else "covered"
+                result = (
+                    "general-knowledge"
+                    if context["grounding_mode"] == "general-knowledge"
+                    else "supplemental" if context["grounding_mode"] == "supplemental" else "covered"
+                )
                 self._update_session_message(subject["id"], session_id, assistant_id, {"status": "complete", "content": [self._markdown_block(response.get("text") or "")], "grounding_result": result, "citations": citations, "source_context": final_context, "completed_at": self._now(), "updated_at": self._now()})
                 return {"type": "chat-message", "id": assistant_id}
             except asyncio.CancelledError:
@@ -858,13 +876,10 @@ class LearningService:
         grounding_mode: str,
         profile: dict,
         selection_context: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> list[dict]:
         intent = payload["intent"]
-        instruction = "请回答用户问题。"
-        if grounding_mode == "strict":
-            instruction = "只能依据提供的资料片段回答，不要补充片段之外的知识。"
-        elif grounding_mode == "supplemental":
-            instruction = "先明确说明资料依据，再把资料外补充内容单独标为“补充通用知识”。"
+        instruction = self._grounding_instruction(grounding_mode)
         if chat["learning_mode"] == "socratic":
             instruction += self._socratic_instruction(intent, chat.get("socratic_state"))
         context = self._anchors_text(anchors)
@@ -882,7 +897,7 @@ class LearningService:
             f"\n\n选区来源：\n{'\n'.join(citation_context) or '无'}"
             f"\n\n用户输入：{question}"
         )
-        content = self._grounded_content(text, anchors, profile, selection)
+        content = self._grounded_content(text, anchors, profile, selection, attachments)
         return [*self._conversation_messages(chat), {"role": "user", "content": content}]
 
     def _grounded_content(
@@ -891,7 +906,30 @@ class LearningService:
         anchors: list[dict],
         profile: dict,
         selection: dict | None = None,
+        attachments: list[dict] | None = None,
     ) -> str | list[dict]:
+        attachment_parts = []
+        attachment_text = []
+        for attachment in attachments or []:
+            raw = attachment["content"]
+            mime_type = attachment["mime_type"]
+            if mime_type.startswith("text/"):
+                attachment_text.append(
+                    f"[{attachment['file_name']}]\n{raw.decode('utf-8', errors='replace')}"
+                )
+                continue
+            encoded = base64.b64encode(raw).decode("ascii")
+            data_url = f"data:{mime_type};base64,{encoded}"
+            if mime_type.startswith("image/"):
+                attachment_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            elif mime_type == "application/pdf":
+                attachment_parts.append({
+                    "type": "file",
+                    "file": {"filename": attachment["file_name"], "file_data": data_url},
+                })
+        if attachment_text:
+            text += f"\n\n临时附件：\n{'\n\n'.join(attachment_text)}"
+
         content: str | list[dict] = text
         image_blocks = [
             block
@@ -901,10 +939,15 @@ class LearningService:
         ]
         if selection and selection.get("image_asset"):
             image_blocks.append({"asset": selection["image_asset"]})
-        if image_blocks:
-            if not profile.get("capabilities", {}).get("vision"):
-                raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入")
+        has_image_input = bool(image_blocks) or any(
+            part["type"] == "image_url"
+            for part in attachment_parts
+        )
+        if has_image_input and not profile.get("capabilities", {}).get("vision"):
+            raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入")
+        if image_blocks or attachment_parts:
             parts = [{"type": "text", "text": text}]
+            parts.extend(attachment_parts)
             for block in image_blocks:
                 asset = block["asset"]
                 raw, mime_type = self.source_library.get_asset(asset["source_version_id"], asset["asset_id"])
@@ -912,6 +955,26 @@ class LearningService:
                 parts.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}})
             content = parts
         return content
+
+    def _attachment_inputs(self, subject_id: str, attachment_ids: list[str], profile: dict) -> list[dict]:
+        if attachment_ids and self.attachments is None:
+            raise LearningError(404, "ATTACHMENT_NOT_FOUND", "临时附件服务不可用")
+        result = []
+        for attachment_id in attachment_ids:
+            attachment = self.attachments.require(subject_id, attachment_id)
+            if attachment.get("vision_required") and not profile.get("capabilities", {}).get("vision"):
+                raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片附件，请更换具备视觉能力的模型")
+            raw, mime_type = self.attachments.file(attachment_id)
+            result.append({**attachment, "content": raw, "mime_type": mime_type})
+        return result
+
+    @staticmethod
+    def _grounding_instruction(grounding_mode: str) -> str:
+        if grounding_mode == "strict":
+            return "只能依据提供的资料片段和临时附件回答，不要补充资料之外的知识。"
+        if grounding_mode == "supplemental":
+            return "资料优先；可以补充通用知识，但必须把资料外内容明确标为“补充通用知识”。"
+        return "请回答用户问题。"
 
     def _conversation_messages(self, chat: dict) -> list[dict]:
         messages = chat.get("messages", [])

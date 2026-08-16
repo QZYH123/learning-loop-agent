@@ -10,7 +10,7 @@ from .api_models import (
     AiDocumentRevisionInput,
     AiDocumentRevisionProposal,
     AiDocumentRevisionProposalList,
-    AiDocumentVersion,
+    AiDocumentVersionList,
     ChatMessageInput,
     ErrorResponse,
     ModelDiscoveryInput,
@@ -125,7 +125,7 @@ def create_issue16_router(learning, attachments, documents) -> APIRouter:
     def get_ai_document(document_id: str):
         return documents.get_document(document_id)
 
-    @router.get("/api/documents/{document_id}/versions", operation_id="listAiDocumentVersions", response_model=dict, responses={404: {"model": ErrorResponse}})
+    @router.get("/api/documents/{document_id}/versions", operation_id="listAiDocumentVersions", response_model=AiDocumentVersionList, responses={404: {"model": ErrorResponse}})
     def list_ai_document_versions(document_id: str):
         return {"items": documents.list_versions(document_id)}
 

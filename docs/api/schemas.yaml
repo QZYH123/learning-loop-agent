@@ -687,6 +687,13 @@ components:
               intent: {enum: [ask, attempt, restate, self-test-answer]}
           then:
             required: [content]
+      example:
+        intent: ask
+        content: 请结合重点资料解释这个概念
+        source_version_ids: [source-version-1]
+        focused_source_version_ids: [source-version-1]
+        only_use_specified_sources: false
+        attachment_ids: []
 
     ChatMessage:
       type: object
@@ -902,6 +909,17 @@ components:
             - type: 'null'
         created_at: {$ref: '#/components/schemas/Timestamp'}
         expires_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: attachment-1
+        subject_id: subject-1
+        file_name: diagram.png
+        mime_type: image/png
+        size_bytes: 1024
+        status: ready
+        vision_required: true
+        failure: null
+        created_at: 1735689600000
+        expires_at: 1735776000000
 
     ModelDiscoveryInput:
       type: object
@@ -912,6 +930,10 @@ components:
         base_url: {type: string, format: uri}
         api_key: {type: string, writeOnly: true, maxLength: 2000}
         manual_model_name: {type: [string, 'null'], maxLength: 120}
+      example:
+        provider: ollama
+        base_url: http://localhost:11434
+        manual_model_name: qwen2.5:7b
 
     DiscoveredModel:
       type: object
@@ -941,6 +963,13 @@ components:
           anyOf:
             - $ref: '#/components/schemas/ApiError'
             - type: 'null'
+      example:
+        provider: ollama
+        models:
+          - name: qwen2.5:7b
+            capabilities: {text: true, vision: false}
+        manual_model_allowed: true
+        error: null
 
     ModelSelection:
       type: object
@@ -962,6 +991,12 @@ components:
           items: {$ref: '#/components/schemas/Identifier'}
         grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
         model_id: {$ref: '#/components/schemas/Identifier'}
+      example:
+        title: 电磁学复习摘要
+        instruction: 按概念、公式和例题整理
+        source_version_ids: [source-version-1]
+        grounding_mode: strict
+        model_id: model-1
 
     AiDocumentVersion:
       type: object
@@ -979,6 +1014,15 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Citation'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
+
+    AiDocumentVersionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AiDocumentVersion'}
 
     AiDocument:
       type: object

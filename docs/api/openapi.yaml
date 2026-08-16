@@ -1816,14 +1816,7 @@ paths:
           description: 文档版本列表
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items: {$ref: ./schemas.yaml#/components/schemas/AiDocumentVersion}
+              schema: {$ref: ./schemas.yaml#/components/schemas/AiDocumentVersionList}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /api/documents/{document_id}/versions/{version_id}/restore:

@@ -260,7 +260,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
         "/api/source-versions/{version_id}/anchors",
         operation_id="listSourceVersionAnchors",
         response_model=SourceAnchorList,
-        responses={404: {"model": ErrorResponse}, 410: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 410: {"model": ErrorResponse}},
     )
     def list_source_version_anchors(version_id: str):
         return {"items": sources.list_anchors(version_id)}
