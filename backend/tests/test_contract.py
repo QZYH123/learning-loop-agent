@@ -144,6 +144,7 @@ def test_sensitive_and_answer_visibility_boundaries_are_explicit():
 
 def test_issue16_contract_covers_context_lifecycle_boundaries():
     openapi, schemas = load_contract()
+    assert openapi["info"]["version"] == "0.2.0"
     paths = openapi["paths"]
     assert "/api/subjects/{subject_id}/sessions" in paths
     assert "/api/sessions/{session_id}/sources/{version_id}" in paths
@@ -155,6 +156,11 @@ def test_issue16_contract_covers_context_lifecycle_boundaries():
     assert "only_use_specified_sources" in schemas["components"]["schemas"]["ChatMessageInput"]["properties"]
     assert "completion_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
     assert "grading_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
+    definitions = schemas["components"]["schemas"]
+    assert definitions["ApiFormat"]["enum"] == ["openai-chat-completions", "openai-responses", "ollama"]
+    assert "api_format" in definitions["ModelServiceInput"]["required"]
+    assert "chat_style" in definitions["Session"]["required"]
+    assert "intent" not in definitions["ChatMessageInput"].get("required", [])
 
     example_schemas = {
         "OperationAccepted",

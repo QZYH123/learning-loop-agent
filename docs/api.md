@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-当前静态契约版本为 `0.1.0`，后端路径、operationId、成功状态码和响应模型已实现。产品路线随后修订了两处边界：学习方式改为不带阶段门禁的 `chat_style`，模型配置增加显式 `api_format`。Issue 06、07、19 实现时必须先把这些变更升级到下一版静态 OpenAPI，再同步后端和前端；旧 `learning_mode`、`SocraticState` 和阶段型 `intent` 只能作为迁移期兼容字段，不能继续指导新前端。
+当前静态契约版本为 `0.2.0`，后端路径、operationId、成功状态码和响应模型已实现。本版使用不带阶段门禁的 `chat_style`，并为模型配置增加显式 `api_format`；旧 `learning_mode`、`SocraticState` 和阶段型 `intent` 只作为迁移期兼容字段。
 
 主要迁移差异：
 

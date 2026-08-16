@@ -35,6 +35,8 @@ ErrorCode = Literal[
     "MODEL_CONNECTION_FAILED",
     "MODEL_HTTP_ERROR",
     "MODEL_INVALID_RESPONSE",
+    "MODEL_API_FORMAT_UNSUPPORTED",
+    "MODEL_INPUT_UNSUPPORTED",
     "SOURCE_TYPE_UNSUPPORTED",
     "SOURCE_TOO_LARGE",
     "SOURCE_PROCESSING_FAILED",
@@ -78,6 +80,9 @@ ErrorCode = Literal[
     "GRADING_ALREADY_REQUESTED",
     "GRADING_STALE",
 ]
+
+ApiFormat = Literal["openai-chat-completions", "openai-responses", "ollama"]
+ChatStyle = Literal["default", "socratic", "crash-course"]
 
 ResourceType = Literal[
     "model",
@@ -333,6 +338,7 @@ class ModelValidation(ContractModel):
 
 class ModelServiceInput(ContractModel):
     provider: str = Field(min_length=1, max_length=60)
+    api_format: ApiFormat
     model: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str = Field(default="", max_length=2000)
@@ -341,6 +347,7 @@ class ModelServiceInput(ContractModel):
 
 class ModelServicePatch(PatchModel):
     provider: str = Field(default=None, min_length=1, max_length=60)
+    api_format: ApiFormat = None
     model: str = Field(default=None, min_length=1, max_length=120)
     base_url: str = Field(default=None, min_length=1, max_length=500)
     api_key: str | None = Field(default=None, max_length=2000)
@@ -350,6 +357,7 @@ class ModelServicePatch(PatchModel):
 class ModelService(ContractModel):
     id: str
     provider: str
+    api_format: ApiFormat
     model: str
     base_url: str
     has_api_key: bool
@@ -372,6 +380,7 @@ class Workspace(ContractModel):
 
 
 class ChatConfigPatch(PatchModel):
+    chat_style: ChatStyle = None
     learning_mode: Literal["chat", "socratic", "crash-course"] = None
     goal: str | None = Field(default=None, max_length=2000)
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] = None
@@ -443,8 +452,9 @@ ChatMessageIntent = Literal[
 
 
 class ChatMessageInput(ContractModel):
-    intent: ChatMessageIntent
+    intent: ChatMessageIntent = "ask"
     content: str = Field(default=None, min_length=1, max_length=20000)
+    chat_style: ChatStyle = None
     model_id: str | None = None
     source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] = None
@@ -470,6 +480,7 @@ class ChatMessageInput(ContractModel):
 class ModelSnapshot(ContractModel):
     model_id: str
     provider: str
+    api_format: ApiFormat
     model: str
     base_url: str
     capabilities: ModelCapabilities
@@ -479,6 +490,7 @@ class ChatMessage(ContractModel):
     id: str
     role: Literal["user", "assistant", "system"]
     intent: ChatMessageIntent
+    chat_style: ChatStyle = "default"
     content: list[ContentBlock]
     status: Literal["queued", "generating", "complete", "stopped", "error"]
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] | None = None
@@ -503,6 +515,7 @@ class Chat(ContractModel):
     id: str
     subject_id: str
     learning_mode: Literal["chat", "socratic", "crash-course"]
+    chat_style: ChatStyle
     goal: str | None = None
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
     source_version_ids: list[str]
@@ -516,6 +529,8 @@ class Chat(ContractModel):
 
 class SessionInput(ContractModel):
     title: str = Field(default=None, min_length=1, max_length=200)
+    chat_style: ChatStyle = "default"
+    learning_mode: Literal["chat", "socratic", "crash-course"] = None
     source_version_ids: list[str] = Field(
         default_factory=list,
         json_schema_extra={"uniqueItems": True},
@@ -531,6 +546,8 @@ class SessionInput(ContractModel):
 
 class SessionPatch(PatchModel):
     title: str = Field(default=None, min_length=1, max_length=200)
+    chat_style: ChatStyle = None
+    learning_mode: Literal["chat", "socratic", "crash-course"] = None
 
 
 class Session(ContractModel):
@@ -538,6 +555,8 @@ class Session(ContractModel):
     subject_id: str
     title: str
     active: bool
+    chat_style: ChatStyle
+    learning_mode: Literal["chat", "socratic", "crash-course"] | None = None
     source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     messages: list[ChatMessage]
     created_at: int
@@ -584,7 +603,7 @@ class TempAttachment(ContractModel):
 
 
 class ModelDiscoveryInput(ContractModel):
-    provider: Literal["openai-compatible", "ollama"]
+    api_format: ApiFormat
     base_url: str = Field(json_schema_extra={"format": "uri"})
     api_key: str = Field(default_factory=str, max_length=2000, json_schema_extra={"writeOnly": True})
     manual_model_name: str | None = Field(default=None, max_length=120)
@@ -607,7 +626,7 @@ class DiscoveredModel(ContractModel):
 
 
 class ModelDiscoveryResponse(ContractModel):
-    provider: Literal["openai-compatible", "ollama"]
+    api_format: ApiFormat
     models: list[DiscoveredModel]
     manual_model_allowed: bool
     error: ApiError | None = None

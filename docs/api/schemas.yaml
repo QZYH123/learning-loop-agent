@@ -62,6 +62,8 @@ components:
         - MODEL_CONNECTION_FAILED
         - MODEL_HTTP_ERROR
         - MODEL_INVALID_RESPONSE
+        - MODEL_API_FORMAT_UNSUPPORTED
+        - MODEL_INPUT_UNSUPPORTED
         - SOURCE_TYPE_UNSUPPORTED
         - SOURCE_TOO_LARGE
         - SOURCE_PROCESSING_FAILED
@@ -292,9 +294,10 @@ components:
     ModelServiceInput:
       type: object
       additionalProperties: false
-      required: [provider, model, base_url]
+      required: [provider, api_format, model, base_url]
       properties:
         provider: {type: string, minLength: 1, maxLength: 60}
+        api_format: {$ref: '#/components/schemas/ApiFormat'}
         model: {type: string, minLength: 1, maxLength: 120}
         base_url: {type: string, format: uri, minLength: 1, maxLength: 500}
         api_key:
@@ -309,6 +312,7 @@ components:
       minProperties: 1
       properties:
         provider: {type: string, minLength: 1, maxLength: 60}
+        api_format: {$ref: '#/components/schemas/ApiFormat'}
         model: {type: string, minLength: 1, maxLength: 120}
         base_url: {type: string, format: uri, minLength: 1, maxLength: 500}
         api_key:
@@ -329,10 +333,11 @@ components:
     ModelService:
       type: object
       additionalProperties: false
-      required: [id, provider, model, base_url, has_api_key, capabilities, validation, created_at, updated_at]
+      required: [id, provider, api_format, model, base_url, has_api_key, capabilities, validation, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         provider: {type: string}
+        api_format: {$ref: '#/components/schemas/ApiFormat'}
         model: {type: string}
         base_url: {type: string, format: uri}
         has_api_key: {type: boolean}
@@ -343,8 +348,9 @@ components:
       example:
         id: model-1
         provider: Ollama
+        api_format: ollama
         model: qwen2.5:7b
-        base_url: http://localhost:11434/v1
+        base_url: http://localhost:11434
         has_api_key: false
         capabilities: {text: true, vision: false, source: configured}
         validation: {status: unknown, checked_at: null, message: null}
@@ -616,6 +622,14 @@ components:
       type: string
       enum: [strict, general-knowledge, supplemental]
 
+    ApiFormat:
+      type: string
+      enum: [openai-chat-completions, openai-responses, ollama]
+
+    ChatStyle:
+      type: string
+      enum: [default, socratic, crash-course]
+
     LearningMode:
       type: string
       enum: [chat, socratic, crash-course]
@@ -623,10 +637,11 @@ components:
     ModelSnapshot:
       type: object
       additionalProperties: false
-      required: [model_id, provider, model, base_url, capabilities]
+      required: [model_id, provider, api_format, model, base_url, capabilities]
       properties:
         model_id: {$ref: '#/components/schemas/Identifier'}
         provider: {type: string}
+        api_format: {$ref: '#/components/schemas/ApiFormat'}
         model: {type: string}
         base_url: {type: string, format: uri}
         capabilities: {$ref: '#/components/schemas/ModelCapabilities'}
@@ -636,6 +651,7 @@ components:
       additionalProperties: false
       minProperties: 1
       properties:
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
         learning_mode: {$ref: '#/components/schemas/LearningMode'}
         goal: {type: [string, 'null'], maxLength: 2000}
         grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
@@ -688,10 +704,13 @@ components:
     ChatMessageInput:
       type: object
       additionalProperties: false
-      required: [intent]
       properties:
-        intent: {$ref: '#/components/schemas/ChatMessageIntent'}
+        intent:
+          allOf: [{$ref: '#/components/schemas/ChatMessageIntent'}]
+          default: ask
+          deprecated: true
         content: {type: string, minLength: 1, maxLength: 20000}
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
         model_id:
           anyOf:
             - $ref: '#/components/schemas/Identifier'
@@ -732,11 +751,12 @@ components:
     ChatMessage:
       type: object
       additionalProperties: false
-      required: [id, role, intent, content, status, citations, source_context, created_at, updated_at]
+      required: [id, role, intent, chat_style, content, status, citations, source_context, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         role: {type: string, enum: [user, assistant, system]}
         intent: {$ref: '#/components/schemas/ChatMessageIntent'}
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
         content:
           type: array
           items: {$ref: '#/components/schemas/ContentBlock'}
@@ -773,6 +793,8 @@ components:
 
     SocraticState:
       type: object
+      deprecated: true
+      description: v0.1 历史兼容字段；不再驱动对话流程。
       additionalProperties: false
       required: [stage, hint_level, answer_revealed]
       properties:
@@ -785,11 +807,12 @@ components:
     Chat:
       type: object
       additionalProperties: false
-      required: [id, subject_id, learning_mode, grounding_mode, source_version_ids, active_model_id, messages, created_at, updated_at]
+      required: [id, subject_id, learning_mode, chat_style, grounding_mode, source_version_ids, active_model_id, messages, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         subject_id: {$ref: '#/components/schemas/Identifier'}
         learning_mode: {$ref: '#/components/schemas/LearningMode'}
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
         goal: {type: [string, 'null']}
         grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
         source_version_ids:
@@ -845,6 +868,10 @@ components:
       additionalProperties: false
       properties:
         title: {type: string, minLength: 1, maxLength: 200}
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
+        learning_mode:
+          allOf: [{$ref: '#/components/schemas/LearningMode'}]
+          deprecated: true
         source_version_ids:
           type: array
           uniqueItems: true
@@ -857,17 +884,27 @@ components:
       minProperties: 1
       properties:
         title: {type: string, minLength: 1, maxLength: 200}
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
+        learning_mode:
+          allOf: [{$ref: '#/components/schemas/LearningMode'}]
+          deprecated: true
       example: {title: 极限复习}
 
     Session:
       type: object
       additionalProperties: false
-      required: [id, subject_id, title, active, source_version_ids, messages, created_at, updated_at]
+      required: [id, subject_id, title, active, chat_style, source_version_ids, messages, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         subject_id: {$ref: '#/components/schemas/Identifier'}
         title: {type: string}
         active: {type: boolean}
+        chat_style: {$ref: '#/components/schemas/ChatStyle'}
+        learning_mode:
+          anyOf:
+            - $ref: '#/components/schemas/LearningMode'
+            - type: 'null'
+          deprecated: true
         source_version_ids:
           type: array
           uniqueItems: true
@@ -979,14 +1016,14 @@ components:
     ModelDiscoveryInput:
       type: object
       additionalProperties: false
-      required: [provider, base_url]
+      required: [api_format, base_url]
       properties:
-        provider: {type: string, enum: [openai-compatible, ollama]}
+        api_format: {$ref: '#/components/schemas/ApiFormat'}
         base_url: {type: string, format: uri}
         api_key: {type: string, writeOnly: true, maxLength: 2000}
         manual_model_name: {type: [string, 'null'], maxLength: 120}
       example:
-        provider: ollama
+        api_format: ollama
         base_url: http://localhost:11434
         manual_model_name: qwen2.5:7b
 
@@ -1007,9 +1044,9 @@ components:
     ModelDiscoveryResponse:
       type: object
       additionalProperties: false
-      required: [provider, models, manual_model_allowed]
+      required: [api_format, models, manual_model_allowed]
       properties:
-        provider: {type: string, enum: [openai-compatible, ollama]}
+        api_format: {$ref: '#/components/schemas/ApiFormat'}
         models:
           type: array
           items: {$ref: '#/components/schemas/DiscoveredModel'}
@@ -1019,7 +1056,7 @@ components:
             - $ref: '#/components/schemas/ApiError'
             - type: 'null'
       example:
-        provider: ollama
+        api_format: ollama
         models:
           - name: qwen2.5:7b
             capabilities: {text: true, vision: false}

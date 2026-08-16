@@ -39,7 +39,7 @@ def create_issue16_router(learning, attachments, documents) -> APIRouter:
 
     @router.post("/api/subjects/{subject_id}/sessions", operation_id="createSession", status_code=201, response_model=Session, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}})
     def create_session(subject_id: str, payload: SessionInput | None = None):
-        return learning.create_session(subject_id, (payload or SessionInput()).model_dump(exclude_none=True))
+        return learning.create_session(subject_id, (payload or SessionInput()).model_dump(exclude_none=True, exclude_unset=True))
 
     @router.get("/api/sessions/{session_id}", operation_id="getSession", response_model=Session, responses={404: {"model": ErrorResponse}})
     def get_session(session_id: str):

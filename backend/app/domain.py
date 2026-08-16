@@ -19,6 +19,8 @@ MODEL_PROVIDER_MAX_LENGTH = 60
 MODEL_NAME_MAX_LENGTH = 120
 MODEL_BASE_URL_MAX_LENGTH = 500
 MODEL_API_KEY_MAX_LENGTH = 2000
+DEFAULT_API_FORMAT = "openai-chat-completions"
+API_FORMATS = {DEFAULT_API_FORMAT, "openai-responses", "ollama"}
 
 SUBJECT_CREATE = "subject/create"
 SUBJECT_RENAME = "subject/rename"
@@ -163,6 +165,10 @@ def _validate_model_input(workspace: dict, action: dict, except_model_id=None) -
     if len(provider) > MODEL_PROVIDER_MAX_LENGTH:
         return None, _error("MODEL_PROVIDER_TOO_LONG", f"服务商名称不能超过 {MODEL_PROVIDER_MAX_LENGTH} 个字符")
 
+    api_format = action.get("api_format", DEFAULT_API_FORMAT)
+    if api_format not in API_FORMATS:
+        return None, _error("MODEL_API_FORMAT_UNSUPPORTED", "请选择受支持的模型 API 格式")
+
     model = _normalize_name(action.get("model"))
     if not model:
         return None, _error("MODEL_NAME_REQUIRED", "请输入模型名称")
@@ -182,6 +188,7 @@ def _validate_model_input(workspace: dict, action: dict, except_model_id=None) -
             continue
         if (
             candidate["provider"].casefold() == provider.casefold()
+            and candidate.get("api_format", DEFAULT_API_FORMAT) == api_format
             and candidate["model"].casefold() == model.casefold()
             and candidate["base_url"] == base_url
         ):
@@ -189,6 +196,7 @@ def _validate_model_input(workspace: dict, action: dict, except_model_id=None) -
     capabilities = action.get("capabilities") if isinstance(action.get("capabilities"), dict) else {}
     return {
         "provider": provider,
+        "api_format": api_format,
         "model": model,
         "base_url": base_url,
         "api_key": api_key,
@@ -286,6 +294,7 @@ def _model_snapshot(profile: dict) -> dict:
     return {
         "model_id": profile["id"],
         "provider": profile["provider"],
+        "api_format": profile.get("api_format", DEFAULT_API_FORMAT),
         "model": profile["model"],
         "base_url": profile["base_url"],
     }
@@ -1013,10 +1022,19 @@ def _normalize_models(raw_models, timestamp: int) -> list[dict]:
         model_id = candidate.get("id")
         provider = _normalize_name(candidate.get("provider"))
         model = _normalize_name(candidate.get("model"))
+        api_format = candidate.get("api_format", DEFAULT_API_FORMAT)
         base_url, error = _normalize_base_url(candidate.get("base_url"))
-        if not isinstance(model_id, str) or not model_id or not provider or not model or error or model_id in seen_ids:
+        if (
+            not isinstance(model_id, str)
+            or not model_id
+            or not provider
+            or not model
+            or api_format not in API_FORMATS
+            or error
+            or model_id in seen_ids
+        ):
             continue
-        key = (provider.casefold(), model.casefold(), base_url)
+        key = (provider.casefold(), api_format, model.casefold(), base_url)
         if key in seen_keys:
             continue
         seen_ids.add(model_id)
@@ -1026,6 +1044,7 @@ def _normalize_models(raw_models, timestamp: int) -> list[dict]:
             {
                 "id": model_id,
                 "provider": provider,
+                "api_format": api_format,
                 "model": model,
                 "base_url": base_url,
                 "api_key": candidate.get("api_key") if isinstance(candidate.get("api_key"), str) else "",
@@ -1074,6 +1093,11 @@ def _normalize_chat(value, timestamp: int) -> dict:
                 "model": {
                     "model_id": model.get("model_id") if isinstance(model, dict) and isinstance(model.get("model_id"), str) else None,
                     "provider": model.get("provider") if isinstance(model, dict) and isinstance(model.get("provider"), str) else "",
+                    "api_format": (
+                        model.get("api_format", DEFAULT_API_FORMAT)
+                        if isinstance(model, dict) and model.get("api_format", DEFAULT_API_FORMAT) in API_FORMATS
+                        else DEFAULT_API_FORMAT
+                    ),
                     "model": model.get("model") if isinstance(model, dict) and isinstance(model.get("model"), str) else "",
                     "base_url": model.get("base_url") if isinstance(model, dict) and isinstance(model.get("base_url"), str) else "",
                 },

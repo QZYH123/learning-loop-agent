@@ -32,6 +32,42 @@ def create_subject_and_source(client):
     return subject_id, source["current_version"]["id"]
 
 
+def test_model_api_format_and_session_chat_style_survive_restart(tmp_path):
+    model_client = ImmediateFakeModelClient(answer="直接回答")
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model = client.post("/api/models", json={
+            "provider": "Looks like Ollama",
+            "api_format": "openai-responses",
+            "model": "local-model",
+            "base_url": "http://localhost/v1",
+        }).json()
+        assert model["api_format"] == "openai-responses"
+        client.put("/api/models/current", json={"model_id": model["id"]})
+
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={
+            "chat_style": "socratic",
+        }).json()
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "content": "直接解释这道题",
+            "chat_style": "crash-course",
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+
+        restored = client.get(f"/api/sessions/{session['id']}").json()
+        assert restored["chat_style"] == "socratic"
+        assert restored["messages"][-1]["chat_style"] == "crash-course"
+        assert restored["messages"][-1]["model"]["api_format"] == "openai-responses"
+
+    reopened, _ = make_client(tmp_path, model_client=model_client)
+    with reopened:
+        assert reopened.get(f"/api/models/{model['id']}").json()["api_format"] == "openai-responses"
+        restored = reopened.get(f"/api/sessions/{session['id']}").json()
+        assert restored["chat_style"] == "socratic"
+        assert restored["messages"][-1]["chat_style"] == "crash-course"
+
+
 def test_sessions_keep_explicit_source_scope_and_message_snapshot(tmp_path):
     model_client = ImmediateFakeModelClient(answer="依据资料")
     client, _ = make_client(tmp_path, model_client=model_client)
@@ -39,7 +75,7 @@ def test_sessions_keep_explicit_source_scope_and_message_snapshot(tmp_path):
         subject_id, version_id = create_subject_and_source(client)
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         session = client.post(
             f"/api/subjects/{subject_id}/sessions",
@@ -114,7 +150,7 @@ def test_focused_source_is_retrieved_before_other_session_sources(tmp_path):
         focused_version_id = next(source for source in sources if source["display_name"] == "focus.md")["current_version"]["id"]
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={
             "source_version_ids": [first_version_id, focused_version_id],
@@ -138,7 +174,7 @@ def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
         subject_id, version_id = create_subject_and_source(client)
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         session = client.post(
             f"/api/subjects/{subject_id}/sessions",
@@ -204,7 +240,7 @@ def test_running_session_cannot_be_deleted(tmp_path):
         subject_id = client.post("/api/subjects", json={"name": "物理"}).json()["id"]
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         sent = client.post(f"/api/sessions/{session['id']}/messages", json={
@@ -295,7 +331,7 @@ def test_model_discovery_failure_keeps_manual_fallback(tmp_path):
     client, _ = make_client(tmp_path)
     with client:
         response = client.post("/api/models/discover", json={
-            "provider": "ollama",
+            "api_format": "ollama",
             "base_url": "http://127.0.0.1:1",
             "manual_model_name": "qwen2.5:7b",
         })
@@ -316,7 +352,7 @@ def test_model_discovery_does_not_guess_vision_from_model_name(tmp_path, monkeyp
     client, _ = make_client(tmp_path)
     with client:
         response = client.post("/api/models/discover", json={
-            "provider": "openai-compatible",
+            "api_format": "openai-chat-completions",
             "base_url": "http://localhost/v1",
         })
         assert response.status_code == 200
@@ -341,7 +377,7 @@ def test_ollama_discovery_is_ephemeral_and_does_not_persist_credentials(tmp_path
     client, _ = make_client(tmp_path)
     with client:
         response = client.post("/api/models/discover", json={
-            "provider": "ollama",
+            "api_format": "ollama",
             "base_url": "http://localhost:11434",
             "api_key": "temporary-secret",
         })
@@ -368,11 +404,11 @@ def test_current_model_selection_applies_to_existing_chat(tmp_path):
         subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
         first_model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-a", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-a", "base_url": "http://localhost/v1"},
         ).json()["id"]
         second_model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-b", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-b", "base_url": "http://localhost/v1"},
         ).json()["id"]
         client.post(f"/api/subjects/{subject_id}/chat/model", json={"model_id": first_model_id})
         client.put("/api/models/current", json={"model_id": second_model_id})
@@ -396,7 +432,7 @@ def test_attachment_and_ai_document_lifecycle(tmp_path):
         subject_id, source_version_id = create_subject_and_source(client)
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         attachment = client.post(
             f"/api/subjects/{subject_id}/attachments",
@@ -492,7 +528,7 @@ def test_failed_ai_document_generation_does_not_leave_ready_document(tmp_path):
         subject_id = client.post("/api/subjects", json={"name": "化学"}).json()["id"]
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         created = client.post(f"/api/subjects/{subject_id}/documents", json={
             "title": "反应速率",
@@ -514,7 +550,7 @@ def test_context_id_lists_reject_duplicates_and_images_require_vision(tmp_path):
         subject_id, version_id = create_subject_and_source(client)
         model_id = client.post(
             "/api/models",
-            json={"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1"},
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
         ).json()["id"]
         duplicate_session = client.post(
             f"/api/subjects/{subject_id}/sessions",

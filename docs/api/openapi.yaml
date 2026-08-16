@@ -3,13 +3,13 @@ jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 
 info:
   title: Learning Loop Agent API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     AI 学习工具的目标 HTTP 契约。它覆盖 Ticket 01-16，Ticket 17-21 复用其中定义的工作流契约，
     是后端实现和前端集成的共同输入，
     不表示当前后端已经完成。除文件上传与下载外，请求和响应均使用 application/json。
-    产品路线已在 Issue 06、07、19 中修订 chat_style 和 api_format；实现前需升级本静态契约，
-    旧 learning_mode、SocraticState 和阶段型 intent 不得继续指导新前端交互。
+    v0.2 使用 chat_style 表示无阶段门禁的对话风格，并用 api_format 显式选择模型调用协议。
+    旧 learning_mode、SocraticState 和阶段型 intent 只用于迁移期兼容。
   x-contract-status: target
 
 servers:
@@ -465,7 +465,7 @@ paths:
       operationId: configureChat
       tags: [Chat]
       summary: 配置兼容聊天、资料范围和依据模式
-      description: learning_mode 是 v0.1 兼容字段；新前端使用后续 chat_style 契约，不展示固定教学阶段。切换配置不删除已有会话记录，也不隐式切换模型。
+      description: chat_style 只改变后续回复的提示风格；旧 learning_mode 为兼容字段。切换配置不删除已有会话记录，也不隐式切换模型。
       x-tickets: ['04', '06', '07']
       requestBody:
         required: true

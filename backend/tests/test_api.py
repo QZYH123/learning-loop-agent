@@ -6,7 +6,13 @@ def workspace(client):
 
 
 def create_model(client, **overrides):
-    payload = {"provider": "Fake", "model": "fake-1", "base_url": "http://localhost/v1", **overrides}
+    payload = {
+        "provider": "Fake",
+        "api_format": "openai-chat-completions",
+        "model": "fake-1",
+        "base_url": "http://localhost/v1",
+        **overrides,
+    }
     return client.post("/api/models", json=payload).json()["id"]
 
 

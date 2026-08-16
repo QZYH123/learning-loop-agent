@@ -28,7 +28,7 @@ from .core_api import create_core_router
 from .exam_api import create_exam_router
 from .exams import ExamService
 from .learning import LearningError, LearningService
-from .model_client import ObservedModelClient, OpenAiCompatibleModelClient
+from .model_client import ModelApiClient, ObservedModelClient
 from .observability import EvaluationService, ObservabilityService
 from .observability_api import create_observability_router
 from .issue16_api import create_issue16_router
@@ -72,7 +72,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     operations = OperationManager(storage_path=data_path / "operations.json")
     observability = ObservabilityService(data_path / "observability.json")
     operations.set_observer(observability)
-    client = ObservedModelClient(model_client or OpenAiCompatibleModelClient(), observability)
+    client = ObservedModelClient(model_client or ModelApiClient(), observability)
     sources = SourceLibrary(workspace, operations, data_path)
     attachments = AttachmentService(workspace, data_path)
     learning = LearningService(workspace, sources, operations, client)

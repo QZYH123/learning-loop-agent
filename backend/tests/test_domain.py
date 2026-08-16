@@ -128,6 +128,23 @@ def test_normalize_workspace_recovers_generating_message_as_stopped():
     assert chat["messages"][1]["content"] == "半截"
 
 
+def test_normalize_workspace_defaults_legacy_models_without_guessing_format():
+    raw = initial_workspace(now=1)
+    raw["models"] = [{
+        "id": "m1",
+        "provider": "Ollama Cloud",
+        "model": "gpt-compatible-name",
+        "base_url": "http://localhost/v1",
+        "created_at": 1,
+        "updated_at": 1,
+    }]
+
+    workspace, issue = normalize_workspace(raw, now=1000)
+
+    assert issue is None
+    assert workspace["models"][0]["api_format"] == "openai-chat-completions"
+
+
 def test_normalize_workspace_recovers_processing_source_as_retryable_failure():
     raw = {
         "schema_version": 1,

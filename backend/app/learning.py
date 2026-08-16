@@ -11,6 +11,7 @@ import httpx
 from pydantic import ValidationError
 
 from .domain import (
+    DEFAULT_API_FORMAT,
     MODEL_ADD,
     MODEL_CHECKING,
     MODEL_DELETE,
@@ -106,6 +107,7 @@ class LearningService:
             "type": MODEL_UPDATE,
             "model_id": model_id,
             "provider": patch.get("provider", existing["provider"]),
+            "api_format": patch.get("api_format", existing.get("api_format", DEFAULT_API_FORMAT)),
             "model": patch.get("model", existing["model"]),
             "base_url": patch.get("base_url", existing["base_url"]),
             "api_key": existing.get("api_key", "") if "api_key" not in patch else (patch["api_key"] or ""),
@@ -179,10 +181,15 @@ class LearningService:
         return self._model_view(model)
 
     def discover_models(self, payload: dict) -> dict:
-        provider = payload["provider"]
+        api_format = payload["api_format"]
         base_url = payload["base_url"].rstrip("/")
-        if provider == "ollama":
-            url = base_url if base_url.endswith("/api/tags") else f"{base_url}/api/tags"
+        if api_format == "ollama":
+            if base_url.endswith("/api/tags"):
+                url = base_url
+            elif base_url.endswith("/api"):
+                url = f"{base_url}/tags"
+            else:
+                url = f"{base_url}/api/tags"
         else:
             url = base_url if base_url.endswith("/models") else f"{base_url}/models"
         headers = {}
@@ -192,17 +199,17 @@ class LearningService:
             response = httpx.get(url, headers=headers, timeout=8.0)
             response.raise_for_status()
             raw = response.json()
-            entries = raw.get("models", []) if provider == "ollama" else raw.get("data", [])
+            entries = raw.get("models", []) if api_format == "ollama" else raw.get("data", [])
             models = []
             for item in entries:
                 name = item.get("name") or item.get("id")
                 if not name:
                     continue
                 models.append({"name": name, "capabilities": {"text": True, "vision": False}})
-            return {"provider": provider, "models": models, "manual_model_allowed": True, "error": None}
+            return {"api_format": api_format, "models": models, "manual_model_allowed": True, "error": None}
         except (httpx.HTTPError, ValueError, TypeError):
             return {
-                "provider": provider,
+                "api_format": api_format,
                 "models": [],
                 "manual_model_allowed": True,
                 "error": {"code": "MODEL_DISCOVERY_FAILED", "message": "无法获取模型列表，可手动填写模型名", "retryable": True, "details": {}},
@@ -214,7 +221,13 @@ class LearningService:
         subject = self._subject(subject_id)
         chat = subject.get("data", {}).get("learning_chat")
         if chat:
-            return chat
+            style = self._stored_chat_style(chat)
+            return {
+                **chat,
+                "learning_mode": self._legacy_learning_mode(style),
+                "chat_style": style,
+                "socratic_state": None,
+            }
         chat = self._new_chat(subject)
         self._set_chat(subject_id, chat)
         return chat
@@ -224,13 +237,16 @@ class LearningService:
         source_ids = patch.get("source_version_ids", chat["source_version_ids"])
         grounding_mode = patch.get("grounding_mode", chat["grounding_mode"])
         self._validate_source_scope(subject_id, source_ids, grounding_mode)
-        updated = {**chat, **patch, "source_version_ids": source_ids, "updated_at": self._now()}
-        learning_mode = updated["learning_mode"]
-        goal_changed = "goal" in patch and patch.get("goal") != chat.get("goal")
-        if learning_mode == "socratic" and (updated.get("socratic_state") is None or goal_changed):
-            updated["socratic_state"] = {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
-        elif learning_mode != "socratic":
-            updated["socratic_state"] = None
+        style = self._requested_chat_style(patch, self._stored_chat_style(chat))
+        updated = {
+            **chat,
+            **patch,
+            "learning_mode": self._legacy_learning_mode(style),
+            "chat_style": style,
+            "socratic_state": None,
+            "source_version_ids": source_ids,
+            "updated_at": self._now(),
+        }
         self._set_chat(subject_id, updated)
         return updated
 
@@ -254,12 +270,7 @@ class LearningService:
             raise LearningError(409, "CHAT_GENERATION_IN_PROGRESS", "已有回答正在生成")
         chat = self.get_chat(subject_id)
         intent = payload["intent"]
-        if chat["learning_mode"] != "socratic" and intent not in {"ask"}:
-            raise LearningError(409, "RESOURCE_CONFLICT", "当前学习方式不支持该学习动作")
-        if chat["learning_mode"] == "socratic" and intent == "start" and not chat.get("goal"):
-            raise LearningError(409, "RESOURCE_CONFLICT", "请先配置苏格拉底式学习目标")
-        if chat["learning_mode"] == "socratic":
-            self._validate_socratic_intent(chat.get("socratic_state"), intent)
+        chat_style = self._requested_chat_style(payload, self._stored_chat_style(chat))
 
         model_id = payload.get("model_id") or self.workspace_service.snapshot().get("current_model_id") or chat.get("active_model_id")
         if not model_id:
@@ -316,6 +327,7 @@ class LearningService:
             "id": user_id,
             "role": "user",
             "intent": intent,
+            "chat_style": chat_style,
             "content": [self._markdown_block(content)],
             "status": "complete",
             "grounding_mode": grounding_mode,
@@ -334,6 +346,7 @@ class LearningService:
             "id": assistant_id,
             "role": "assistant",
             "intent": intent,
+            "chat_style": chat_style,
             "content": [],
             "status": "queued",
             "grounding_mode": grounding_mode,
@@ -382,8 +395,8 @@ class LearningService:
                     return {"type": "chat-message", "id": assistant_id}
                 citations = self._citations_for_anchors(anchors, selected_citations)
                 messages = self._grounded_messages(
-                    chat,
-                    payload,
+                    {**chat, "chat_style": chat_style},
+                    {**payload, "chat_style": chat_style},
                     anchors,
                     grounding_mode,
                     profile,
@@ -392,9 +405,6 @@ class LearningService:
                 )
                 response = await self.model_client.chat(profile, messages)
                 text = response.get("text") or ""
-                assessment = None
-                if chat["learning_mode"] == "socratic" and intent in {"attempt", "restate", "self-test-answer"}:
-                    text, assessment = self._parse_socratic_response(text)
                 result = (
                     "general-knowledge"
                     if grounding_mode == "general-knowledge"
@@ -407,7 +417,6 @@ class LearningService:
                     result,
                     citations,
                     intent,
-                    assessment,
                 )
                 return {"type": "chat-message", "id": assistant_id}
             except asyncio.CancelledError:
@@ -452,10 +461,13 @@ class LearningService:
         source_version_ids = list(payload.get("source_version_ids") or [])
         self._validate_source_scope(subject_id, source_version_ids, "strict" if source_version_ids else "general-knowledge")
         timestamp = self._now()
+        chat_style = self._requested_chat_style(payload, "default")
         session = {
             "id": self._ids("session"),
             "subject_id": subject_id,
             "title": payload.get("title") or "新会话",
+            "chat_style": chat_style,
+            "learning_mode": self._legacy_learning_mode(chat_style),
             "source_version_ids": source_version_ids,
             "messages": [],
             "created_at": timestamp,
@@ -474,13 +486,22 @@ class LearningService:
 
     def update_session(self, session_id: str, patch: dict) -> dict:
         subject, session = self._find_session(session_id)
-        title = (patch.get("title") or "").strip()
-        if not title:
-            raise LearningError(422, "VALIDATION_FAILED", "会话标题不能为空")
-        siblings = subject.get("data", {}).get("sessions", [])
-        if any(item["id"] != session_id and item.get("title", "").casefold() == title.casefold() for item in siblings):
-            raise LearningError(409, "SESSION_NAME_DUPLICATE", "当前科目已有同名会话")
-        updated = {**session, "title": title, "updated_at": self._now()}
+        title = session["title"]
+        if "title" in patch:
+            title = (patch.get("title") or "").strip()
+            if not title:
+                raise LearningError(422, "VALIDATION_FAILED", "会话标题不能为空")
+            siblings = subject.get("data", {}).get("sessions", [])
+            if any(item["id"] != session_id and item.get("title", "").casefold() == title.casefold() for item in siblings):
+                raise LearningError(409, "SESSION_NAME_DUPLICATE", "当前科目已有同名会话")
+        chat_style = self._requested_chat_style(patch, self._stored_chat_style(session))
+        updated = {
+            **session,
+            "title": title,
+            "chat_style": chat_style,
+            "learning_mode": self._legacy_learning_mode(chat_style),
+            "updated_at": self._now(),
+        }
         self._replace_session(subject["id"], session_id, updated)
         return self._session_view(updated, subject["id"])
 
@@ -535,6 +556,7 @@ class LearningService:
 
     def create_session_message(self, session_id: str, payload: dict) -> dict:
         subject, session = self._find_session(session_id)
+        chat_style = self._requested_chat_style(payload, self._stored_chat_style(session))
         model_id = payload.get("model_id") or self.workspace_service.snapshot().get("current_model_id")
         if not model_id:
             raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
@@ -587,9 +609,9 @@ class LearningService:
         user_id = self._ids("message")
         if attachment_ids:
             self.attachments.claim(subject["id"], attachment_ids, user_id)
-        user_message = {"id": user_id, "role": "user", "intent": payload["intent"], "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
+        user_message = {"id": user_id, "role": "user", "intent": payload["intent"], "chat_style": chat_style, "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
         assistant_id = self._ids("message")
-        assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
+        assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "chat_style": chat_style, "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
         updated_session = {**session, "messages": [*session.get("messages", []), user_message, assistant], "updated_at": timestamp}
         if len(updated_session["messages"]) == 2 and session.get("title") == "新会话":
             updated_session["title"] = content[:60]
@@ -618,8 +640,8 @@ class LearningService:
                     return {"type": "chat-message", "id": assistant_id}
                 citations = self._citations_for_anchors(anchors, selected_citations)
                 messages = self._grounded_messages(
-                    {"messages": session.get("messages", []), "learning_mode": "chat"},
-                    payload,
+                    {"messages": session.get("messages", []), "chat_style": chat_style},
+                    {**payload, "chat_style": chat_style},
                     anchors,
                     grounding_mode,
                     profile,
@@ -774,7 +796,14 @@ class LearningService:
         is_active = snapshot.get("active_subject_id") == subject_id and subject.get("data", {}).get("active_session_id") == session["id"]
         if active is not None:
             is_active = active
-        return {**session, "active": is_active, "messages": session.get("messages", [])}
+        style = self._stored_chat_style(session)
+        return {
+            **session,
+            "active": is_active,
+            "chat_style": style,
+            "learning_mode": self._legacy_learning_mode(style),
+            "messages": session.get("messages", []),
+        }
 
     def _replace_session(self, subject_id: str, session_id: str, replacement: dict) -> None:
         self._mutate(subject_id, lambda data: {
@@ -825,6 +854,7 @@ class LearningService:
         return {
             "id": model["id"],
             "provider": model["provider"],
+            "api_format": model.get("api_format", DEFAULT_API_FORMAT),
             "model": model["model"],
             "base_url": model["base_url"],
             "has_api_key": bool(model.get("api_key")),
@@ -849,6 +879,7 @@ class LearningService:
             "id": self._ids("chat"),
             "subject_id": subject["id"],
             "learning_mode": "chat",
+            "chat_style": "default",
             "goal": None,
             "grounding_mode": "strict" if source_ids else "general-knowledge",
             "source_version_ids": source_ids,
@@ -897,18 +928,12 @@ class LearningService:
         result: str,
         citations: list[dict],
         intent: str,
-        assessment: str | None = None,
     ) -> None:
         timestamp = self._now()
         chat = self.get_chat(subject_id)
-        state = (
-            self._next_socratic_state(chat.get("socratic_state"), intent, assessment)
-            if chat["learning_mode"] == "socratic"
-            else None
-        )
         updated = {
             **chat,
-            "socratic_state": state,
+            "socratic_state": None,
             "messages": [
                 {
                     **message,
@@ -948,8 +973,8 @@ class LearningService:
     ) -> list[dict]:
         intent = payload["intent"]
         instruction = self._grounding_instruction(grounding_mode)
-        if chat["learning_mode"] == "socratic":
-            instruction += self._socratic_instruction(intent, chat.get("socratic_state"))
+        chat_style = self._requested_chat_style(payload, self._stored_chat_style(chat))
+        instruction += self._chat_style_instruction(chat_style)
         context = self._anchors_text(anchors)
         question = payload.get("content") or self._intent_label(intent)
         selection = payload.get("selection") or {}
@@ -1106,76 +1131,39 @@ class LearningService:
         return list({citation["id"]: citation for citation in citations}.values())
 
     @staticmethod
-    def _socratic_instruction(intent: str, state: dict | None) -> str:
-        if intent == "request-explanation":
-            return " 用户明确要求直接解释，可以展示完整解释，随后要求复述。"
-        if intent == "request-hint":
-            level = min((state or {}).get("hint_level", 0) + 1, 3)
-            return f" 只给第 {level} 层提示，不直接泄漏完整答案，并要求用户继续尝试。"
-        if intent in {"attempt", "restate", "self-test-answer"}:
-            correct_action = (
-                "给出一个短变式自测"
-                if intent in {"attempt", "restate"}
-                else "简短总结并告知本轮学习完成"
-            )
+    def _stored_chat_style(value: dict) -> str:
+        style = value.get("chat_style")
+        if style in {"default", "socratic", "crash-course"}:
+            return style
+        legacy = value.get("learning_mode")
+        return legacy if legacy in {"socratic", "crash-course"} else "default"
+
+    @classmethod
+    def _requested_chat_style(cls, payload: dict, fallback: str) -> str:
+        if payload.get("chat_style") in {"default", "socratic", "crash-course"}:
+            return payload["chat_style"]
+        if payload.get("learning_mode") in {"chat", "socratic", "crash-course"}:
+            return "default" if payload["learning_mode"] == "chat" else payload["learning_mode"]
+        return fallback
+
+    @staticmethod
+    def _legacy_learning_mode(chat_style: str) -> str:
+        return "chat" if chat_style == "default" else chat_style
+
+    @staticmethod
+    def _chat_style_instruction(chat_style: str) -> str:
+        if chat_style == "socratic":
             return (
-                ' 评估学习者回答，只返回 JSON 对象：'
-                '{"assessment":"correct|misunderstanding|missing-prerequisite","response":"给学习者的回复"}。'
-                f" correct 时确认关键推理并{correct_action}；misunderstanding 时指出错误点、资料依据和下一步；"
-                "missing-prerequisite 时只补充必要前置知识并要求再次尝试。"
+                " 使用苏格拉底式交流：优先用问题帮助学习者自己推理，"
+                "鼓励先尝试并追问理由，发现误解时清楚纠正。"
+                "这是交流风格，不要输出阶段、提示层级或教学状态 JSON；用户明确要求直接解释时应直接回答。"
             )
-        if intent == "start":
-            return " 一次只推进一个学习动作，先让用户尝试；纠错需指出错误点、资料依据和下一步。"
-        return " 一次只推进一个需要用户回应的学习动作。"
-
-    @staticmethod
-    def _parse_socratic_response(text: str) -> tuple[str, str]:
-        try:
-            payload = json.loads(text)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ModelClientError("模型未返回有效的苏格拉底式评估") from exc
-        assessment = payload.get("assessment") if isinstance(payload, dict) else None
-        response = payload.get("response") if isinstance(payload, dict) else None
-        if assessment not in {"correct", "misunderstanding", "missing-prerequisite"} or not isinstance(response, str) or not response.strip():
-            raise ModelClientError("模型未返回有效的苏格拉底式评估")
-        return response.strip(), assessment
-
-    @staticmethod
-    def _validate_socratic_intent(state: dict | None, intent: str) -> None:
-        stage = (state or {}).get("stage", "awaiting-attempt")
-        allowed = {
-            "awaiting-attempt": {"start", "attempt", "request-hint", "request-explanation"},
-            "hinting": {"attempt", "request-hint", "request-explanation"},
-            "correcting": {"restate", "request-explanation", "request-hint"},
-            "awaiting-restate": {"restate", "request-self-test", "request-explanation"},
-            "self-testing": {"self-test-answer"},
-            "completed": {"start"},
-        }
-        if intent not in allowed.get(stage, set()):
-            raise LearningError(409, "RESOURCE_CONFLICT", "当前苏格拉底学习阶段不支持该动作")
-
-    @staticmethod
-    def _next_socratic_state(state: dict | None, intent: str, assessment: str | None = None) -> dict:
-        current = state or {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
-        if intent == "start":
-            return {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
-        if intent == "request-hint":
-            return {**current, "stage": "hinting", "hint_level": min(current["hint_level"] + 1, 3)}
-        if intent == "request-explanation":
-            return {**current, "stage": "awaiting-restate", "answer_revealed": True}
-        if assessment == "correct" and intent in {"attempt", "restate"}:
-            return {**current, "stage": "self-testing"}
-        if assessment == "missing-prerequisite" and intent == "attempt":
-            return {**current, "stage": "awaiting-attempt"}
-        if intent == "attempt":
-            return {**current, "stage": "correcting"}
-        if intent == "restate":
-            return {**current, "stage": "correcting"}
-        if intent == "request-self-test":
-            return {**current, "stage": "self-testing"}
-        if intent == "self-test-answer":
-            return {**current, "stage": "completed" if assessment == "correct" else "self-testing"}
-        return {**current, "stage": "awaiting-attempt"}
+        if chat_style == "crash-course":
+            return (
+                " 使用章节速成风格：需要时先确认学习范围、可用时间和目标，"
+                "再按章节或主题快速讲重点。允许用户跳过内容或只问某一部分，不强制返回目录 JSON。"
+            )
+        return ""
 
     def _append_artifact(self, subject_id: str, artifact: dict) -> None:
         def update(data):
@@ -1213,6 +1201,7 @@ class LearningService:
         return {
             "model_id": profile["id"],
             "provider": profile["provider"],
+            "api_format": profile.get("api_format", DEFAULT_API_FORMAT),
             "model": profile["model"],
             "base_url": profile["base_url"],
             "capabilities": self._model_view(profile)["capabilities"],
@@ -1263,6 +1252,7 @@ class LearningService:
             "MODEL_NAME_REQUIRED",
             "MODEL_NAME_TOO_LONG",
             "MODEL_API_KEY_INVALID",
+            "MODEL_API_FORMAT_UNSUPPORTED",
             "MODEL_VALIDATION_INVALID",
         }:
             status = 422
