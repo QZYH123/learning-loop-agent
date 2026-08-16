@@ -5,7 +5,7 @@
 - `01-app-shell-and-subject-spaces.md`：应用壳、科目空间和本地恢复
 - `02-basic-chat-and-model-switching.md`：基础问答、模型服务配置/验证、停止生成和模型切换
 - `03-basic-source-library.md` 后端：Markdown/TXT 资料上传、异步解析、版本、缓存和删除；前端入口尚未实现
-- `04`–`07` 后端：富文档与图片解析、来源检索和引用、契约版学习会话、苏格拉底状态及章节速成产物
+- `04`–`07` 后端：富文档与图片解析、来源检索和引用、学习会话与对话风格；保留章节速成产物兼容接口
 - `08`–`12` 后端：组卷蓝图、增量试卷、发布、考试/练习作答、主观反馈和固定版本选区问答
 - `13`–`15` 后端：试卷版本与 AI 修改提案、统一渲染与导出、编排运行和固定评估
 - `16` 契约：多会话、消息资料上下文、模型发现、AI 资料文档和独立作答/批改状态
@@ -16,7 +16,7 @@
 - 后端：FastAPI + uvicorn；模型调用使用 httpx，文档解析使用 pypdf、python-docx、python-pptx 和 Pillow，PDF 导出使用 ReportLab
 - 前端：当前选择原生 ES modules + HTML + CSS，由 FastAPI 静态托管（前端框架和构建方式不设限制）
 - 持久化：本地 JSON 文件（默认 `data/workspace.json`），不依赖浏览器 localStorage
-- 模型协议：OpenAI-compatible `/chat/completions` 文本接口
+- 模型协议：OpenAI Chat Completions、OpenAI Responses 和 Ollama
 - 测试：pytest + FastAPI TestClient + 可控假模型，不依赖真实网络
 
 ## 运行
@@ -29,7 +29,7 @@ uvicorn backend.app.main:app --reload --port 4173
 ```
 
 浏览器打开 <http://127.0.0.1:4173>。先创建科目空间，再添加
-OpenAI-compatible 模型服务（服务商、模型、Base URL、可选 API Key），验证后即可
+模型服务（名称、API 格式、模型、Base URL、可选 API Key），验证后即可
 发送问题。应用状态和完整会话记录保存在服务端本地数据文件中，重启后自动恢复。
 
 可通过环境变量 `LEARNING_LOOP_DATA_DIR` 修改数据目录。
@@ -46,9 +46,8 @@ pytest -q
 机器可读入口是 [`docs/api/openapi.yaml`](docs/api/openapi.yaml)。Ticket 17–21 复用 Ticket 16
 定义的工作流契约，后端已按目标契约实现。FastAPI `/docs` 反映当前实现，不能替代静态主契约。
 
-四个一级工作区的目标布局、自然语言操作、右侧上下文按钮和文案规则见
-[`docs/frontend-workspaces.md`](docs/frontend-workspaces.md)。学习对话风格与模型 `api_format`
-是后续契约修订项，旧状态机和当前单一 Chat Completions 客户端不是最终产品边界。
+工作区布局和文案的唯一事实源是 [`docs/frontend-workspaces.md`](docs/frontend-workspaces.md)。
+当前契约已使用 `chat_style` 表示无阶段门禁的对话风格，并用 `api_format` 明确选择模型协议。
 
 ## 结构
 
@@ -56,7 +55,7 @@ pytest -q
 backend/app/main.py          FastAPI 路由、应用壳和 API 响应
 backend/app/domain.py        纯领域规则：科目、模型服务、会话状态
 backend/app/store.py          工作区文件持久化
-backend/app/model_client.py   OpenAI-compatible 模型客户端
+backend/app/model_client.py   Chat Completions、Responses 和 Ollama 模型客户端
 backend/app/operations.py     可持久化的通用异步任务生命周期
 backend/app/sources.py        资料上传、解析缓存和文件持久化
 backend/app/source_parsers.py PDF、DOCX、PPTX、文本和图片解析
@@ -84,6 +83,5 @@ frontend/                     浏览器前端（静态托管）
 ```
 
 - 模型服务是工作区级配置，可被多个科目复用。
-- 每个科目的 `data.chat` 独立保存完整消息；AI 消息保存发送时的服务商/模型快照，
-  之后修改或删除模型配置不会改写历史消息。
-- 当前没有用户资料，所有回答都标注为通用知识模式。
+- 每个科目保存独立会话；消息记录发送时的资料上下文和模型快照。
+- 修改或删除模型配置不会改写历史消息。

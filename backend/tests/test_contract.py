@@ -161,6 +161,10 @@ def test_issue16_contract_covers_context_lifecycle_boundaries():
     assert "api_format" in definitions["ModelServiceInput"]["required"]
     assert "chat_style" in definitions["Session"]["required"]
     assert "intent" not in definitions["ChatMessageInput"].get("required", [])
+    assert openapi["paths"]["/api/subjects/{subject_id}/chat/crash-course"]["post"]["deprecated"] is True
+    message_description = openapi["paths"]["/api/subjects/{subject_id}/chat/messages"]["post"]["description"]
+    assert "chat_style" in message_description
+    assert "旧 intent 仅作为兼容字段" in message_description
 
     example_schemas = {
         "OperationAccepted",
@@ -190,6 +194,16 @@ def test_issue16_contract_covers_context_lifecycle_boundaries():
     }
     definitions = schemas["components"]["schemas"]
     assert all("example" in definitions[name] for name in example_schemas)
+
+
+def test_schema_examples_include_declared_required_fields():
+    _, schemas = load_contract()
+
+    for name, schema in schemas["components"]["schemas"].items():
+        example = schema.get("example")
+        if isinstance(example, dict):
+            missing = set(schema.get("required", [])) - set(example)
+            assert not missing, f"{name} example is missing required fields: {sorted(missing)}"
 
 
 def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
@@ -232,6 +246,28 @@ def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
     capabilities = actual[capabilities_ref.rsplit("/", 1)[-1]]
     assert capabilities["additionalProperties"] is False
     assert set(capabilities["properties"]) == {"text", "vision"}
+
+
+def test_legacy_crash_course_endpoint_is_deprecated_in_generated_contract(tmp_path):
+    from backend.app.main import create_app
+
+    actual = create_app(data_dir=tmp_path).openapi()
+    operation = actual["paths"]["/api/subjects/{subject_id}/chat/crash-course"]["post"]
+    assert operation["deprecated"] is True
+
+    schemas = actual["components"]["schemas"]
+    deprecated_fields = {
+        "ChatConfigPatch": "learning_mode",
+        "ChatMessageInput": "intent",
+        "ChatMessage": "intent",
+        "Chat": "learning_mode",
+        "SessionInput": "learning_mode",
+        "SessionPatch": "learning_mode",
+        "Session": "learning_mode",
+    }
+    for schema_name, field_name in deprecated_fields.items():
+        assert schemas[schema_name]["properties"][field_name]["deprecated"] is True
+    assert schemas["SocraticState"]["deprecated"] is True
 
 
 def test_error_codes_are_closed_and_upper_snake_case():

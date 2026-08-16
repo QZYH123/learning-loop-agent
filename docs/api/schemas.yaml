@@ -652,7 +652,9 @@ components:
       minProperties: 1
       properties:
         chat_style: {$ref: '#/components/schemas/ChatStyle'}
-        learning_mode: {$ref: '#/components/schemas/LearningMode'}
+        learning_mode:
+          allOf: [{$ref: '#/components/schemas/LearningMode'}]
+          deprecated: true
         goal: {type: [string, 'null'], maxLength: 2000}
         grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
         source_version_ids:
@@ -699,6 +701,8 @@ components:
 
     ChatMessageIntent:
       type: string
+      deprecated: true
+      description: v0.1 兼容字段；不再驱动教学流程。
       enum: [start, ask, attempt, request-hint, request-explanation, restate, request-self-test, self-test-answer]
 
     ChatMessageInput:
@@ -755,7 +759,9 @@ components:
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         role: {type: string, enum: [user, assistant, system]}
-        intent: {$ref: '#/components/schemas/ChatMessageIntent'}
+        intent:
+          allOf: [{$ref: '#/components/schemas/ChatMessageIntent'}]
+          deprecated: true
         chat_style: {$ref: '#/components/schemas/ChatStyle'}
         content:
           type: array
@@ -811,7 +817,9 @@ components:
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         subject_id: {$ref: '#/components/schemas/Identifier'}
-        learning_mode: {$ref: '#/components/schemas/LearningMode'}
+        learning_mode:
+          allOf: [{$ref: '#/components/schemas/LearningMode'}]
+          deprecated: true
         chat_style: {$ref: '#/components/schemas/ChatStyle'}
         goal: {type: [string, 'null']}
         grounding_mode: {$ref: '#/components/schemas/GroundingMode'}
@@ -919,6 +927,7 @@ components:
         subject_id: subject-1
         title: 高等数学复习
         active: true
+        chat_style: default
         source_version_ids: [source-version-1]
         messages: []
         created_at: 1735689600000

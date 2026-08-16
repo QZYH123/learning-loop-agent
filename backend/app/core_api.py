@@ -197,6 +197,7 @@ def create_core_router(learning) -> APIRouter:
     @router.post(
         "/api/subjects/{subject_id}/chat/crash-course",
         operation_id="generateCrashCourse",
+        deprecated=True,
         status_code=202,
         response_model=OperationAccepted,
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},

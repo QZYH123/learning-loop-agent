@@ -19,6 +19,7 @@
 - `api_key` 只写；读取模型服务只返回 `has_api_key`。
 - `GET /api/workspace` 只返回导航摘要，不内嵌不断增长的业务数据。
 - 兼容停止接口 `/api/generations/{generation_id}/stop` 标记为 deprecated，新实现以 `/api/operations/{operation_id}/cancel` 为准。
+- 兼容章节速成产物接口 `/api/subjects/{subject_id}/chat/crash-course` 标记为 deprecated；新客户端通过普通消息的 `chat_style: crash-course` 对话，需要保存时再创建 AI 文档。
 
 ## 通用规则
 
@@ -51,7 +52,7 @@
 
 ## 异步任务
 
-以下工作不得伪装成同步成功：模型验证、资料解析、问答生成、章节速成、蓝图解析、增量组卷、单题重试、主观题反馈、统一批改、AI 修改、导出和固定评估。
+以下工作不得伪装成同步成功：模型验证、资料解析、问答生成、蓝图解析、增量组卷、单题重试、主观题反馈、统一批改、AI 修改、导出和固定评估。兼容章节速成产物接口同样返回异步任务。
 
 创建任务后返回 `OperationAccepted`。客户端通过 `GET /api/operations/{operation_id}` 轮询：
 
@@ -79,7 +80,7 @@ queued -> running -> succeeded
 
 选区问答使用 `SelectionContext` 固定到文档版本、题目和内容块。创建消息只更新会话和异步任务，不具备修改试卷的副作用。
 
-下一版目标请求形状：
+当前消息请求形状：
 
 ```json
 {
@@ -99,7 +100,7 @@ queued -> running -> succeeded
 - `openai-responses`：调用 `/responses`，发送 `instructions` 与 `input`，从类型化 `output` 中提取文本；默认 `store: false`。
 - `ollama`：调用原生 `/api/chat`，通过 `/api/tags` 发现模型。
 
-OpenAI 两种格式都通过 `/models` 发现模型。实现不得根据 `provider`、模型名或 Base URL 猜格式。下一版 `ModelServiceInput`、`ModelServicePatch`、`ModelService`、`ModelSnapshot` 和临时发现请求都必须包含 `api_format`；既有配置迁移默认 `openai-chat-completions`。
+OpenAI 两种格式都通过 `/models` 发现模型。实现不得根据 `provider`、模型名或 Base URL 猜格式。`ModelServiceInput`、`ModelServicePatch`、`ModelService`、`ModelSnapshot` 和临时发现请求都包含 `api_format`；既有配置迁移默认 `openai-chat-completions`。
 
 Responses 的请求、输出、结构化结果和流式事件不能复用 Chat Completions 解析器，具体差异以 [OpenAI 官方迁移文档](https://developers.openai.com/api/docs/guides/migrate-to-responses) 为准。
 
@@ -147,8 +148,8 @@ Responses 的请求、输出、结构化结果和流式事件不能复用 Chat C
 | 14 | 统一渲染文档和导出副本 |
 | 15 | 编排运行和固定评估 |
 | 16 | 多会话、消息上下文、临时附件、模型发现、AI 资料文档和作答状态 |
-| 18 | 四工作区共享会话与上下文布局 |
-| 19 | 显式模型 API 格式和适配器 |
+
+Ticket 17–21 复用上述契约，不新增 `x-tickets` 编号；前端布局不属于 HTTP 契约。
 
 ## 实现顺序
 

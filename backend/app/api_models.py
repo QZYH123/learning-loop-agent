@@ -381,7 +381,7 @@ class Workspace(ContractModel):
 
 class ChatConfigPatch(PatchModel):
     chat_style: ChatStyle = None
-    learning_mode: Literal["chat", "socratic", "crash-course"] = None
+    learning_mode: Literal["chat", "socratic", "crash-course"] = Field(default=None, deprecated=True)
     goal: str | None = Field(default=None, max_length=2000)
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] = None
     source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
@@ -452,7 +452,7 @@ ChatMessageIntent = Literal[
 
 
 class ChatMessageInput(ContractModel):
-    intent: ChatMessageIntent = "ask"
+    intent: ChatMessageIntent = Field(default="ask", deprecated=True)
     content: str = Field(default=None, min_length=1, max_length=20000)
     chat_style: ChatStyle = None
     model_id: str | None = None
@@ -472,8 +472,9 @@ class ChatMessageInput(ContractModel):
 
     @model_validator(mode="after")
     def require_content_for_text_intents(self):
-        if self.intent in {"ask", "attempt", "restate", "self-test-answer"} and self.content is None:
-            raise ValueError(f"content is required for intent {self.intent}")
+        intent = self.__dict__["intent"]
+        if intent in {"ask", "attempt", "restate", "self-test-answer"} and self.content is None:
+            raise ValueError(f"content is required for intent {intent}")
         return self
 
 
@@ -489,7 +490,7 @@ class ModelSnapshot(ContractModel):
 class ChatMessage(ContractModel):
     id: str
     role: Literal["user", "assistant", "system"]
-    intent: ChatMessageIntent
+    intent: ChatMessageIntent = Field(deprecated=True)
     chat_style: ChatStyle = "default"
     content: list[ContentBlock]
     status: Literal["queued", "generating", "complete", "stopped", "error"]
@@ -506,6 +507,11 @@ class ChatMessage(ContractModel):
 
 
 class SocraticState(ContractModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"deprecated": True, "description": "v0.1 历史兼容字段；不再驱动对话流程。"},
+    )
+
     stage: Literal["awaiting-attempt", "hinting", "correcting", "awaiting-restate", "self-testing", "completed"]
     hint_level: int = Field(ge=0, le=3)
     answer_revealed: bool
@@ -514,7 +520,7 @@ class SocraticState(ContractModel):
 class Chat(ContractModel):
     id: str
     subject_id: str
-    learning_mode: Literal["chat", "socratic", "crash-course"]
+    learning_mode: Literal["chat", "socratic", "crash-course"] = Field(deprecated=True)
     chat_style: ChatStyle
     goal: str | None = None
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
@@ -530,7 +536,7 @@ class Chat(ContractModel):
 class SessionInput(ContractModel):
     title: str = Field(default=None, min_length=1, max_length=200)
     chat_style: ChatStyle = "default"
-    learning_mode: Literal["chat", "socratic", "crash-course"] = None
+    learning_mode: Literal["chat", "socratic", "crash-course"] = Field(default=None, deprecated=True)
     source_version_ids: list[str] = Field(
         default_factory=list,
         json_schema_extra={"uniqueItems": True},
@@ -547,7 +553,7 @@ class SessionInput(ContractModel):
 class SessionPatch(PatchModel):
     title: str = Field(default=None, min_length=1, max_length=200)
     chat_style: ChatStyle = None
-    learning_mode: Literal["chat", "socratic", "crash-course"] = None
+    learning_mode: Literal["chat", "socratic", "crash-course"] = Field(default=None, deprecated=True)
 
 
 class Session(ContractModel):
@@ -556,7 +562,7 @@ class Session(ContractModel):
     title: str
     active: bool
     chat_style: ChatStyle
-    learning_mode: Literal["chat", "socratic", "crash-course"] | None = None
+    learning_mode: Literal["chat", "socratic", "crash-course"] | None = Field(default=None, deprecated=True)
     source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     messages: list[ChatMessage]
     created_at: int
