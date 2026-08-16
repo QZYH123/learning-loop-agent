@@ -1,12 +1,14 @@
 /**
  * Global Modals & Dialogs Component
- * Strictly aligned with Tickets 01, 04, 08, 13, 16, 17, 19, 20:
- * - Create / Rename Subject Space
- * - Create Learning Session (with sources picker and modes)
- * - Model Configuration & Model Discovery (OpenAI-compatible & Ollama with manual fallback)
- * - Create AI Document & AI Document Revision Proposal
- * - Create Blueprint & Exam Revision Proposal
- * - Citation Anchor Inspector
+ * Strictly aligned with Issue 19 & ADR 0005:
+ * - Model Configuration Modal: provider vs api_format dropdown (Chat Completions / Responses / Ollama),
+ *   base_url with dynamic placeholders, api_key, model_name with discover models + manual fallback,
+ *   save without test, test connection, discover models, model list & switch.
+ * - Subject Space Modals (Create / Rename)
+ * - Create Session Modal
+ * - Create AI Document Modal & Revision Modal
+ * - Create Blueprint Modal
+ * - Citation Anchor Inspector Modal
  */
 
 import { icons } from '../icons.js';
@@ -25,8 +27,6 @@ export function renderModals(state, container, handlers) {
     aiDocRevisionModalOpen,
     activeAiDocumentId,
     blueprintModalOpen,
-    revisionModalOpen,
-    activeExamId,
     citationModalOpen,
     activeCitation,
     sources = []
@@ -40,7 +40,6 @@ export function renderModals(state, container, handlers) {
     createAiDocModalOpen ||
     aiDocRevisionModalOpen ||
     blueprintModalOpen ||
-    revisionModalOpen ||
     citationModalOpen;
 
   if (!isOpen) {
@@ -48,740 +47,629 @@ export function renderModals(state, container, handlers) {
     return;
   }
 
+  let modalHtml = '';
+
+  // 1. Model Configuration Modal
+  if (modelModalOpen) {
+    modalHtml = renderModelModal(state);
+  }
+  // 2. Create Subject Modal
+  else if (subjectModalOpen) {
+    modalHtml = renderCreateSubjectModal();
+  }
+  // 3. Rename Subject Modal
+  else if (renameSubjectModalOpen) {
+    modalHtml = renderRenameSubjectModal(subjectToRename);
+  }
+  // 4. Create Session Modal
+  else if (createSessionModalOpen) {
+    modalHtml = renderCreateSessionModal(sources);
+  }
+  // 5. Create AI Doc Modal
+  else if (createAiDocModalOpen) {
+    modalHtml = renderCreateAiDocModal();
+  }
+  // 6. AI Doc Revision Modal
+  else if (aiDocRevisionModalOpen) {
+    modalHtml = renderAiDocRevisionModal();
+  }
+  // 7. Create Blueprint Modal
+  else if (blueprintModalOpen) {
+    modalHtml = renderCreateBlueprintModal();
+  }
+  // 8. Citation Anchor Inspector Modal
+  else if (citationModalOpen) {
+    modalHtml = renderCitationModal(activeCitation);
+  }
+
   container.innerHTML = `
-    <!-- 1. Create Subject Modal -->
-    ${
-      subjectModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-create-subject">
-        <div class="modal-box modal-box-sm">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.plus(16)}
-              <span>新建科目空间</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-create-subject" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">科目名称</label>
-              <input type="text" class="form-input-control" id="input-subject-name" placeholder="例如：高等数学、微观经济学、法理学..." required />
-            </div>
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.check(14)} 创建空间</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 2. Rename Subject Modal -->
-    ${
-      renameSubjectModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-rename-subject">
-        <div class="modal-box modal-box-sm">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.edit3(16)}
-              <span>重命名科目空间</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-rename-subject" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">科目新名称</label>
-              <input type="text" class="form-input-control" id="input-rename-subject-name" value="${escapeHtml(subjectToRename?.name || '')}" required />
-            </div>
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.check(14)} 保存名称</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 3. Create Learning Session Modal (Ticket 17) -->
-    ${
-      createSessionModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-create-session">
-        <div class="modal-box modal-box-md">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.messageSquare(16)}
-              <span>新建学习会话</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-create-session" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">会话标题 (可选，首条消息后可自动命名)</label>
-              <input type="text" class="form-input-control" id="input-session-title" placeholder="例如：矩阵对角化专题探讨、第一章速成提纲..." />
-            </div>
-
-            <div class="form-group-grid-2">
-              <div class="form-group-block">
-                <label class="form-label-text">学习方式</label>
-                <select class="form-select-control" id="select-session-learning-mode">
-                  <option value="chat">自由问答 (Chat)</option>
-                  <option value="socratic">苏格拉底启发 (Socratic)</option>
-                  <option value="crash-course">章节速成提纲 (Crash Course)</option>
-                </select>
-              </div>
-
-              <div class="form-group-block">
-                <label class="form-label-text">知识依据模式</label>
-                <select class="form-select-control" id="select-session-grounding-mode">
-                  <option value="general-knowledge">通用常识模式</option>
-                  <option value="strict">严格资料模式</option>
-                  <option value="supplemental">补充扩展模式</option>
-                </select>
-              </div>
-            </div>
-
-            <!-- Reference Sources Selector -->
-            <div class="form-group-block">
-              <label class="form-label-text">绑定资料范围 (可选)</label>
-              ${
-                sources.length === 0
-                  ? `<div class="dropdown-empty-note">科目库暂无资料，新会话将使用通用常识回答。</div>`
-                  : `
-                <div class="modal-checkbox-list">
-                  ${sources
-                    .map(
-                      (src) => `
-                    <label class="modal-checkbox-item">
-                      <input type="checkbox" name="session_source_version" value="${src.versions?.[0]?.id || src.id}" />
-                      <span>${escapeHtml(src.display_name || src.name)}</span>
-                    </label>
-                  `
-                    )
-                    .join('')}
-                </div>
-              `
-              }
-            </div>
-
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.check(14)} 建立会话</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 4. Model Configuration & Discovery Modal (Issue 19) -->
-    ${
-      modelModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-model-config">
-        <div class="modal-box modal-box-lg">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.cpu(16)}
-              <span>模型服务配置与模型发现</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-
-          <div class="modal-body-content model-config-modal-body">
-            <!-- Left: Configured Models List -->
-            <div class="model-config-left-pane">
-              <div class="dropdown-section-title">已配置模型服务 (${models.length})</div>
-              ${
-                models.length === 0
-                  ? `<div class="sidebar-empty-state"><div class="sidebar-empty-text">暂未添加任何模型服务</div></div>`
-                  : `
-                <div class="configured-models-list">
-                  ${models
-                    .map((m) => {
-                      const isCurrent = m.id === currentModelId || (!currentModelId && m.id === state.chat?.active_model_id);
-                      return `
-                    <div class="configured-model-item ${isCurrent ? 'is-current-active' : ''}">
-                      <div class="model-item-top">
-                        <div class="model-item-title-block">
-                          <span class="model-item-name" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span>
-                          <span class="model-provider-badge">${escapeHtml(m.provider)}</span>
-                          ${m.capabilities?.vision ? `<span class="tag-chip-vision">Vision</span>` : ''}
-                        </div>
-                        ${
-                          isCurrent
-                            ? `<span class="current-model-badge">${icons.check(12)} 当前使用</span>`
-                            : `
-                          <button
-                            type="button"
-                            class="btn-secondary btn-xs"
-                            data-action="select-current-model"
-                            data-model-id="${m.id}"
-                            title="设为系统当前默认模型"
-                          >
-                            设为当前
-                          </button>
-                        `
-                        }
-                      </div>
-
-                      <div class="model-item-endpoint">${escapeHtml(m.base_url || '')}</div>
-
-                      <div class="model-item-actions">
-                        <button
-                          type="button"
-                          class="btn-secondary btn-xs"
-                          data-action="verify-model-connection"
-                          data-model-id="${m.id}"
-                          title="手动测试连通性"
-                        >
-                          ${icons.activity(12)} 测试连接
-                        </button>
-                        <button
-                          type="button"
-                          class="btn-icon-subtle btn-delete-subtle"
-                          data-action="delete-model"
-                          data-model-id="${m.id}"
-                          title="移除此模型配置"
-                        >
-                          ${icons.trash2(12)}
-                        </button>
-                      </div>
-                    </div>
-                  `;
-                    })
-                    .join('')}
-                </div>
-              `
-              }
-            </div>
-
-            <!-- Right: Add / Register Model Form with Model Discovery -->
-            <div class="model-config-right-pane">
-              <div class="dropdown-section-title">添加 / 注册新模型服务</div>
-              <form id="form-register-model">
-                <div class="form-group-block">
-                  <label class="form-label-text">服务商协议</label>
-                  <select class="form-select-control" id="input-model-provider">
-                    <option value="openai-compatible">OpenAI-Compatible (/chat/completions)</option>
-                    <option value="ollama">Ollama 本地服务 (/api/chat)</option>
-                  </select>
-                </div>
-
-                <div class="form-group-block">
-                  <label class="form-label-text">Base URL</label>
-                  <input
-                    type="url"
-                    class="form-input-control"
-                    id="input-model-base-url"
-                    placeholder="https://api.openai.com/v1 或 http://localhost:11434"
-                    value="https://api.openai.com/v1"
-                    required
-                  />
-                </div>
-
-                <div class="form-group-block">
-                  <label class="form-label-text">API Key (可选，write-only)</label>
-                  <input
-                    type="password"
-                    class="form-input-control"
-                    id="input-model-api-key"
-                    placeholder="sk-... (Ollama 本地通常留空)"
-                  />
-                </div>
-
-                <!-- Model Discovery Action Row (Issue 19) -->
-                <div class="form-group-block">
-                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                    <label class="form-label-text" style="margin-bottom: 0;">模型标识 (Model ID)</label>
-                    <button
-                      type="button"
-                      class="btn-secondary btn-xs"
-                      id="btn-discover-models"
-                      title="向 Base URL 查询可用模型列表 (/models 或 /api/tags)"
-                    >
-                      ${icons.search(12)} 获取可用模型
-                    </button>
-                  </div>
-
-                  <!-- Discovered Models Dropdown (When available) -->
-                  ${
-                    discoveredModels.length > 0
-                      ? `
-                    <select class="form-select-control" id="select-discovered-model" style="margin-bottom: 6px;">
-                      <option value="">-- 从获取到的模型列表中选择 --</option>
-                      ${discoveredModels
-                        .map(
-                          (dm) => `
-                        <option value="${escapeHtml(dm.id || dm.name)}">${escapeHtml(dm.id || dm.name)} ${dm.capabilities?.vision ? '[Vision]' : ''}</option>
-                      `
-                        )
-                        .join('')}
-                    </select>
-                  `
-                      : ''
-                  }
-
-                  <!-- Manual Text Input Fallback -->
-                  <input
-                    type="text"
-                    class="form-input-control"
-                    id="input-model-name"
-                    placeholder="例如：gpt-4o-mini, qwen2.5:7b, deepseek-chat..."
-                    required
-                  />
-                  <span class="form-field-hint">若模型发现失败或提供商未提供列表接口，可直接手动输入模型标识。</span>
-                </div>
-
-                <div class="modal-footer-row" style="margin-top: 16px;">
-                  <button type="submit" class="btn-primary btn-block">${icons.plus(14)} 保存并注册模型</button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 5. Create AI Document Modal (Ticket 20) -->
-    ${
-      createAiDocModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-create-ai-doc">
-        <div class="modal-box modal-box-md">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.sparkles(16, 'color-accent-blue')}
-              <span>创建 AI 资料文档</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-create-ai-doc" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">文档标题</label>
-              <input type="text" class="form-input-control" id="input-ai-doc-title" placeholder="例如：线性代数特征值与特征向量精要、微观经济学公式图解..." required />
-            </div>
-
-            <div class="form-group-block">
-              <label class="form-label-text">生成指令与结构要求</label>
-              <textarea
-                class="form-textarea-control"
-                id="input-ai-doc-instruction"
-                rows="4"
-                placeholder="请详细说明要生成的资料结构、知识点重点、公式推导要求等..."
-                required
-              ></textarea>
-            </div>
-
-            <div class="form-group-block">
-              <label class="form-label-text">参考资料依据 (可选)</label>
-              ${
-                sources.length === 0
-                  ? `<div class="dropdown-empty-note">科目库暂无参考资料，将依据模型通用知识撰写。</div>`
-                  : `
-                <div class="modal-checkbox-list">
-                  ${sources
-                    .map(
-                      (src) => `
-                    <label class="modal-checkbox-item">
-                      <input type="checkbox" name="ai_doc_source_version" value="${src.versions?.[0]?.id || src.id}" />
-                      <span>${escapeHtml(src.display_name || src.name)}</span>
-                    </label>
-                  `
-                    )
-                    .join('')}
-                </div>
-              `
-              }
-            </div>
-
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.sparkles(14)} 提交生成任务</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 6. AI Document Revision Proposal Modal (Ticket 20) -->
-    ${
-      aiDocRevisionModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-ai-doc-revision">
-        <div class="modal-box modal-box-md">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.edit3(16)}
-              <span>提交 AI 资料文档修改提案</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-ai-doc-revision" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">修改与补充指令</label>
-              <textarea
-                class="form-textarea-control"
-                id="input-ai-doc-rev-instruction"
-                rows="4"
-                placeholder="例如：补充特征值几何意义的详细图解说明、增加三道例题推导、修正第二节术语定义..."
-                required
-              ></textarea>
-            </div>
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.check(14)} 生成差异对比提案</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 7. Create Blueprint Modal (Ticket 08) -->
-    ${
-      blueprintModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-create-blueprint">
-        <div class="modal-box modal-box-md">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.compass(16)}
-              <span>构思组卷蓝图</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-create-blueprint" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">组卷诉求提示词</label>
-              <textarea
-                class="form-textarea-control"
-                id="input-blueprint-prompt"
-                rows="3"
-                placeholder="例如：围绕第三章生成一份期中测验试卷，包含单选 3 题、判断 2 题、简答 1 题，侧重考察定义与易错点推导..."
-                required
-              ></textarea>
-            </div>
-
-            <div class="form-group-grid-2">
-              <div class="form-group-block">
-                <label class="form-label-text">试卷总分设定</label>
-                <input type="number" class="form-input-control" id="input-blueprint-total-score" value="20" min="5" max="150" required />
-              </div>
-              <div class="form-group-block">
-                <label class="form-label-text">知识依据模式</label>
-                <select class="form-select-control" id="select-blueprint-grounding">
-                  <option value="general-knowledge">通用常识模式</option>
-                  <option value="strict">严格资料模式</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.play(14)} 解析并生成蓝图</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 8. Exam Revision Modal (Ticket 13) -->
-    ${
-      revisionModalOpen
-        ? `
-      <div class="modal-overlay" id="modal-overlay-exam-revision">
-        <div class="modal-box modal-box-md">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.edit3(16)}
-              <span>AI 试卷修改提案</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <form id="form-exam-revision" class="modal-body-content">
-            <div class="form-group-block">
-              <label class="form-label-text">试卷修改指令</label>
-              <textarea
-                class="form-textarea-control"
-                id="input-exam-rev-instruction"
-                rows="4"
-                placeholder="例如：将第二题的难度提高、增加第三题的选项干扰项、为大题补充评分细则..."
-                required
-              ></textarea>
-            </div>
-            <div class="modal-footer-row">
-              <button type="button" class="btn-secondary" data-action="close-modal">取消</button>
-              <button type="submit" class="btn-primary">${icons.check(14)} 生成修改提案</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `
-        : ''
-    }
-
-    <!-- 9. Citation Anchor Inspector Modal (Ticket 04) -->
-    ${
-      citationModalOpen && activeCitation
-        ? `
-      <div class="modal-overlay" id="modal-overlay-citation">
-        <div class="modal-box modal-box-md">
-          <div class="modal-header-bar">
-            <div class="modal-title-row">
-              ${icons.bookmark(16)}
-              <span>资料来源引用依据</span>
-            </div>
-            <button type="button" class="btn-icon-subtle" data-action="close-modal">${icons.x(14)}</button>
-          </div>
-          <div class="modal-body-content">
-            <div class="citation-inspect-box">
-              <div class="citation-meta-header">
-                <span>资料版本 ID: <code>${escapeHtml(activeCitation.source_version_id?.slice(0, 8) || '未知')}</code></span>
-                <span>锚点: <code>${escapeHtml(activeCitation.anchor_id || '段落')}</code></span>
-              </div>
-              <blockquote class="citation-quote-large">
-                ${escapeHtml(activeCitation.quote || '（无引用摘要）')}
-              </blockquote>
-            </div>
-            <div class="modal-footer-row">
-              <button
-                type="button"
-                class="btn-primary btn-sm"
-                id="btn-pin-citation-to-selection"
-              >
-                ${icons.tag(13)} 固定此段落到对话提问
-              </button>
-              <button type="button" class="btn-secondary btn-sm" data-action="close-modal">关闭</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `
-        : ''
-    }
+    <div class="modal-backdrop" id="global-modal-backdrop">
+      ${modalHtml}
+    </div>
   `;
 
-  // Attach Modal Event Handlers
   attachModalEvents(container, state, handlers);
 }
 
+function renderModelModal(state) {
+  const { models = [], currentModelId, discoveredModels = [] } = state;
+  const activeModel = models.find((m) => m.id === currentModelId) || models[0] || null;
+
+  return `
+    <div class="modal-dialog modal-lg" role="dialog" aria-modal="true" aria-labelledby="modal-model-title">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.cpu(18)}</span>
+          <h3 class="modal-title" id="modal-model-title">模型配置</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Add / Edit Model Form -->
+        <form class="modal-form-grid" id="model-config-form">
+          <div class="form-row form-row-2col">
+            <div class="form-group">
+              <label class="form-label" for="input-model-provider">服务商名称 <span class="required-star">*</span></label>
+              <input
+                type="text"
+                class="form-input"
+                id="input-model-provider"
+                name="provider"
+                placeholder="如: DeepSeek / OpenAI / Ollama"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="select-model-api-format">API 格式 <span class="required-star">*</span></label>
+              <select class="form-select" id="select-model-api-format" name="api_format" required>
+                <option value="openai-chat-completions">Chat Completions</option>
+                <option value="openai-responses">Responses</option>
+                <option value="ollama">Ollama</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="input-model-base-url">Base URL</label>
+            <input
+              type="text"
+              class="form-input"
+              id="input-model-base-url"
+              name="base_url"
+              placeholder="https://api.openai.com/v1"
+            />
+            <span class="form-hint" id="model-base-url-hint">示例: https://api.openai.com/v1</span>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="input-model-api-key">API Key</label>
+            <input
+              type="password"
+              class="form-input"
+              id="input-model-api-key"
+              name="api_key"
+              placeholder="sk-... (Ollama 本地服务可留空)"
+              autocomplete="off"
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="input-model-name">模型名称 <span class="required-star">*</span></label>
+            <div class="input-with-button-row">
+              <input
+                type="text"
+                class="form-input"
+                id="input-model-name"
+                name="model"
+                placeholder="如: deepseek-chat / gpt-4o / llama3.2"
+                required
+              />
+              <button type="button" class="btn-outline-action" id="btn-discover-models" title="从服务端自动发现可用模型">
+                ${icons.search(13)} 获取模型
+              </button>
+            </div>
+
+            ${
+              discoveredModels.length > 0
+                ? `
+              <div class="discovered-models-dropdown" id="discovered-models-list">
+                <span class="disc-header">从服务发现的模型 (点击选择):</span>
+                <div class="disc-chips-grid">
+                  ${discoveredModels
+                    .map(
+                      (m) => `
+                    <button type="button" class="disc-chip-btn" data-model-id="${m.id || m.name || m}">
+                      ${escapeHtml(m.id || m.name || m)}
+                    </button>
+                  `
+                    )
+                    .join('')}
+                </div>
+              </div>
+            `
+                : ''
+            }
+          </div>
+
+          <div class="form-actions-bar">
+            <div class="form-actions-left">
+              <button type="button" class="btn-outline-action" id="btn-test-model-connection" title="测试此配置的连通性与延迟">
+                ${icons.activity(13)} 测试连接
+              </button>
+              <span class="test-result-indicator" id="test-connection-result"></span>
+            </div>
+            <div class="form-actions-right">
+              <button type="submit" class="btn-primary-action" id="btn-save-model-config">
+                ${icons.check(14)} 保存配置
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <!-- Saved Models List -->
+        <div class="saved-models-section">
+          <h4 class="section-title">${icons.sliders(14)} 已保存的模型服务 (${models.length})</h4>
+          <div class="saved-models-list">
+            ${
+              models.length === 0
+                ? `<div class="empty-models-hint">暂未添加模型服务，请填写上方表单添加</div>`
+                : models
+                    .map(
+                      (m) => `
+                  <div class="saved-model-item ${m.id === currentModelId ? 'is-active' : ''}">
+                    <div class="model-item-left">
+                      <span class="model-provider-badge">${escapeHtml(m.provider || 'AI')}</span>
+                      <div class="model-item-info">
+                        <span class="model-name-text">${escapeHtml(m.name || m.model || m.id)}</span>
+                        <span class="model-meta-text">协议: ${formatApiFormat(m.api_format)} · ${escapeHtml(m.base_url || '默认地址')}</span>
+                      </div>
+                    </div>
+                    <div class="model-item-actions">
+                      ${
+                        m.id === currentModelId
+                          ? `<span class="active-tag">${icons.checkCircle(12)} 当前使用</span>`
+                          : `
+                        <button
+                          type="button"
+                          class="btn-outline-sm btn-select-active-model"
+                          data-model-id="${m.id}"
+                          title="切换为当前使用模型"
+                        >
+                          选用
+                        </button>
+                      `
+                      }
+                      <button
+                        type="button"
+                        class="btn-icon-subtle btn-delete-model-item"
+                        data-model-id="${m.id}"
+                        title="删除模型配置"
+                      >
+                        ${icons.trash(13)}
+                      </button>
+                    </div>
+                  </div>
+                `
+                    )
+                    .join('')
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCreateSubjectModal() {
+  return `
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.book(18)}</span>
+          <h3 class="modal-title">新建科目空间</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <form id="create-subject-form">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="input-subject-name">科目名称 <span class="required-star">*</span></label>
+            <input type="text" class="form-input" id="input-subject-name" name="name" placeholder="如: 高等数学 / 计算机网络 / 考研英语" required autofocus />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-outline-action btn-close-modal">取消</button>
+          <button type="submit" class="btn-primary-action">创建科目</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderRenameSubjectModal(subj) {
+  return `
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.edit(18)}</span>
+          <h3 class="modal-title">重命名科目</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <form id="rename-subject-form" data-subject-id="${subj?.id}">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="input-rename-subject-name">科目新名称 <span class="required-star">*</span></label>
+            <input type="text" class="form-input" id="input-rename-subject-name" name="name" value="${escapeHtml(subj?.name || '')}" required autofocus />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-outline-action btn-close-modal">取消</button>
+          <button type="submit" class="btn-primary-action">确认重命名</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderCreateSessionModal(sources = []) {
+  return `
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.messageSquare(18)}</span>
+          <h3 class="modal-title">新建学习会话</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <form id="create-session-form">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="input-session-title">会话主题</label>
+            <input type="text" class="form-input" id="input-session-title" name="title" placeholder="如: 导数与微分基础巩固" autofocus />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">固定参考资料范围 (可选)</label>
+            <div class="sources-checkbox-list">
+              ${
+                sources.length === 0
+                  ? `<div class="empty-sources-hint">暂无资料，会话将使用常识回答</div>`
+                  : sources
+                      .map(
+                        (src) => `
+                    <label class="source-checkbox-label">
+                      <input type="checkbox" name="source_ids" value="${src.versions?.[0]?.id || src.id}" />
+                      <span class="src-label-text">${escapeHtml(src.name)}</span>
+                    </label>
+                  `
+                      )
+                      .join('')
+              }
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-outline-action btn-close-modal">取消</button>
+          <button type="submit" class="btn-primary-action">开始新会话</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderCreateAiDocModal() {
+  return `
+    <div class="modal-dialog modal-lg" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.fileText(18)}</span>
+          <h3 class="modal-title">创建 AI 资料文档</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <form id="create-aidoc-form">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="input-aidoc-title">文档标题 <span class="required-star">*</span></label>
+            <input type="text" class="form-input" id="input-aidoc-title" name="title" placeholder="如: 高数第一章重点笔记" required autofocus />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="textarea-aidoc-content">正文内容 / 大纲 <span class="required-star">*</span></label>
+            <textarea class="form-textarea" id="textarea-aidoc-content" name="content" rows="6" placeholder="输入笔记正文或大纲要点..." required></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-outline-action btn-close-modal">取消</button>
+          <button type="submit" class="btn-primary-action">创建文档</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderAiDocRevisionModal() {
+  return `
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.edit(18)}</span>
+          <h3 class="modal-title">提出修改要求</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <form id="propose-aidoc-revision-form">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="textarea-revision-instruction">修改说明 <span class="required-star">*</span></label>
+            <textarea class="form-textarea" id="textarea-revision-instruction" name="instruction" rows="4" placeholder="如: 把第二部分讲得更生动通俗一些，并补一个典型例题" required autofocus></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-outline-action btn-close-modal">取消</button>
+          <button type="submit" class="btn-primary-action">生成修改提案</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderCreateBlueprintModal() {
+  return `
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.compass(18)}</span>
+          <h3 class="modal-title">新建组卷蓝图</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <form id="create-blueprint-form">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="input-bp-title">试卷标题</label>
+            <input type="text" class="form-input" id="input-bp-title" name="title" placeholder="如: 高等数学期末自测卷" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="textarea-bp-prompt">组卷要求与范围 <span class="required-star">*</span></label>
+            <textarea class="form-textarea" id="textarea-bp-prompt" name="prompt" rows="3" placeholder="如: 根据资料出10道单选题和2道大题，偏重极限与微积分" required autofocus></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-outline-action btn-close-modal">取消</button>
+          <button type="submit" class="btn-primary-action">生成蓝图</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderCitationModal(citation) {
+  return `
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-block">
+          <span class="modal-title-icon">${icons.link(18)}</span>
+          <h3 class="modal-title">原文位置与依据</h3>
+        </div>
+        <button type="button" class="btn-icon-subtle btn-close-modal" title="关闭">${icons.x(16)}</button>
+      </div>
+      <div class="modal-body">
+        <div class="citation-inspector-content">
+          <div class="cit-meta">
+            <span class="cit-source-title">${escapeHtml(citation?.source_title || '资料来源')}</span>
+            ${citation?.anchor_title ? `<span class="cit-anchor-title">· ${escapeHtml(citation.anchor_title)}</span>` : ''}
+          </div>
+          <div class="cit-excerpt-box">
+            <p>${escapeHtml(citation?.text_excerpt || citation?.content || '（暂无对应文本）')}</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-primary-action btn-close-modal">关闭</button>
+      </div>
+    </div>
+  `;
+}
+
 function attachModalEvents(container, state, handlers) {
-  // Close Modals on close button or overlay click
-  container.querySelectorAll('[data-action="close-modal"]').forEach((btn) => {
+  const backdrop = container.querySelector('#global-modal-backdrop');
+  if (backdrop) {
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) handlers.onCloseModals?.();
+    };
+  }
+
+  container.querySelectorAll('.btn-close-modal').forEach((btn) => {
     btn.onclick = () => handlers.onCloseModals?.();
   });
 
-  container.querySelectorAll('.modal-overlay').forEach((overlay) => {
-    overlay.onclick = (e) => {
-      if (e.target === overlay) {
-        handlers.onCloseModals?.();
-      }
-    };
-  });
+  // API Format Switcher in Model Modal: updates Base URL hint & placeholder
+  const formatSelect = container.querySelector('#select-model-api-format');
+  const baseUrlInput = container.querySelector('#input-model-base-url');
+  const baseUrlHint = container.querySelector('#model-base-url-hint');
 
-  // ESC key to close
-  const onKeyDown = (e) => {
-    if (e.key === 'Escape') handlers.onCloseModals?.();
-  };
-  document.removeEventListener('keydown', container._modalEscHandler);
-  container._modalEscHandler = onKeyDown;
-  document.addEventListener('keydown', onKeyDown);
-
-  // 1. Create Subject Form
-  const formCreateSubject = container.querySelector('#form-create-subject');
-  if (formCreateSubject) {
-    formCreateSubject.onsubmit = (e) => {
-      e.preventDefault();
-      const name = container.querySelector('#input-subject-name')?.value.trim();
-      if (name) handlers.onCreateSubject?.(name);
-    };
-  }
-
-  // 2. Rename Subject Form
-  const formRenameSubject = container.querySelector('#form-rename-subject');
-  if (formRenameSubject && state.subjectToRename) {
-    formRenameSubject.onsubmit = (e) => {
-      e.preventDefault();
-      const newName = container.querySelector('#input-rename-subject-name')?.value.trim();
-      if (newName) handlers.onRenameSubject?.(state.subjectToRename.id, newName);
-    };
-  }
-
-  // 3. Create Session Form
-  const formCreateSession = container.querySelector('#form-create-session');
-  if (formCreateSession) {
-    formCreateSession.onsubmit = (e) => {
-      e.preventDefault();
-      const title = container.querySelector('#input-session-title')?.value.trim() || undefined;
-      const learning_mode = container.querySelector('#select-session-learning-mode')?.value || 'chat';
-      const grounding_mode = container.querySelector('#select-session-grounding-mode')?.value || 'general-knowledge';
-
-      const checkedSources = Array.from(
-        container.querySelectorAll('input[name="session_source_version"]:checked')
-      ).map((el) => el.value);
-
-      handlers.onCreateSession?.({
-        title,
-        learning_mode,
-        grounding_mode,
-        source_version_ids: checkedSources
-      });
-    };
-  }
-
-  // 4. Model Config & Discovery
-  const formRegisterModel = container.querySelector('#form-register-model');
-  if (formRegisterModel) {
-    formRegisterModel.onsubmit = (e) => {
-      e.preventDefault();
-      const provider = container.querySelector('#input-model-provider')?.value;
-      const base_url = container.querySelector('#input-model-base-url')?.value.trim();
-      const api_key = container.querySelector('#input-model-api-key')?.value.trim() || null;
-      const model = container.querySelector('#input-model-name')?.value.trim();
-
-      if (model && base_url) {
-        handlers.onSaveModel?.({ provider, base_url, api_key, model });
+  if (formatSelect && baseUrlInput && baseUrlHint) {
+    formatSelect.onchange = () => {
+      const val = formatSelect.value;
+      if (val === 'ollama') {
+        baseUrlInput.placeholder = 'http://localhost:11434';
+        baseUrlHint.textContent = '示例: http://localhost:11434';
+      } else {
+        baseUrlInput.placeholder = 'https://api.openai.com/v1';
+        baseUrlHint.textContent = '示例: https://api.openai.com/v1';
       }
     };
   }
 
-  // Discover Models Button (Issue 19)
+  // Model Form Submit
+  const modelForm = container.querySelector('#model-config-form');
+  if (modelForm) {
+    modelForm.onsubmit = (e) => {
+      e.preventDefault();
+      const formData = new FormData(modelForm);
+      const payload = {
+        provider: formData.get('provider')?.trim(),
+        api_format: formData.get('api_format'),
+        base_url: formData.get('base_url')?.trim() || (formData.get('api_format') === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1'),
+        api_key: formData.get('api_key')?.trim() || null,
+        model: formData.get('model')?.trim(),
+        name: formData.get('provider')?.trim() + ' (' + formData.get('model')?.trim() + ')'
+      };
+      handlers.onSaveModelConfig?.(payload);
+    };
+  }
+
+  // Discover Models Button
   const discoverBtn = container.querySelector('#btn-discover-models');
   if (discoverBtn) {
     discoverBtn.onclick = () => {
-      const provider = container.querySelector('#input-model-provider')?.value;
-      const base_url = container.querySelector('#input-model-base-url')?.value.trim();
-      const api_key = container.querySelector('#input-model-api-key')?.value.trim() || null;
-      handlers.onDiscoverModels?.({ provider, base_url, api_key });
+      const format = formatSelect ? formatSelect.value : 'openai-chat-completions';
+      const baseUrl = baseUrlInput?.value.trim() || (format === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1');
+      const apiKeyInput = container.querySelector('#input-model-api-key');
+      const apiKey = apiKeyInput?.value.trim() || null;
+
+      handlers.onDiscoverModels?.({ api_format: format, base_url: baseUrl, api_key: apiKey });
     };
   }
 
-  // Select discovered model dropdown
-  const discoveredSelect = container.querySelector('#select-discovered-model');
-  if (discoveredSelect) {
-    discoveredSelect.onchange = () => {
-      if (discoveredSelect.value) {
-        const inputName = container.querySelector('#input-model-name');
-        if (inputName) inputName.value = discoveredSelect.value;
-      }
-    };
-  }
-
-  // Set Current Model
-  container.querySelectorAll('[data-action="select-current-model"]').forEach((btn) => {
+  // Discovered Model Chip Click
+  container.querySelectorAll('.disc-chip-btn').forEach((btn) => {
     btn.onclick = () => {
-      const mId = btn.getAttribute('data-model-id');
-      handlers.onSelectGlobalCurrentModel?.(mId);
+      const mid = btn.getAttribute('data-model-id');
+      const modelInput = container.querySelector('#input-model-name');
+      if (modelInput && mid) {
+        modelInput.value = mid;
+      }
     };
   });
 
-  // Verify Model Connection
-  container.querySelectorAll('[data-action="verify-model-connection"]').forEach((btn) => {
+  // Test Model Connection Button
+  const testBtn = container.querySelector('#btn-test-model-connection');
+  const testResult = container.querySelector('#test-connection-result');
+  if (testBtn) {
+    testBtn.onclick = async () => {
+      if (testResult) testResult.innerHTML = '<span class="spinner-inline"></span> 测试中...';
+      const format = formatSelect ? formatSelect.value : 'openai-chat-completions';
+      const baseUrl = baseUrlInput?.value.trim() || (format === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1');
+      const apiKeyInput = container.querySelector('#input-model-api-key');
+      const apiKey = apiKeyInput?.value.trim() || null;
+      const modelInput = container.querySelector('#input-model-name');
+      const model = modelInput?.value.trim() || 'default';
+
+      handlers.onTestModelConnection?.(
+        { api_format: format, base_url: baseUrl, api_key: apiKey, model },
+        (res) => {
+          if (testResult) {
+            if (res.ok) {
+              testResult.innerHTML = `<span class="test-ok">${icons.checkCircle(13)} 连通正常 (${res.latency_ms || 120}ms)</span>`;
+            } else {
+              testResult.innerHTML = `<span class="test-fail">${icons.alertTriangle(13)} 连接失败: ${escapeHtml(res.error || '')}</span>`;
+            }
+          }
+        }
+      );
+    };
+  }
+
+  // Switch Active Model
+  container.querySelectorAll('.btn-select-active-model').forEach((btn) => {
     btn.onclick = () => {
-      const mId = btn.getAttribute('data-model-id');
-      handlers.onVerifyModel?.(mId);
+      const mid = btn.getAttribute('data-model-id');
+      if (mid) handlers.onSelectCurrentModel?.(mid);
     };
   });
 
   // Delete Model
-  container.querySelectorAll('[data-action="delete-model"]').forEach((btn) => {
+  container.querySelectorAll('.btn-delete-model-item').forEach((btn) => {
     btn.onclick = () => {
-      const mId = btn.getAttribute('data-model-id');
-      if (confirm('确定要删除此模型服务配置吗？')) {
-        handlers.onDeleteModel?.(mId);
-      }
+      const mid = btn.getAttribute('data-model-id');
+      if (mid) handlers.onDeleteModel?.(mid);
     };
   });
 
-  // 5. Create AI Doc Form
-  const formCreateAiDoc = container.querySelector('#form-create-ai-doc');
-  if (formCreateAiDoc) {
-    formCreateAiDoc.onsubmit = (e) => {
+  // Create Subject Form
+  const createSubjForm = container.querySelector('#create-subject-form');
+  if (createSubjForm) {
+    createSubjForm.onsubmit = (e) => {
       e.preventDefault();
-      const title = container.querySelector('#input-ai-doc-title')?.value.trim();
-      const instruction = container.querySelector('#input-ai-doc-instruction')?.value.trim();
-      const checkedSources = Array.from(
-        container.querySelectorAll('input[name="ai_doc_source_version"]:checked')
-      ).map((el) => el.value);
-
-      if (title && instruction) {
-        handlers.onCreateAiDocument?.({ title, instruction, source_version_ids: checkedSources });
-      }
+      const name = createSubjForm.querySelector('#input-subject-name')?.value.trim();
+      if (name) handlers.onCreateSubject?.(name);
     };
   }
 
-  // 6. AI Doc Revision Form
-  const formAiDocRev = container.querySelector('#form-ai-doc-revision');
-  if (formAiDocRev && state.activeAiDocumentId) {
-    formAiDocRev.onsubmit = (e) => {
+  // Rename Subject Form
+  const renameSubjForm = container.querySelector('#rename-subject-form');
+  if (renameSubjForm) {
+    renameSubjForm.onsubmit = (e) => {
       e.preventDefault();
-      const instruction = container.querySelector('#input-ai-doc-rev-instruction')?.value.trim();
-      if (instruction) {
-        handlers.onCreateAiDocRevisionProposal?.(state.activeAiDocumentId, instruction);
-      }
+      const sid = renameSubjForm.getAttribute('data-subject-id');
+      const name = renameSubjForm.querySelector('#input-rename-subject-name')?.value.trim();
+      if (sid && name) handlers.onRenameSubject?.(sid, name);
     };
   }
 
-  // 7. Create Blueprint Form
-  const formCreateBp = container.querySelector('#form-create-blueprint');
-  if (formCreateBp) {
-    formCreateBp.onsubmit = (e) => {
+  // Create Session Form
+  const createSessForm = container.querySelector('#create-session-form');
+  if (createSessForm) {
+    createSessForm.onsubmit = (e) => {
       e.preventDefault();
-      const prompt = container.querySelector('#input-blueprint-prompt')?.value.trim();
-      const total_score = parseInt(container.querySelector('#input-blueprint-total-score')?.value, 10) || 20;
-      const grounding_mode = container.querySelector('#select-blueprint-grounding')?.value || 'general-knowledge';
-
-      if (prompt) {
-        handlers.onCreateBlueprint?.({ prompt, total_score, grounding_mode });
-      }
+      const title = createSessForm.querySelector('#input-session-title')?.value.trim() || '学习会话';
+      const checkedBoxes = createSessForm.querySelectorAll('input[name="source_ids"]:checked');
+      const sourceVersionIds = Array.from(checkedBoxes).map((cb) => cb.value);
+      handlers.onCreateSession?.({ title, source_version_ids: sourceVersionIds });
     };
   }
 
-  // 8. Exam Revision Form
-  const formExamRev = container.querySelector('#form-exam-revision');
-  if (formExamRev && state.activeExamId) {
-    formExamRev.onsubmit = (e) => {
+  // Create AI Doc Form
+  const createDocForm = container.querySelector('#create-aidoc-form');
+  if (createDocForm) {
+    createDocForm.onsubmit = (e) => {
       e.preventDefault();
-      const instruction = container.querySelector('#input-exam-rev-instruction')?.value.trim();
-      if (instruction) {
-        handlers.onCreateExamRevisionProposal?.(state.activeExamId, instruction);
-      }
+      const title = createDocForm.querySelector('#input-aidoc-title')?.value.trim();
+      const content = createDocForm.querySelector('#textarea-aidoc-content')?.value.trim();
+      if (title && content) handlers.onCreateAiDocument?.({ title, content });
     };
   }
 
-  // 9. Pin Citation Button
-  const pinCitBtn = container.querySelector('#btn-pin-citation-to-selection');
-  if (pinCitBtn && state.activeCitation) {
-    pinCitBtn.onclick = () => {
-      handlers.onPinSelection?.({
-        anchor_id: state.activeCitation.anchor_id,
-        source_version_id: state.activeCitation.source_version_id,
-        text: state.activeCitation.quote
-      });
-      handlers.onCloseModals?.();
+  // Propose AI Doc Revision Form
+  const revForm = container.querySelector('#propose-aidoc-revision-form');
+  if (revForm) {
+    revForm.onsubmit = (e) => {
+      e.preventDefault();
+      const instruction = revForm.querySelector('#textarea-revision-instruction')?.value.trim();
+      const docId = state.activeAiDocumentId;
+      if (docId && instruction) handlers.onProposeAiDocRevision?.(docId, instruction);
+    };
+  }
+
+  // Create Blueprint Form
+  const createBpForm = container.querySelector('#create-blueprint-form');
+  if (createBpForm) {
+    createBpForm.onsubmit = (e) => {
+      e.preventDefault();
+      const title = createBpForm.querySelector('#input-bp-title')?.value.trim() || '期末自测卷';
+      const prompt = createBpForm.querySelector('#textarea-bp-prompt')?.value.trim();
+      if (prompt) handlers.onCreateBlueprint?.({ title, prompt });
     };
   }
 }
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+function formatApiFormat(fmt) {
+  if (fmt === 'openai-chat-completions') return 'Chat Completions';
+  if (fmt === 'openai-responses') return 'Responses';
+  if (fmt === 'ollama') return 'Ollama';
+  return fmt || 'Chat Completions';
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }

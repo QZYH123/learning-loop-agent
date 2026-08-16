@@ -1,46 +1,53 @@
-import { icon } from '../icons.js';
+/**
+ * Global Toast Notifications Component
+ */
 
-export function renderToasts(stateOrToasts, container, handlers) {
-  const toasts = Array.isArray(stateOrToasts) ? stateOrToasts : (stateOrToasts?.toasts || []);
-  if (!container) return '';
+import { icons } from '../icons.js';
 
-  if (!toasts || toasts.length === 0) {
+export function renderToasts(state, container, handlers) {
+  const toasts = state.toasts || [];
+  if (toasts.length === 0) {
     container.innerHTML = '';
     return;
   }
 
   container.innerHTML = `
-    <div class="toast-container" data-testid="toast-container">
+    <div class="toast-container" role="region" aria-label="通知提示">
       ${toasts
         .map((t) => {
-          const iconName = t.type === 'error' ? 'alertTriangle' : t.type === 'success' ? 'check' : 'info';
+          let icon = icons.info(16);
+          if (t.type === 'success') icon = icons.checkCircle(16);
+          else if (t.type === 'error') icon = icons.alertTriangle(16);
+          else if (t.type === 'warning') icon = icons.alertTriangle(16);
+
           return `
-          <div class="toast-item toast-${t.type}" data-toast-id="${t.id}">
-            <span class="toast-icon">${icon(iconName, 16)}</span>
-            <div class="toast-content" style="flex: 1;">${escapeHtml(t.message)}</div>
-            <button type="button" class="btn-icon-hud btn-close-toast" data-toast-id="${t.id}" style="width: 20px; height: 20px; margin-left: 6px;" aria-label="关闭通知">
-              ${icon('x', 12)}
-            </button>
-          </div>
-        `;
+            <div class="toast-item toast-${t.type || 'info'}" role="alert">
+              <span class="toast-icon">${icon}</span>
+              <span class="toast-message">${escapeHtml(t.message || '')}</span>
+              <button type="button" class="toast-close-btn" data-toast-id="${t.id}" title="关闭">
+                ${icons.x(14)}
+              </button>
+            </div>
+          `;
         })
         .join('')}
     </div>
   `;
 
-  container.querySelectorAll('.btn-close-toast').forEach((btn) => {
+  container.querySelectorAll('.toast-close-btn').forEach((btn) => {
     btn.onclick = () => {
-      const toastId = btn.getAttribute('data-toast-id');
-      handlers?.onDismissToast?.(toastId);
+      const id = btn.getAttribute('data-toast-id');
+      handlers.onDismissToast?.(id);
     };
   });
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }

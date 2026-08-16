@@ -1,10 +1,10 @@
 /**
- * Sources & AI Documents Workspace Component
- * Strictly aligned with Tickets 03, 04, 05, 18, 20:
- * - Collapsible sidebar with dual tabs: "用户上传资料" & "AI 资料文档"
- * - Multi-format support: PDF, DOCX, PPTX, Markdown, TXT, Images
- * - Source version history, anchor list / section inspection, pin to chat selection
- * - AI Document creation, version restore, and AI revision proposals diff review (Apply/Discard)
+ * Right Content Panel for 「资料」 (Sources & AI Documents) Workspace
+ * Strictly aligned with Issue 20 & ADR 0003:
+ * - Sub-tabs: 用户资料 (User Uploaded) vs AI 文档 (AI Generated)
+ * - User Uploaded: Read-only, anchors viewer, upload source, pin to session
+ * - AI Documents: Create doc, revision proposals diff view, apply/discard edits, restore version
+ * - Clean empty states with direct actions
  */
 
 import { icons } from '../icons.js';
@@ -13,452 +13,327 @@ export function renderSourcesView(state, container, handlers) {
   const {
     sources = [],
     activeSourceId,
+    activeSource,
     activeSourceVersions = [],
     activeSourceAnchors = [],
+    activeAnchor,
     aiDocuments = [],
     activeAiDocumentId,
     activeAiDocument,
     aiDocumentVersions = [],
     aiDocumentProposals = [],
-    activeAiDocProposalId,
-    sourcesTab = 'user_sources',
-    sidebarCollapsed = {}
+    activeAiDocProposal,
+    sourcesTab = 'user_sources', // 'user_sources' | 'ai_documents'
+    sidebarCollapsed = {},
+    sessions = [],
+    activeSessionId
   } = state;
 
-  const isCollapsed = !!sidebarCollapsed.sources;
+  const isRightCollapsed = !!sidebarCollapsed.right;
   const isUserSourcesTab = sourcesTab === 'user_sources';
 
-  const activeSource = sources.find((s) => s.id === activeSourceId) || sources[0] || null;
-  const activeAiDoc = aiDocuments.find((d) => d.id === activeAiDocumentId) || aiDocuments[0] || null;
-  const activeAiProposal = aiDocumentProposals.find((p) => p.id === activeAiDocProposalId) || aiDocumentProposals[0] || null;
+  const activeSession = sessions.find((s) => s.id === activeSessionId) || sessions[0] || null;
+  const sessionSourceVersionIds = activeSession?.source_version_ids || [];
 
   container.innerHTML = `
-    <div class="learning-workspace-layout ${isCollapsed ? 'is-sidebar-collapsed' : ''}" data-testid="sources-workspace">
-      <!-- Left Sidebar: Sources & AI Documents List -->
-      <aside class="workspace-sidebar" id="sources-sidebar">
-        <!-- Sidebar Header with Tabs & Collapse Button -->
-        <div class="sidebar-header-row">
-          <div class="sidebar-tabs-group">
+    <div class="workspace-right-pane ${isRightCollapsed ? 'is-collapsed' : ''}" data-testid="sources-workspace-right">
+      <!-- Right Content Header -->
+      <div class="workspace-right-header">
+        <div class="header-object-info">
+          <!-- Sub-tabs Switcher: 用户资料 | AI 文档 -->
+          <div class="sources-subtab-switcher" role="tablist" aria-label="资料分类">
             <button
               type="button"
-              class="sidebar-tab-btn ${isUserSourcesTab ? 'is-active' : ''}"
-              data-sources-tab="user_sources"
-              title="用户上传讲义与文件"
+              class="subtab-btn ${isUserSourcesTab ? 'is-active' : ''}"
+              id="btn-tab-user-sources"
+              role="tab"
+              aria-selected="${isUserSourcesTab}"
             >
-              ${icons.fileText(14)}
-              <span>资料库 (${sources.length})</span>
+              ${icons.layers(14)} 用户资料 (${sources.length})
             </button>
             <button
               type="button"
-              class="sidebar-tab-btn ${!isUserSourcesTab ? 'is-active' : ''}"
-              data-sources-tab="ai_documents"
-              title="AI 生成的系统资料文档"
+              class="subtab-btn ${!isUserSourcesTab ? 'is-active' : ''}"
+              id="btn-tab-ai-docs"
+              role="tab"
+              aria-selected="${!isUserSourcesTab}"
             >
-              ${icons.sparkles(14)}
-              <span>AI 文档 (${aiDocuments.length})</span>
-            </button>
-          </div>
-
-          <div class="sidebar-actions-block">
-            <button
-              type="button"
-              class="btn-icon-sidebar"
-              id="btn-toggle-sources-sidebar"
-              title="${isCollapsed ? '展开侧栏' : '收起侧栏'}"
-            >
-              ${isCollapsed ? icons.panelLeftOpen(15) : icons.panelLeftClose(15)}
+              ${icons.fileText(14)} AI 文档 (${aiDocuments.length})
             </button>
           </div>
         </div>
 
-        <!-- Action Bar: Upload File or Create AI Doc -->
-        <div class="sidebar-top-action-bar">
+        <div class="header-actions">
           ${
             isUserSourcesTab
               ? `
-            <button type="button" class="btn-primary btn-sm btn-block" id="btn-trigger-upload-source">
-              ${icons.upload(14)}
-              <span>上传学习资料...</span>
+            <!-- Upload Source Primary Action -->
+            <button type="button" class="btn-primary-action" id="btn-trigger-upload-source" title="上传新的资料文件">
+              ${icons.upload(14)} 上传资料
             </button>
-            <input
-              type="file"
-              id="source-file-upload-input"
-              multiple
-              style="display: none;"
-              accept=".pdf,.docx,.pptx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp"
-            />
+            <input type="file" id="source-file-input" style="display: none;" accept=".pdf,.txt,.md,.docx,.pptx,image/*" />
+
+            <button type="button" class="btn-icon-action" id="btn-toggle-sources-drawer" title="资料列表">
+              ${icons.list(14)}
+            </button>
           `
               : `
-            <button type="button" class="btn-primary btn-sm btn-block" id="btn-open-create-ai-doc">
-              ${icons.plus(14)}
-              <span>创建 AI 资料文档...</span>
+            <!-- Create AI Document Primary Action -->
+            <button type="button" class="btn-primary-action" id="btn-trigger-create-aidoc" title="新建 AI 资料文档">
+              ${icons.plus(14)} 创建文档
+            </button>
+
+            ${
+              activeAiDocument
+                ? `
+              <button type="button" class="btn-icon-action" id="btn-trigger-propose-revision" title="修改此文档">
+                ${icons.edit(14)}
+              </button>
+            `
+                : ''
+            }
+
+            <button type="button" class="btn-icon-action" id="btn-toggle-aidocs-drawer" title="文档列表">
+              ${icons.list(14)}
             </button>
           `
           }
         </div>
+      </div>
 
-        <!-- Scrollable Card List -->
-        <div class="sidebar-scrollable-list" id="sources-items-scroll">
-          ${
-            isUserSourcesTab
-              ? renderUserSourcesList(sources, activeSourceId)
-              : renderAiDocumentsList(aiDocuments, activeAiDocumentId)
-          }
-        </div>
-      </aside>
-
-      <!-- Main Detail & Anchor Inspector Content Area -->
-      <main class="workspace-main-content" id="sources-detail-main">
-        ${
-          isCollapsed
-            ? `
-          <button
-            type="button"
-            class="btn-sidebar-floating-expand"
-            id="btn-floating-expand-sources"
-            title="展开资料侧栏"
-          >
-            ${icons.panelLeftOpen(15)}
-            <span>${isUserSourcesTab ? `资料库 (${sources.length})` : `AI 文档 (${aiDocuments.length})`}</span>
-          </button>
-        `
-            : ''
-        }
-
+      <!-- Right Content Body -->
+      <div class="workspace-right-body">
         ${
           isUserSourcesTab
-            ? renderUserSourceDetail(activeSource, activeSourceVersions, activeSourceAnchors, state)
-            : renderAiDocumentDetail(activeAiDoc, aiDocumentVersions, aiDocumentProposals, activeAiProposal, state)
+            ? renderUserSourcesContent(state)
+            : renderAiDocumentsContent(state)
         }
-      </main>
+      </div>
+
+      <!-- Item Switcher Drawer -->
+      <div class="workspace-drawer-backdrop" id="sources-drawer-backdrop" style="display: none;">
+        <div class="workspace-drawer-panel" role="dialog" aria-modal="true" aria-label="${isUserSourcesTab ? '资料列表' : 'AI 文档列表'}">
+          <div class="drawer-header">
+            <h4 class="drawer-title">${isUserSourcesTab ? icons.layers(16) : icons.fileText(16)} ${isUserSourcesTab ? '资料列表' : 'AI 文档列表'}</h4>
+            <button type="button" class="btn-icon-subtle" id="btn-close-sources-drawer" title="关闭">${icons.x(14)}</button>
+          </div>
+
+          <div class="drawer-body">
+            <div class="drawer-items-list">
+              ${
+                isUserSourcesTab
+                  ? (sources.length === 0
+                      ? `<div class="drawer-empty-hint">暂无上传资料，请点击上方上传</div>`
+                      : sources
+                          .map(
+                            (s) => `
+                        <div
+                          class="drawer-item ${activeSource?.id === s.id ? 'is-selected' : ''}"
+                          data-type="source"
+                          data-id="${s.id}"
+                          role="button"
+                          tabindex="0"
+                        >
+                          <span class="item-icon">${icons.fileText(14)}</span>
+                          <div class="item-info">
+                            <span class="item-name">${escapeHtml(s.name || '资料')}</span>
+                            <span class="item-meta">${(s.versions || []).length} 个版本</span>
+                          </div>
+                          <button type="button" class="btn-icon-subtle btn-delete-source" data-id="${s.id}" title="删除资料">
+                            ${icons.trash(12)}
+                          </button>
+                        </div>
+                      `
+                          )
+                          .join(''))
+                  : (aiDocuments.length === 0
+                      ? `<div class="drawer-empty-hint">暂无 AI 文档，请点击新建</div>`
+                      : aiDocuments
+                          .map(
+                            (d) => `
+                        <div
+                          class="drawer-item ${activeAiDocument?.id === d.id ? 'is-selected' : ''}"
+                          data-type="aidoc"
+                          data-id="${d.id}"
+                          role="button"
+                          tabindex="0"
+                        >
+                          <span class="item-icon">${icons.sparkles(14)}</span>
+                          <div class="item-info">
+                            <span class="item-name">${escapeHtml(d.title || 'AI 文档')}</span>
+                            <span class="item-meta">${(d.versions || []).length || 1} 个版本</span>
+                          </div>
+                        </div>
+                      `
+                          )
+                          .join(''))
+              }
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   `;
 
-  // Attach Event Handlers
+  // Attach Event Listeners
   attachSourcesEvents(container, state, handlers);
 }
 
-function renderUserSourcesList(sources, activeSourceId) {
-  if (!sources || sources.length === 0) {
+function renderUserSourcesContent(state) {
+  const { activeSource, activeSourceVersions = [], activeSourceAnchors = [] } = state;
+
+  if (!activeSource) {
     return `
-      <div class="sidebar-empty-state">
-        <div class="sidebar-empty-icon">${icons.folder(22)}</div>
-        <div class="sidebar-empty-text">资料库暂无文件</div>
-        <div class="sidebar-empty-subtext">支持 PDF, DOCX, PPTX, Markdown, TXT 及图片资料</div>
+      <div class="workspace-empty-state">
+        <div class="empty-icon">${icons.layers(28)}</div>
+        <h4 class="empty-title">还没有资料</h4>
+        <p class="empty-subtitle">上传教材、课件或笔记，支持 PDF、Word、PPT 与文本格式。</p>
+        <div class="empty-actions-row">
+          <button type="button" class="btn-primary-glow" id="btn-empty-upload-source">
+            ${icons.upload(14)} 上传资料
+          </button>
+        </div>
       </div>
     `;
   }
 
-  return sources
-    .map((src) => {
-      const isSelected = src.id === activeSourceId;
-      const formatExt = (src.filename || src.name || '').split('.').pop().toUpperCase() || 'DOC';
-      const versionCount = src.version_count || src.versions_count || 1;
-      const isReady = src.status === 'ready';
-
-      return `
-      <div
-        class="standard-card-item ${isSelected ? 'is-selected' : ''}"
-        data-action="select-source"
-        data-source-id="${src.id}"
-        role="button"
-        tabindex="0"
-      >
-        <div class="source-card-header">
-          <div class="source-title-row">
-            ${getSourceFormatIcon(formatExt)}
-            <span class="source-card-title" title="${escapeHtml(src.display_name || src.name || src.filename)}">
-              ${escapeHtml(src.display_name || src.name || src.filename)}
-            </span>
-          </div>
-          <span class="grounding-tag-chip ${isReady ? 'grounding-covered' : 'grounding-not-covered'}">
-            ${isReady ? '已就绪' : src.status === 'parsing' ? '解析中' : '待处理'}
-          </span>
-        </div>
-        <div class="source-card-meta">
-          <span>${formatBytes(src.size_bytes || 0)}</span>
-          <span>${versionCount} 个版本</span>
-          <span>${formatTimestamp(src.updated_at || src.created_at)}</span>
-        </div>
-      </div>
-    `;
-    })
-    .join('');
-}
-
-function renderAiDocumentsList(aiDocuments, activeAiDocumentId) {
-  if (!aiDocuments || aiDocuments.length === 0) {
-    return `
-      <div class="sidebar-empty-state">
-        <div class="sidebar-empty-icon">${icons.sparkles(22)}</div>
-        <div class="sidebar-empty-text">暂无 AI 生成资料文档</div>
-        <div class="sidebar-empty-subtext">可通过上方按钮明确指令 AI 生成专属结构化资料</div>
-      </div>
-    `;
-  }
-
-  return aiDocuments
-    .map((doc) => {
-      const isSelected = doc.id === activeAiDocumentId;
-      const versionCount = doc.version_count || (doc.versions ? doc.versions.length : 1);
-
-      return `
-      <div
-        class="standard-card-item ${isSelected ? 'is-selected' : ''}"
-        data-action="select-ai-doc"
-        data-doc-id="${doc.id}"
-        role="button"
-        tabindex="0"
-      >
-        <div class="source-card-header">
-          <div class="source-title-row">
-            ${icons.sparkles(14, 'color-accent-blue')}
-            <span class="source-card-title" title="${escapeHtml(doc.title || 'AI 资料文档')}">
-              ${escapeHtml(doc.title || 'AI 资料文档')}
-            </span>
-          </div>
-          <span class="tag-chip-ai-authored">AI 生成</span>
-        </div>
-        <div class="source-card-meta">
-          <span>${versionCount} 个版本</span>
-          <span>${formatTimestamp(doc.updated_at || doc.created_at)}</span>
-        </div>
-      </div>
-    `;
-    })
-    .join('');
-}
-
-function renderUserSourceDetail(source, versions = [], anchors = [], state) {
-  if (!source) {
-    return `
-      <div class="detail-empty-container">
-        <div class="empty-state-icon-circle">${icons.folder(24)}</div>
-        <div class="empty-state-title">未选择任何资料</div>
-        <div class="empty-state-desc">在左侧列表中选择资料查看解析锚点、历史版本，或点击上传新资料。</div>
-      </div>
-    `;
-  }
-
-  const formatExt = (source.filename || source.name || '').split('.').pop().toUpperCase() || 'DOC';
-  const latestVersion = versions[0] || null;
+  const latestVersion = activeSourceVersions[0] || (activeSource.versions || [])[0] || null;
 
   return `
-    <div class="source-detail-container" data-testid="source-detail-view">
-      <!-- Detail Header Bar -->
-      <header class="detail-header-bar">
-        <div class="detail-header-info">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            ${getSourceFormatIcon(formatExt, 20)}
-            <h2 class="detail-title-text" title="${escapeHtml(source.display_name || source.name)}">
-              ${escapeHtml(source.display_name || source.name)}
-            </h2>
-            <span class="grounding-tag-chip ${source.status === 'ready' ? 'grounding-covered' : ''}">
-              ${source.status === 'ready' ? '解析就绪' : source.status === 'parsing' ? '正在解析' : '待处理'}
-            </span>
+    <div class="source-detail-container">
+      <div class="source-detail-header-card">
+        <div class="source-header-top">
+          <div class="source-title-row">
+            <span class="source-icon">${icons.fileText(18)}</span>
+            <h3 class="source-name">${escapeHtml(activeSource.name || '资料')}</h3>
+            <span class="status-pill status-pill-ready">只读资料</span>
           </div>
-          <div class="detail-meta-row">
-            <span>格式: ${formatExt}</span>
-            <span>大小: ${formatBytes(source.size_bytes || 0)}</span>
-            <span>当前版本 ID: <code>${escapeHtml(latestVersion?.id?.slice(0, 8) || source.id?.slice(0, 8))}</code></span>
+          <div class="source-meta-row">
+            <span>大小: ${formatBytes(latestVersion?.byte_size || activeSource.byte_size || 0)}</span>
+            <span>·</span>
+            <span>格式: ${escapeHtml(latestVersion?.mime_type || activeSource.mime_type || 'text/plain')}</span>
+            <span>·</span>
+            <span>版本: v${activeSourceVersions.length || 1}</span>
           </div>
         </div>
 
-        <div class="detail-header-actions">
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
-            id="btn-iterate-version"
-            title="上传更新内容并建立新资料版本"
-          >
-            ${icons.upload(13)} 迭代新版本...
-          </button>
-          <input
-            type="file"
-            id="source-iterate-file-input"
-            style="display: none;"
-            accept=".pdf,.docx,.pptx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp"
-          />
-
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
-            id="btn-add-to-active-session"
-            title="将此资料固定至当前学习会话"
-          >
-            ${icons.plus(13)} 加入当前会话
-          </button>
-
-          <button
-            type="button"
-            class="btn-icon-subtle btn-delete-subtle"
-            id="btn-delete-source"
-            title="从资料库删除此资料 (会提示引用的会话与试卷)"
-          >
-            ${icons.trash2(14)}
-          </button>
+        <div class="source-banner-hint">
+          ${icons.info(13)}
+          <span>用户上传资料为只读。如需修改，AI 会自动为您创建一份可编辑的 AI 文档副本。</span>
         </div>
-      </header>
+      </div>
 
-      <!-- Main Body: Two Column (Left Anchors & Sections / Right Versions) -->
-      <div class="source-detail-body-grid">
-        <!-- Anchors & Content Section -->
-        <section class="source-anchors-section">
-          <div class="section-subheading-row">
-            <div style="display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px;">
-              ${icons.bookmark(14)}
-              <span>解析来源锚点 (${anchors.length})</span>
-            </div>
-            <span style="font-size: 11px; color: var(--ink-muted);">点击锚点可将其段落固定到导师提问</span>
-          </div>
-
-          <div class="anchors-list-scroll">
-            ${
-              anchors.length === 0
-                ? `
-              <div class="empty-anchors-note">
-                ${source.status === 'parsing' ? '资料正在后台解析中，请稍候...' : '暂无结构化锚点数据。'}
+      <!-- Anchors / Locations in Source -->
+      ${
+        activeSourceAnchors.length > 0
+          ? `
+        <div class="source-anchors-section">
+          <h4 class="anchors-section-title">${icons.tag(14)} 原文位置与解析锚点 (${activeSourceAnchors.length})</h4>
+          <div class="anchors-grid">
+            ${activeSourceAnchors
+              .map(
+                (anc) => `
+              <div class="anchor-card-item" data-anchor-id="${anc.id}">
+                <div class="anchor-header">
+                  <span class="anchor-title">${escapeHtml(anc.title || anc.id)}</span>
+                  <span class="anchor-loc">第 ${anc.page_number || 1} 页</span>
+                </div>
+                <div class="anchor-excerpt">${escapeHtml(anc.text_content || anc.content || '')}</div>
               </div>
             `
-                : anchors
-                    .map(
-                      (anchor) => `
-              <div class="anchor-item-card" data-action="pin-anchor" data-anchor-id="${anchor.id}" data-anchor-text="${escapeHtml(anchor.text || anchor.quote || '')}">
-                <div class="anchor-card-top">
-                  <span class="anchor-badge">${escapeHtml(anchor.section_title || anchor.anchor_id || '段落')}</span>
-                  ${anchor.page ? `<span class="anchor-page-badge">第 ${anchor.page} 页</span>` : ''}
-                  <button type="button" class="btn-pin-anchor" title="固定选区到对话">${icons.tag(11)} 固定提问</button>
-                </div>
-                <div class="anchor-quote-text">
-                  ${escapeHtml(anchor.text || anchor.quote || '')}
-                </div>
-              </div>
-            `
-                    )
-                    .join('')
-            }
+              )
+              .join('')}
           </div>
-        </section>
+        </div>
+      `
+          : ''
+      }
 
-        <!-- Version History List -->
-        <aside class="source-versions-aside">
-          <div class="section-subheading-row">
-            <div style="display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px;">
-              ${icons.gitCompare(14)}
-              <span>版本历史 (${versions.length})</span>
-            </div>
-          </div>
-
-          <div class="versions-list-scroll">
-            ${
-              versions.length === 0
-                ? `<div class="empty-anchors-note">暂无历史版本记录</div>`
-                : versions
-                    .map(
-                      (ver, idx) => `
-              <div class="version-item-card ${idx === 0 ? 'is-latest' : ''}">
-                <div class="version-card-header">
-                  <span class="version-id-tag">v${versions.length - idx} · ${escapeHtml(ver.id?.slice(0, 8))}</span>
-                  ${idx === 0 ? `<span class="version-latest-badge">最新</span>` : ''}
-                </div>
-                <div class="version-card-meta">
-                  <span>${formatBytes(ver.size_bytes || 0)}</span>
-                  <span>${formatTimestamp(ver.created_at)}</span>
-                </div>
-              </div>
-            `
-                    )
-                    .join('')
-            }
-          </div>
-        </aside>
+      <!-- Source Text Preview -->
+      <div class="source-content-preview-box">
+        <h4 class="preview-box-title">${icons.book(14)} 正文预览</h4>
+        <div class="source-text-body">
+          ${escapeHtml(activeSource.text_content || activeSource.extracted_text || latestVersion?.text_content || '（暂无解析文本）').replace(/\n/g, '<br/>')}
+        </div>
       </div>
     </div>
   `;
 }
 
-function renderAiDocumentDetail(doc, versions = [], proposals = [], activeProposal, state) {
-  if (!doc) {
+function renderAiDocumentsContent(state) {
+  const { activeAiDocument, aiDocumentVersions = [], aiDocumentProposals = [], activeAiDocProposal } = state;
+
+  if (!activeAiDocument) {
     return `
-      <div class="detail-empty-container">
-        <div class="empty-state-icon-circle">${icons.sparkles(24)}</div>
-        <div class="empty-state-title">未选择 AI 资料文档</div>
-        <div class="empty-state-desc">在左侧列表中选择文档，或点击“创建 AI 资料文档”由 AI 生成专属讲义。</div>
+      <div class="workspace-empty-state">
+        <div class="empty-icon">${icons.fileText(28)}</div>
+        <h4 class="empty-title">还没有 AI 文档</h4>
+        <p class="empty-subtitle">让 AI 根据资料梳理重点、生成笔记，或直接创建新文档。</p>
+        <div class="empty-actions-row">
+          <button type="button" class="btn-primary-glow" id="btn-empty-create-aidoc">
+            ${icons.plus(14)} 创建文档
+          </button>
+        </div>
       </div>
     `;
   }
 
-  const latestVersion = versions[0] || null;
+  const latestProposal = activeAiDocProposal || aiDocumentProposals[0] || null;
 
   return `
-    <div class="source-detail-container" data-testid="ai-document-detail-view">
-      <!-- Header -->
-      <header class="detail-header-bar">
-        <div class="detail-header-info">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            ${icons.sparkles(18, 'color-accent-blue')}
-            <h2 class="detail-title-text" title="${escapeHtml(doc.title || 'AI 资料文档')}">
-              ${escapeHtml(doc.title || 'AI 资料文档')}
-            </h2>
-            <span class="tag-chip-ai-authored">AI 生成</span>
-          </div>
-          <div class="detail-meta-row">
-            <span>当前版本 ID: <code>${escapeHtml(latestVersion?.id?.slice(0, 8) || doc.id?.slice(0, 8))}</code></span>
-            <span>更新时间: ${formatTimestamp(doc.updated_at || doc.created_at)}</span>
-          </div>
+    <div class="aidoc-detail-container">
+      <!-- AI Doc Header Info -->
+      <div class="aidoc-header-card">
+        <div class="aidoc-title-row">
+          <span class="aidoc-icon">${icons.sparkles(18)}</span>
+          <h3 class="aidoc-title">${escapeHtml(activeAiDocument.title || 'AI 文档')}</h3>
+          <span class="status-pill status-pill-ai">AI 生成</span>
         </div>
-
-        <div class="detail-header-actions">
-          <button
-            type="button"
-            class="btn-primary btn-sm"
-            id="btn-open-ai-doc-revision"
-            title="向 AI 提出修改要求，生成并预览结构化差异提案"
-          >
-            ${icons.edit3(13)} AI 修改提案...
-          </button>
-
-          <button
-            type="button"
-            class="btn-secondary btn-sm"
-            id="btn-add-ai-doc-to-session"
-            title="将此 AI 文档加入当前学习会话并参与检索"
-          >
-            ${icons.plus(13)} 加入会话
-          </button>
+        <div class="aidoc-meta-row">
+          <span>版本: v${(activeAiDocument.versions || []).length || aiDocumentVersions.length || 1}</span>
+          <span>·</span>
+          <span>修改提案: ${aiDocumentProposals.length} 个</span>
         </div>
-      </header>
+      </div>
 
-      <!-- Active Revision Proposal Diff Banner (Ticket 20) -->
+      <!-- Revision Proposal / Diff Preview (if any active proposal) -->
       ${
-        activeProposal && activeProposal.status === 'pending'
+        latestProposal
           ? `
-        <div class="revision-proposal-diff-banner">
-          <div class="diff-banner-header">
-            <div style="display: flex; align-items: center; gap: 6px; font-weight: 700; color: #1e40af;">
-              ${icons.edit3(14)}
-              <span>AI 修改建议提案 (待确认)</span>
+        <div class="aidoc-proposal-diff-card">
+          <div class="proposal-diff-header">
+            <div class="diff-header-left">
+              <span class="diff-icon">${icons.gitCompare(15)}</span>
+              <span class="diff-title">修改预览: ${escapeHtml(latestProposal.summary || 'AI 润色提案')}</span>
             </div>
-            <div style="display: flex; gap: 8px;">
-              <button type="button" class="btn-primary btn-sm" id="btn-apply-ai-doc-proposal" data-proposal-id="${activeProposal.id}">
-                ${icons.check(13)} 应用修改并创建新版本
+            <div class="diff-header-actions">
+              <button
+                type="button"
+                class="btn-primary-sm btn-apply-proposal"
+                data-proposal-id="${latestProposal.id}"
+                title="确认并应用修改"
+              >
+                ${icons.check(13)} 应用修改
               </button>
-              <button type="button" class="btn-secondary btn-sm" id="btn-discard-ai-doc-proposal" data-proposal-id="${activeProposal.id}">
-                ${icons.x(13)} 放弃提案
+              <button
+                type="button"
+                class="btn-outline-sm btn-discard-proposal"
+                data-proposal-id="${latestProposal.id}"
+                title="放弃此提案"
+              >
+                ${icons.x(13)} 放弃
               </button>
             </div>
           </div>
-          <div class="diff-instruction-quote">
-            <strong>修改指令:</strong> "${escapeHtml(activeProposal.instruction || '优化与补充内容')}"
-          </div>
-          <div class="diff-comparison-grid">
-            <div class="diff-pane diff-pane-original">
-              <div class="diff-pane-label">原版本内容</div>
-              <div class="diff-text-body">${escapeHtml(activeProposal.original_content || doc.content || '')}</div>
+
+          <div class="proposal-diff-view">
+            <div class="diff-column diff-before">
+              <div class="diff-column-header">修改前</div>
+              <div class="diff-text">${escapeHtml(latestProposal.before_content || activeAiDocument.content || '').replace(/\n/g, '<br/>')}</div>
             </div>
-            <div class="diff-pane diff-pane-proposed">
-              <div class="diff-pane-label">建议修改内容</div>
-              <div class="diff-text-body">${escapeHtml(activeProposal.proposed_content || '')}</div>
+            <div class="diff-column diff-after">
+              <div class="diff-column-header">修改后</div>
+              <div class="diff-text">${escapeHtml(latestProposal.after_content || latestProposal.proposed_content || '').replace(/\n/g, '<br/>')}</div>
             </div>
           </div>
         </div>
@@ -466,235 +341,181 @@ function renderAiDocumentDetail(doc, versions = [], proposals = [], activePropos
           : ''
       }
 
-      <!-- Main Document Content -->
-      <div class="source-detail-body-grid">
-        <section class="source-anchors-section">
-          <div class="section-subheading-row">
-            <div style="font-weight: 700; font-size: 13px;">文档完整正文</div>
-          </div>
-          <div class="ai-doc-content-viewer">
-            <div class="markdown-rendered-body">
-              ${escapeHtml(doc.content || latestVersion?.content || '（正文内容加载中）')}
-            </div>
-          </div>
-        </section>
+      <!-- AI Document Current Body -->
+      <article class="aidoc-article-body markdown-rendered-body">
+        ${escapeHtml(activeAiDocument.content || '（暂无正文）').replace(/\n/g, '<br/>')}
+      </article>
 
-        <!-- Version History with Restore Action (Ticket 20) -->
-        <aside class="source-versions-aside">
-          <div class="section-subheading-row">
-            <div style="font-weight: 700; font-size: 13px;">版本记录与恢复</div>
-          </div>
-          <div class="versions-list-scroll">
-            ${
-              versions.length === 0
-                ? `<div class="empty-anchors-note">暂无版本历史</div>`
-                : versions
-                    .map(
-                      (ver, idx) => `
-              <div class="version-item-card ${idx === 0 ? 'is-latest' : ''}">
-                <div class="version-card-header">
-                  <span class="version-id-tag">v${versions.length - idx}</span>
-                  ${
-                    idx > 0
-                      ? `
-                    <button
-                      type="button"
-                      class="btn-subtle-restore"
-                      data-action="restore-ai-doc-version"
-                      data-version-id="${ver.id}"
-                      title="恢复此版本为当前最新版本"
-                    >
-                      ${icons.undo(12)} 恢复此版本
-                    </button>
-                  `
-                      : `<span class="version-latest-badge">当前</span>`
-                  }
+      <!-- Version History Section -->
+      ${
+        aiDocumentVersions.length > 1
+          ? `
+        <div class="aidoc-versions-section">
+          <h4 class="versions-section-title">${icons.clock(14)} 版本历史</h4>
+          <div class="versions-list">
+            ${aiDocumentVersions
+              .map(
+                (v, vIdx) => `
+              <div class="version-item-card">
+                <div class="version-card-left">
+                  <span class="version-name">版本 ${v.version_number || aiDocumentVersions.length - vIdx}</span>
+                  <span class="version-time">${v.created_at ? new Date(v.created_at).toLocaleString() : ''}</span>
                 </div>
-                <div class="version-card-meta">
-                  <span>${formatTimestamp(ver.created_at)}</span>
-                </div>
+                <button
+                  type="button"
+                  class="btn-outline-sm btn-restore-aidoc-version"
+                  data-version-id="${v.id}"
+                  title="恢复此版本"
+                >
+                  ${icons.undo(12)} 恢复此版
+                </button>
               </div>
             `
-                    )
-                    .join('')
-            }
+              )
+              .join('')}
           </div>
-        </aside>
-      </div>
+        </div>
+      `
+          : ''
+      }
     </div>
   `;
 }
 
 function attachSourcesEvents(container, state, handlers) {
-  const { activeSourceId, activeAiDocumentId, activeSessionId } = state;
+  // Sub-tabs switch
+  const tabUserSources = container.querySelector('#btn-tab-user-sources');
+  const tabAiDocs = container.querySelector('#btn-tab-ai-docs');
 
-  // Sidebar Collapse Toggle
-  const toggleBtn = container.querySelector('#btn-toggle-sources-sidebar');
-  if (toggleBtn) {
-    toggleBtn.onclick = () => handlers.onToggleSidebar?.('sources');
-  }
+  if (tabUserSources) tabUserSources.onclick = () => handlers.onSwitchSourcesTab?.('user_sources');
+  if (tabAiDocs) tabAiDocs.onclick = () => handlers.onSwitchSourcesTab?.('ai_documents');
 
-  const floatingBtn = container.querySelector('#btn-floating-expand-sources');
-  if (floatingBtn) {
-    floatingBtn.onclick = () => handlers.onToggleSidebar?.('sources');
-  }
+  // Drawer open / close
+  const drawerBackdrop = container.querySelector('#sources-drawer-backdrop');
+  const toggleSourcesDrawerBtn = container.querySelector('#btn-toggle-sources-drawer');
+  const toggleAiDocsDrawerBtn = container.querySelector('#btn-toggle-aidocs-drawer');
+  const closeDrawerBtn = container.querySelector('#btn-close-sources-drawer');
 
-  // Tabs Switch (User Sources vs AI Docs)
-  container.querySelectorAll('[data-sources-tab]').forEach((btn) => {
-    btn.onclick = () => {
-      const tab = btn.getAttribute('data-sources-tab');
-      handlers.onSwitchSourcesTab?.(tab);
+  const openDrawer = () => {
+    if (drawerBackdrop) drawerBackdrop.style.display = 'block';
+  };
+  const closeDrawer = () => {
+    if (drawerBackdrop) drawerBackdrop.style.display = 'none';
+  };
+
+  if (toggleSourcesDrawerBtn) toggleSourcesDrawerBtn.onclick = openDrawer;
+  if (toggleAiDocsDrawerBtn) toggleAiDocsDrawerBtn.onclick = openDrawer;
+  if (closeDrawerBtn) closeDrawerBtn.onclick = closeDrawer;
+  if (drawerBackdrop) {
+    drawerBackdrop.onclick = (e) => {
+      if (e.target === drawerBackdrop) closeDrawer();
     };
-  });
+  }
 
-  // Upload Source Files
-  const fileInput = container.querySelector('#source-file-upload-input');
-  const uploadBtn = container.querySelector('#btn-trigger-upload-source');
+  // Upload Source Trigger
+  const triggerUploadBtn = container.querySelector('#btn-trigger-upload-source');
+  const emptyUploadBtn = container.querySelector('#btn-empty-upload-source');
+  const fileInput = container.querySelector('#source-file-input');
 
-  if (uploadBtn && fileInput) {
-    uploadBtn.onclick = () => fileInput.click();
-    fileInput.onchange = () => {
-      if (fileInput.files && fileInput.files.length > 0) {
-        handlers.onUploadFiles?.(Array.from(fileInput.files));
+  const triggerUpload = () => {
+    if (fileInput) fileInput.click();
+  };
+
+  if (triggerUploadBtn) triggerUploadBtn.onclick = triggerUpload;
+  if (emptyUploadBtn) emptyUploadBtn.onclick = triggerUpload;
+  if (fileInput) {
+    fileInput.onchange = (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        handlers.onUploadSource?.(file);
         fileInput.value = '';
       }
     };
   }
 
-  // Iterate Source Version
-  const iterateInput = container.querySelector('#source-iterate-file-input');
-  const iterateBtn = container.querySelector('#btn-iterate-version');
+  // Create AI Doc Trigger
+  const createAiDocBtn = container.querySelector('#btn-trigger-create-aidoc');
+  const emptyCreateAiDocBtn = container.querySelector('#btn-empty-create-aidoc');
 
-  if (iterateBtn && iterateInput) {
-    iterateBtn.onclick = () => iterateInput.click();
-    iterateInput.onchange = () => {
-      if (iterateInput.files && iterateInput.files[0] && activeSourceId) {
-        handlers.onIterateSourceVersion?.(activeSourceId, iterateInput.files[0]);
-        iterateInput.value = '';
-      }
+  const triggerCreateDoc = () => {
+    handlers.onOpenCreateAiDocModal?.();
+  };
+
+  if (createAiDocBtn) createAiDocBtn.onclick = triggerCreateDoc;
+  if (emptyCreateAiDocBtn) emptyCreateAiDocBtn.onclick = triggerCreateDoc;
+
+  // Propose Revision
+  const proposeRevBtn = container.querySelector('#btn-trigger-propose-revision');
+  if (proposeRevBtn) {
+    proposeRevBtn.onclick = () => {
+      const docId = state.activeAiDocument?.id;
+      if (docId) handlers.onOpenAiDocRevisionModal?.(docId);
     };
   }
 
-  // Create AI Doc Modal Trigger
-  const createAiDocBtn = container.querySelector('#btn-open-create-ai-doc');
-  if (createAiDocBtn) {
-    createAiDocBtn.onclick = () => handlers.onOpenCreateAiDocModal?.();
-  }
-
-  // AI Doc Revision Modal Trigger
-  const aiDocRevisionBtn = container.querySelector('#btn-open-ai-doc-revision');
-  if (aiDocRevisionBtn) {
-    aiDocRevisionBtn.onclick = () => handlers.onOpenAiDocRevisionModal?.(activeAiDocumentId);
-  }
-
-  // Apply / Discard AI Doc Proposals
-  const applyAiProposalBtn = container.querySelector('#btn-apply-ai-doc-proposal');
-  if (applyAiProposalBtn) {
-    applyAiProposalBtn.onclick = () => {
-      const pId = applyAiProposalBtn.getAttribute('data-proposal-id');
-      handlers.onApplyAiDocProposal?.(pId);
-    };
-  }
-
-  const discardAiProposalBtn = container.querySelector('#btn-discard-ai-doc-proposal');
-  if (discardAiProposalBtn) {
-    discardAiProposalBtn.onclick = () => {
-      const pId = discardAiProposalBtn.getAttribute('data-proposal-id');
-      handlers.onDiscardAiDocProposal?.(pId);
-    };
-  }
-
-  // Restore AI Doc Version
-  container.querySelectorAll('[data-action="restore-ai-doc-version"]').forEach((btn) => {
-    btn.onclick = () => {
-      const vId = btn.getAttribute('data-version-id');
-      if (confirm('确定要恢复此历史版本吗？')) {
-        handlers.onRestoreAiDocVersion?.(activeAiDocumentId, vId);
+  // Select Item from Drawer
+  container.querySelectorAll('.drawer-item').forEach((el) => {
+    el.onclick = (e) => {
+      if (e.target.closest('.btn-delete-source')) return;
+      const type = el.getAttribute('data-type');
+      const id = el.getAttribute('data-id');
+      closeDrawer();
+      if (type === 'source') {
+        handlers.onSelectSource?.(id);
+      } else if (type === 'aidoc') {
+        handlers.onSelectAiDocument?.(id);
       }
     };
   });
-
-  // Select Source Item
-  container.querySelectorAll('[data-action="select-source"]').forEach((card) => {
-    card.onclick = () => {
-      const id = card.getAttribute('data-source-id');
-      handlers.onSelectSource?.(id);
-    };
-  });
-
-  // Select AI Doc Item
-  container.querySelectorAll('[data-action="select-ai-doc"]').forEach((card) => {
-    card.onclick = () => {
-      const id = card.getAttribute('data-doc-id');
-      handlers.onSelectAiDoc?.(id);
-    };
-  });
-
-  // Add Source / AI Doc to Current Session
-  const addToSessionBtn = container.querySelector('#btn-add-to-active-session');
-  if (addToSessionBtn && activeSourceId && activeSessionId) {
-    addToSessionBtn.onclick = () => {
-      const source = state.sources.find((s) => s.id === activeSourceId);
-      const vId = source?.versions?.[0]?.id || activeSourceId;
-      handlers.onAddSessionSource?.(activeSessionId, vId);
-    };
-  }
-
-  const addAiDocToSessionBtn = container.querySelector('#btn-add-ai-doc-to-session');
-  if (addAiDocToSessionBtn && activeAiDocumentId && activeSessionId) {
-    addAiDocToSessionBtn.onclick = () => {
-      handlers.onAddSessionSource?.(activeSessionId, activeAiDocumentId);
-    };
-  }
 
   // Delete Source
-  const deleteSourceBtn = container.querySelector('#btn-delete-source');
-  if (deleteSourceBtn && activeSourceId) {
-    deleteSourceBtn.onclick = () => handlers.onDeleteSource?.(activeSourceId);
-  }
-
-  // Pin Anchor Selection to Chat
-  container.querySelectorAll('[data-action="pin-anchor"]').forEach((card) => {
-    card.onclick = () => {
-      const anchorId = card.getAttribute('data-anchor-id');
-      const text = card.getAttribute('data-anchor-text');
-      handlers.onPinSelection?.({
-        source_id: activeSourceId,
-        anchor_id: anchorId,
-        text
-      });
+  container.querySelectorAll('.btn-delete-source').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.getAttribute('data-id');
+      if (id) handlers.onDeleteSource?.(id);
     };
   });
-}
 
-function getSourceFormatIcon(ext, size = 15) {
-  const e = ext.toUpperCase();
-  if (e === 'PDF') return icons.fileText(size, 'color-accent-amber');
-  if (e === 'DOCX' || e === 'DOC') return icons.fileText(size, 'color-accent-blue');
-  if (e === 'PPTX' || e === 'PPT') return icons.layers(size, 'color-accent-amber');
-  if (['PNG', 'JPG', 'JPEG', 'WEBP'].includes(e)) return icons.image(size, 'color-accent-emerald');
-  return icons.file(size);
+  // Apply / Discard Proposal
+  container.querySelectorAll('.btn-apply-proposal').forEach((btn) => {
+    btn.onclick = () => {
+      const pid = btn.getAttribute('data-proposal-id');
+      handlers.onApplyAiDocProposal?.(pid);
+    };
+  });
+
+  container.querySelectorAll('.btn-discard-proposal').forEach((btn) => {
+    btn.onclick = () => {
+      const pid = btn.getAttribute('data-proposal-id');
+      handlers.onDiscardAiDocProposal?.(pid);
+    };
+  });
+
+  // Restore AI Doc Version
+  container.querySelectorAll('.btn-restore-aidoc-version').forEach((btn) => {
+    btn.onclick = () => {
+      const vid = btn.getAttribute('data-version-id');
+      const docId = state.activeAiDocument?.id;
+      if (docId && vid) handlers.onRestoreAiDocVersion?.(docId, vid);
+    };
+  });
 }
 
 function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return '0 B';
+  if (!bytes) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-function formatTimestamp(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-function escapeHtml(value) {
-  return String(value || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
