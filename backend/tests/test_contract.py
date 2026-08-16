@@ -189,7 +189,10 @@ def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
     assert actual["Session"]["properties"]["source_version_ids"]["uniqueItems"] is True
     discovery = actual["ModelDiscoveryInput"]["properties"]
     assert discovery["base_url"]["format"] == "uri"
+    assert "minLength" not in discovery["base_url"]
+    assert "maxLength" not in discovery["base_url"]
     assert discovery["api_key"]["writeOnly"] is True
+    assert "default" not in discovery["api_key"]
     capabilities_ref = actual["DiscoveredModel"]["properties"]["capabilities"]["$ref"]
     capabilities = actual[capabilities_ref.rsplit("/", 1)[-1]]
     assert capabilities["additionalProperties"] is False

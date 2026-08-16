@@ -652,7 +652,7 @@ class ExamService:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt["status"] == "grading":
             raise LearningError(409, "OPERATION_IN_PROGRESS", "作答正在统一批改，请等待完成")
-        if attempt["mode"] == "exam" and attempt["status"] != "submitted":
+        if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
             raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式提交前不能查看反馈")
         question = self._attempt_question(subject, attempt, question_id)
         answer = next((item for item in attempt["answers"] if item["question_id"] == question_id), None)
@@ -729,8 +729,10 @@ class ExamService:
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return updated
 
-    def submit_attempt(self, attempt_id: str) -> dict:
+    def submit_attempt(self, attempt_id: str, complete: bool = False) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
+        if complete and attempt.get("completion_status") != "completed":
+            attempt = self.complete_attempt(attempt_id)
         if attempt["status"] not in {"in-progress", "paused"} or attempt.get("grading_status") in {"queued", "grading"}:
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不能提交")
         if any(
@@ -758,18 +760,15 @@ class ExamService:
                         feedback.append(self._objective_feedback(current, question, answer))
                         objective_count += 1
                     else:
-                        try:
-                            profile = self._selected_model(subject["id"], None)
-                            feedback.append(await self._subjective_feedback(
-                                current,
-                                question,
-                                answer,
-                                profile,
-                                current["show_suggested_score"],
-                                self._ids("feedback"),
-                            ))
-                        except (LearningError, ModelClientError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-                            feedback.append(self._unable_feedback(current, question, answer))
+                        profile = self._selected_model(subject["id"], None)
+                        feedback.append(await self._subjective_feedback(
+                            current,
+                            question,
+                            answer,
+                            profile,
+                            current["show_suggested_score"],
+                            self._ids("feedback"),
+                        ))
                 if objective_count:
                     self.operations.record_stage(
                         "structure-validation",
@@ -779,7 +778,14 @@ class ExamService:
                         counters={},
                     )
                 timestamp = self._now()
-                submitted = {**current, "status": "submitted", "grading_status": "completed", "feedback": feedback, "updated_at": timestamp, "submitted_at": timestamp}
+                submitted = {
+                    **current,
+                    "status": "submitted" if current.get("completion_status") == "completed" else attempt["status"],
+                    "grading_status": "completed",
+                    "feedback": feedback,
+                    "updated_at": timestamp,
+                    "submitted_at": timestamp,
+                }
                 self._replace(subject["id"], "attempts", attempt_id, submitted)
                 return resource
             except asyncio.CancelledError:
@@ -812,13 +818,13 @@ class ExamService:
 
     def review_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
-        if attempt["mode"] == "exam" and attempt["status"] != "submitted":
+        if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
             raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式提交前不能查看答案和解析")
         document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
         feedback_by_question = {item["question_id"]: item for item in attempt["feedback"]}
         answers = {item["question_id"]: item for item in attempt["answers"]}
         questions = document["questions"]
-        if attempt["mode"] == "practice" and attempt["status"] != "submitted":
+        if attempt["mode"] == "practice" and attempt.get("completion_status") != "completed":
             questions = [item for item in questions if item["id"] in feedback_by_question]
         scores = [item["suggested_score"] for item in feedback_by_question.values() if item.get("suggested_score") is not None]
         return {

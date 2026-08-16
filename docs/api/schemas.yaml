@@ -1870,7 +1870,7 @@ components:
           items: {$ref: '#/components/schemas/AttemptAnswer'}
         feedback:
           type: array
-          description: 考试模式提交前必须为空。
+          description: 考试模式标记完成前必须为空。
           items: {$ref: '#/components/schemas/QuestionFeedback'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}

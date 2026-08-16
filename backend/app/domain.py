@@ -483,6 +483,11 @@ def _delete_model(workspace: dict, action: dict, now) -> dict:
             **workspace,
             "models": [m for m in workspace.get("models", []) if m["id"] != existing["id"]],
             "subjects": subjects,
+            "current_model_id": (
+                None
+                if workspace.get("current_model_id") == existing["id"]
+                else workspace.get("current_model_id")
+            ),
             "updated_at": timestamp,
         },
         model_id=existing["id"],

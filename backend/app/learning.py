@@ -525,12 +525,12 @@ class LearningService:
             raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
         profile = self._model(model_id)
         session_source_ids = list(session.get("source_version_ids", []))
-        requested_ids = payload.get("source_version_ids")
-        if requested_ids is not None and not set(requested_ids) <= set(session_source_ids):
+        requested_ids = list(payload.get("source_version_ids") or [])
+        if not set(requested_ids) <= set(session_source_ids):
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "消息资料必须属于当前会话资料范围")
-        selected_ids = list(requested_ids or session_source_ids)
+        selected_ids = session_source_ids
         if payload.get("only_use_specified_sources"):
-            selected_ids = list(payload.get("source_version_ids") or payload.get("focused_source_version_ids") or [])
+            selected_ids = list(requested_ids or payload.get("focused_source_version_ids") or [])
             if not selected_ids:
                 raise LearningError(422, "VALIDATION_FAILED", "仅使用指定资料时必须提供资料版本")
         if not set(selected_ids) <= set(session_source_ids):

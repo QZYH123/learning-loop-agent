@@ -408,7 +408,7 @@ def create_exam_router(exams) -> APIRouter:
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     )
     async def submit_attempt(attempt_id: str):
-        return exams.submit_attempt(attempt_id)
+        return exams.submit_attempt(attempt_id, complete=True)
 
     @router.get(
         "/api/attempts/{attempt_id}/review",

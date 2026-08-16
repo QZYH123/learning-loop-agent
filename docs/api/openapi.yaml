@@ -1097,7 +1097,7 @@ paths:
       operationId: getAttempt
       tags: [Attempts]
       summary: 恢复试卷作答
-      description: 考试模式提交前始终隐藏答案和解析。
+      description: 考试模式标记完成前始终隐藏答案和解析。
       x-tickets: ['10', '11']
       responses:
         '200':

@@ -54,7 +54,7 @@ class ExamRenderingService:
             attempt_subject, attempt = self.learning._find_owned("attempts", attempt_id)
             if attempt_subject["id"] != subject["id"] or attempt["exam_id"] != exam_id:
                 raise LearningError(422, "VALIDATION_FAILED", "作答记录不属于该试卷")
-            if payload["edition"] == "solutions" and attempt["mode"] == "exam" and attempt["status"] != "submitted":
+            if payload["edition"] == "solutions" and attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
                 raise LearningError(409, "EXPORT_ANSWER_NOT_ALLOWED", "考试模式提交前不能导出答案版")
             version_id = attempt["exam_version_id"]
 

@@ -89,7 +89,7 @@ queued -> running -> succeeded
 
 ### 作答与答案可见性
 
-`Attempt.paper` 是答题页面唯一允许使用的题目视图，不包含答案、解析或隐藏的题目依据。考试模式提交前 `Attempt.feedback` 必须为空，`GET /attempts/{id}/review` 必须返回 `409 ANSWER_NOT_AVAILABLE`。
+`Attempt.paper` 是答题页面唯一允许使用的题目视图，不包含答案、解析或隐藏的题目依据。考试模式标记完成前 `Attempt.feedback` 必须为空，`GET /attempts/{id}/review` 必须返回 `409 ANSWER_NOT_AVAILABLE`。
 
 练习模式只返回用户已请求或已产生的单题反馈。主观题反馈记录用户答案快照、得分点、遗漏点、推理问题、改进建议、题目依据和实际模型；关闭建议分数时 `suggested_score` 为 `null`。
 

@@ -8,6 +8,18 @@ class FailingFakeModelClient(ImmediateFakeModelClient):
         raise ModelClientError("模型暂时不可用", code="MODEL_CONNECTION_FAILED")
 
 
+class RetryableGradingModel(ExamFakeModel):
+    def __init__(self):
+        super().__init__()
+        self.fail_grading = False
+
+    async def chat(self, profile, messages):
+        content = messages[-1]["content"]
+        if self.fail_grading and isinstance(content, str) and "根据评分点评估答案" in content:
+            raise ModelClientError("模型暂时不可用", code="MODEL_CONNECTION_FAILED")
+        return await super().chat(profile, messages)
+
+
 def create_subject_and_source(client):
     subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
     response = client.post(
@@ -74,6 +86,7 @@ def test_focused_source_is_retrieved_before_other_session_sources(tmp_path):
             "intent": "ask",
             "content": "limit",
             "model_id": model_id,
+            "source_version_ids": [focused_version_id],
             "focused_source_version_ids": [focused_version_id],
         }).json()
         wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
@@ -151,7 +164,8 @@ def test_running_session_cannot_be_deleted(tmp_path):
 
 
 def test_attempt_completion_does_not_start_grading_and_can_resume(tmp_path):
-    client, _ = make_client(tmp_path, model_client=ExamFakeModel())
+    model_client = RetryableGradingModel()
+    client, _ = make_client(tmp_path, model_client=model_client)
     with client:
         subject_id, _, _, blueprint_id = build_exam(client)
         client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"total_score": 20})
@@ -164,10 +178,23 @@ def test_attempt_completion_does_not_start_grading_and_can_resume(tmp_path):
         wait_for(lambda: client.get(f"/api/operations/{retried['operation']['id']}").json()["status"] == "succeeded")
         published = client.post(f"/api/exam-drafts/{draft['id']}/publish", json={})
         attempt = client.post(f"/api/exams/{published.json()['id']}/attempts", json={"mode": "practice"}).json()
+        subjective = next(question for question in attempt["paper"]["questions"] if question["type"] == "short-answer")
+        client.put(f"/api/attempts/{attempt['id']}/answers/{subjective['id']}", json={
+            "answer": {"kind": "text", "text": "It describes nearby behavior."},
+        })
         completed = client.post(f"/api/attempts/{attempt['id']}/complete").json()
         assert completed["completion_status"] == "completed"
         assert completed["grading_status"] == "not-requested"
         assert completed["unanswered_question_ids"]
+
+        model_client.fail_grading = True
+        failed_grading = client.post(f"/api/attempts/{attempt['id']}/grade").json()
+        wait_for(lambda: client.get(f"/api/operations/{failed_grading['operation']['id']}").json()["status"] == "failed")
+        failed = client.get(f"/api/attempts/{attempt['id']}").json()
+        assert failed["completion_status"] == "completed"
+        assert failed["grading_status"] == "failed"
+
+        model_client.fail_grading = False
         grading = client.post(f"/api/attempts/{attempt['id']}/grade").json()
         wait_for(lambda: client.get(f"/api/operations/{grading['operation']['id']}").json()["status"] == "succeeded")
         graded = client.get(f"/api/attempts/{attempt['id']}").json()
@@ -181,6 +208,15 @@ def test_attempt_completion_does_not_start_grading_and_can_resume(tmp_path):
             "answer": {"kind": "choice", "option_ids": ["A"]},
         })
         assert client.get(f"/api/attempts/{attempt['id']}").json()["grading_status"] == "stale"
+
+        exam_attempt = client.post(f"/api/exams/{published.json()['id']}/attempts", json={"mode": "exam"}).json()
+        grading = client.post(f"/api/attempts/{exam_attempt['id']}/grade").json()
+        wait_for(lambda: client.get(f"/api/operations/{grading['operation']['id']}").json()["status"] == "succeeded")
+        graded = client.get(f"/api/attempts/{exam_attempt['id']}").json()
+        assert graded["completion_status"] == "in-progress"
+        assert client.get(f"/api/attempts/{exam_attempt['id']}/review").status_code == 409
+        client.post(f"/api/attempts/{exam_attempt['id']}/complete")
+        assert client.get(f"/api/attempts/{exam_attempt['id']}/review").status_code == 200
 
 
 def test_model_discovery_failure_keeps_manual_fallback(tmp_path):
@@ -238,6 +274,9 @@ def test_current_model_selection_applies_to_existing_chat(tmp_path):
         }).json()
         wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
         assert model_client.chat_calls[-1]["profile"]["id"] == second_model_id
+
+        assert client.delete(f"/api/models/{second_model_id}").status_code == 204
+        assert client.get("/api/models/current").json() is None
 
 
 def test_attachment_and_ai_document_lifecycle(tmp_path):

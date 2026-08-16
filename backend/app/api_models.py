@@ -585,9 +585,15 @@ class TempAttachment(ContractModel):
 
 class ModelDiscoveryInput(ContractModel):
     provider: Literal["openai-compatible", "ollama"]
-    base_url: AnyHttpUrl = Field(max_length=500)
-    api_key: str = Field(default="", max_length=2000, json_schema_extra={"writeOnly": True})
+    base_url: str = Field(json_schema_extra={"format": "uri"})
+    api_key: str = Field(default_factory=str, max_length=2000, json_schema_extra={"writeOnly": True})
     manual_model_name: str | None = Field(default=None, max_length=120)
+
+    @field_validator("base_url")
+    @classmethod
+    def base_url_must_be_http(cls, value):
+        AnyHttpUrl(value)
+        return value
 
 
 class DiscoveredModelCapabilities(ContractModel):
