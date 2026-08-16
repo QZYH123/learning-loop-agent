@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ContractModel(BaseModel):
@@ -591,8 +591,8 @@ class ModelDiscoveryInput(ContractModel):
 
     @field_validator("base_url")
     @classmethod
-    def base_url_must_be_http(cls, value):
-        AnyHttpUrl(value)
+    def base_url_must_be_absolute(cls, value):
+        AnyUrl(value)
         return value
 
 

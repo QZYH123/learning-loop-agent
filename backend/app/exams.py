@@ -593,7 +593,7 @@ class ExamService:
         return attempt
 
     def get_attempt(self, attempt_id: str) -> dict:
-        return self.learning._find_owned("attempts", attempt_id)[1]
+        return self._attempt_view(self.learning._find_owned("attempts", attempt_id)[1])
 
     def update_attempt(self, attempt_id: str, patch: dict) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
@@ -608,7 +608,7 @@ class ExamService:
         if updated["mode"] == "exam":
             updated["feedback"] = []
         self._replace(subject["id"], "attempts", attempt_id, updated)
-        return updated
+        return self._attempt_view(updated)
 
     def save_answer(self, attempt_id: str, question_id: str, answer: dict) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
@@ -653,7 +653,7 @@ class ExamService:
         if attempt["status"] == "grading":
             raise LearningError(409, "OPERATION_IN_PROGRESS", "作答正在统一批改，请等待完成")
         if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
-            raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式提交前不能查看反馈")
+            raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式标记完成前不能查看反馈")
         question = self._attempt_question(subject, attempt, question_id)
         answer = next((item for item in attempt["answers"] if item["question_id"] == question_id), None)
         if not answer:
@@ -692,7 +692,7 @@ class ExamService:
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不能暂停")
         updated = {**attempt, "status": "paused", "updated_at": self._now()}
         self._replace(subject["id"], "attempts", attempt_id, updated)
-        return updated
+        return self._attempt_view(updated)
 
     def resume_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
@@ -701,16 +701,16 @@ class ExamService:
         if attempt.get("completion_status") == "completed":
             updated = {**attempt, "completion_status": "in-progress", "completed_at": None, "status": "in-progress", "updated_at": self._now()}
             self._replace(subject["id"], "attempts", attempt_id, updated)
-            return updated
+            return self._attempt_view(updated)
         if attempt["status"] == "submitted" and attempt.get("grading_status") in {"completed", "failed", "stale"}:
             updated = {**attempt, "status": "in-progress", "updated_at": self._now()}
             self._replace(subject["id"], "attempts", attempt_id, updated)
-            return updated
+            return self._attempt_view(updated)
         if attempt["status"] != "paused":
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不在暂停状态")
         updated = {**attempt, "status": "in-progress", "updated_at": self._now()}
         self._replace(subject["id"], "attempts", attempt_id, updated)
-        return updated
+        return self._attempt_view(updated)
 
     def complete_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
@@ -727,7 +727,7 @@ class ExamService:
             "updated_at": timestamp,
         }
         self._replace(subject["id"], "attempts", attempt_id, updated)
-        return updated
+        return self._attempt_view(updated)
 
     def submit_attempt(self, attempt_id: str, complete: bool = False) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
@@ -746,7 +746,7 @@ class ExamService:
 
         async def worker():
             try:
-                current = self.get_attempt(attempt_id)
+                current = self.learning._find_owned("attempts", attempt_id)[1]
                 document = self._version_document(subject, current["exam_id"], current["exam_version_id"])
                 feedback = []
                 objective_started_at = self._now()
@@ -789,7 +789,7 @@ class ExamService:
                 self._replace(subject["id"], "attempts", attempt_id, submitted)
                 return resource
             except asyncio.CancelledError:
-                current = self.get_attempt(attempt_id)
+                current = self.learning._find_owned("attempts", attempt_id)[1]
                 restored = {
                     **current,
                     "status": attempt["status"],
@@ -801,7 +801,7 @@ class ExamService:
                 self._replace(subject["id"], "attempts", attempt_id, restored)
                 raise
             except Exception as exc:
-                current = self.get_attempt(attempt_id)
+                current = self.learning._find_owned("attempts", attempt_id)[1]
                 failed = {
                     **current,
                     "status": attempt["status"],
@@ -819,7 +819,7 @@ class ExamService:
     def review_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
-            raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式提交前不能查看答案和解析")
+            raise LearningError(409, "ANSWER_NOT_AVAILABLE", "考试模式标记完成前不能查看答案和解析")
         document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
         feedback_by_question = {item["question_id"]: item for item in attempt["feedback"]}
         answers = {item["question_id"]: item for item in attempt["answers"]}
@@ -1669,6 +1669,12 @@ class ExamService:
             for question in attempt["paper"]["questions"]
             if question["id"] not in answered_ids
         ]
+
+    @staticmethod
+    def _attempt_view(attempt: dict) -> dict:
+        if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
+            return {**attempt, "feedback": []}
+        return attempt
 
     def _version_document(self, subject: dict, exam_id: str, version_id: str) -> dict:
         version = next(

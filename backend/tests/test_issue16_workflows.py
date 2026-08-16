@@ -210,12 +210,18 @@ def test_attempt_completion_does_not_start_grading_and_can_resume(tmp_path):
         assert client.get(f"/api/attempts/{attempt['id']}").json()["grading_status"] == "stale"
 
         exam_attempt = client.post(f"/api/exams/{published.json()['id']}/attempts", json={"mode": "exam"}).json()
+        choice = next(question for question in exam_attempt["paper"]["questions"] if question["type"] == "single-choice")
+        client.put(f"/api/attempts/{exam_attempt['id']}/answers/{choice['id']}", json={
+            "answer": {"kind": "choice", "option_ids": ["A"]},
+        })
         grading = client.post(f"/api/attempts/{exam_attempt['id']}/grade").json()
         wait_for(lambda: client.get(f"/api/operations/{grading['operation']['id']}").json()["status"] == "succeeded")
         graded = client.get(f"/api/attempts/{exam_attempt['id']}").json()
         assert graded["completion_status"] == "in-progress"
+        assert graded["feedback"] == []
         assert client.get(f"/api/attempts/{exam_attempt['id']}/review").status_code == 409
         client.post(f"/api/attempts/{exam_attempt['id']}/complete")
+        assert client.get(f"/api/attempts/{exam_attempt['id']}").json()["feedback"]
         assert client.get(f"/api/attempts/{exam_attempt['id']}/review").status_code == 200
 
 
