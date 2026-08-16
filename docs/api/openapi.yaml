@@ -5,7 +5,8 @@ info:
   title: Learning Loop Agent API
   version: 0.1.0
   description: |
-    AI 学习工具的目标 HTTP 契约。它覆盖 Ticket 01-15，是后端实现和前端集成的共同输入，
+    AI 学习工具的目标 HTTP 契约。它覆盖 Ticket 01-16，Ticket 17-21 复用其中定义的工作流契约，
+    是后端实现和前端集成的共同输入，
     不表示当前后端已经完成。除文件上传与下载外，请求和响应均使用 application/json。
   x-contract-status: target
 

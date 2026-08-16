@@ -391,12 +391,24 @@ class LearningService:
                     attachment_inputs,
                 )
                 response = await self.model_client.chat(profile, messages)
+                text = response.get("text") or ""
+                assessment = None
+                if chat["learning_mode"] == "socratic" and intent in {"attempt", "restate", "self-test-answer"}:
+                    text, assessment = self._parse_socratic_response(text)
                 result = (
                     "general-knowledge"
                     if grounding_mode == "general-knowledge"
                     else "supplemental" if grounding_mode == "supplemental" else "covered"
                 )
-                self._complete_message(subject_id, assistant_id, response.get("text") or "", result, citations, intent)
+                self._complete_message(
+                    subject_id,
+                    assistant_id,
+                    text,
+                    result,
+                    citations,
+                    intent,
+                    assessment,
+                )
                 return {"type": "chat-message", "id": assistant_id}
             except asyncio.CancelledError:
                 self._update_message(subject_id, assistant_id, {
@@ -877,10 +889,23 @@ class LearningService:
         }
         self._set_chat(subject_id, updated)
 
-    def _complete_message(self, subject_id: str, message_id: str, text: str, result: str, citations: list[dict], intent: str) -> None:
+    def _complete_message(
+        self,
+        subject_id: str,
+        message_id: str,
+        text: str,
+        result: str,
+        citations: list[dict],
+        intent: str,
+        assessment: str | None = None,
+    ) -> None:
         timestamp = self._now()
         chat = self.get_chat(subject_id)
-        state = self._next_socratic_state(chat.get("socratic_state"), intent) if chat["learning_mode"] == "socratic" else None
+        state = (
+            self._next_socratic_state(chat.get("socratic_state"), intent, assessment)
+            if chat["learning_mode"] == "socratic"
+            else None
+        )
         updated = {
             **chat,
             "socratic_state": state,
@@ -1087,11 +1112,33 @@ class LearningService:
         if intent == "request-hint":
             level = min((state or {}).get("hint_level", 0) + 1, 3)
             return f" 只给第 {level} 层提示，不直接泄漏完整答案，并要求用户继续尝试。"
-        if intent in {"start", "attempt"}:
+        if intent in {"attempt", "restate", "self-test-answer"}:
+            correct_action = (
+                "给出一个短变式自测"
+                if intent in {"attempt", "restate"}
+                else "简短总结并告知本轮学习完成"
+            )
+            return (
+                ' 评估学习者回答，只返回 JSON 对象：'
+                '{"assessment":"correct|misunderstanding|missing-prerequisite","response":"给学习者的回复"}。'
+                f" correct 时确认关键推理并{correct_action}；misunderstanding 时指出错误点、资料依据和下一步；"
+                "missing-prerequisite 时只补充必要前置知识并要求再次尝试。"
+            )
+        if intent == "start":
             return " 一次只推进一个学习动作，先让用户尝试；纠错需指出错误点、资料依据和下一步。"
-        if intent == "restate":
-            return " 检查用户复述，随后给一个短变式自测。"
         return " 一次只推进一个需要用户回应的学习动作。"
+
+    @staticmethod
+    def _parse_socratic_response(text: str) -> tuple[str, str]:
+        try:
+            payload = json.loads(text)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ModelClientError("模型未返回有效的苏格拉底式评估") from exc
+        assessment = payload.get("assessment") if isinstance(payload, dict) else None
+        response = payload.get("response") if isinstance(payload, dict) else None
+        if assessment not in {"correct", "misunderstanding", "missing-prerequisite"} or not isinstance(response, str) or not response.strip():
+            raise ModelClientError("模型未返回有效的苏格拉底式评估")
+        return response.strip(), assessment
 
     @staticmethod
     def _validate_socratic_intent(state: dict | None, intent: str) -> None:
@@ -1108,7 +1155,7 @@ class LearningService:
             raise LearningError(409, "RESOURCE_CONFLICT", "当前苏格拉底学习阶段不支持该动作")
 
     @staticmethod
-    def _next_socratic_state(state: dict | None, intent: str) -> dict:
+    def _next_socratic_state(state: dict | None, intent: str, assessment: str | None = None) -> dict:
         current = state or {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
         if intent == "start":
             return {"stage": "awaiting-attempt", "hint_level": 0, "answer_revealed": False}
@@ -1116,12 +1163,18 @@ class LearningService:
             return {**current, "stage": "hinting", "hint_level": min(current["hint_level"] + 1, 3)}
         if intent == "request-explanation":
             return {**current, "stage": "awaiting-restate", "answer_revealed": True}
+        if assessment == "correct" and intent in {"attempt", "restate"}:
+            return {**current, "stage": "self-testing"}
+        if assessment == "missing-prerequisite" and intent == "attempt":
+            return {**current, "stage": "awaiting-attempt"}
         if intent == "attempt":
             return {**current, "stage": "correcting"}
-        if intent == "restate" or intent == "request-self-test":
+        if intent == "restate":
+            return {**current, "stage": "correcting"}
+        if intent == "request-self-test":
             return {**current, "stage": "self-testing"}
         if intent == "self-test-answer":
-            return {**current, "stage": "completed"}
+            return {**current, "stage": "completed" if assessment == "correct" else "self-testing"}
         return {**current, "stage": "awaiting-attempt"}
 
     def _append_artifact(self, subject_id: str, artifact: dict) -> None:

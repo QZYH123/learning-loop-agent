@@ -25,6 +25,22 @@ class LearningFakeModel(ImmediateFakeModelClient):
         return {"text": "依据资料回答。", "provider": profile["provider"], "model": profile["model"]}
 
 
+class SocraticAssessmentFake(LearningFakeModel):
+    def __init__(self, assessment, response):
+        super().__init__()
+        self.assessment = assessment
+        self.response = response
+
+    async def chat(self, profile, messages):
+        self.chat_calls.append({"profile": profile, "messages": messages})
+        prompt = messages[-1]["content"]
+        if isinstance(prompt, str) and '"assessment"' in prompt and '"response"' in prompt:
+            text = json.dumps({"assessment": self.assessment, "response": self.response})
+        else:
+            text = self.response
+        return {"text": text, "provider": profile["provider"], "model": profile["model"]}
+
+
 def create_subject_and_model(client, *, vision=False):
     subject = client.post("/api/subjects", json={"name": "数学"}).json()
     model = client.post("/api/models", json={
@@ -35,6 +51,20 @@ def create_subject_and_model(client, *, vision=False):
         "capabilities": {"text": True, "vision": vision},
     }).json()
     return subject["id"], model["id"]
+
+
+def configure_socratic_chat(client):
+    subject_id, model_id = create_subject_and_model(client)
+    uploaded = upload_source(client, subject_id, "limits.md", b"# Limits\n\nA limit describes nearby behavior.")
+    version_id = wait_for_operation(client, uploaded.json()["operation"]["id"])["result"]["id"]
+    client.patch(f"/api/subjects/{subject_id}/chat", json={
+        "learning_mode": "socratic",
+        "goal": "学习 Limits",
+        "grounding_mode": "strict",
+        "source_version_ids": [version_id],
+    })
+    client.post(f"/api/subjects/{subject_id}/chat/model", json={"model_id": model_id})
+    return subject_id
 
 
 def test_grounded_chat_strict_supplemental_and_citation_lifecycle(tmp_path):
@@ -115,6 +145,100 @@ def test_image_source_requires_vision_capability(tmp_path):
         })
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "IMAGE_INPUT_UNSUPPORTED"
+
+
+def test_socratic_correct_attempt_moves_to_self_test(tmp_path):
+    fake = SocraticAssessmentFake("correct", "回答正确。请说明 x 趋近于 0 时 2x 的极限。")
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id = configure_socratic_chat(client)
+
+        response = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+            "intent": "attempt",
+            "content": "A limit describes nearby behavior.",
+        })
+        operation = wait_for_operation(client, response.json()["operation"]["id"])
+
+        assert operation["status"] == "succeeded"
+        chat = client.get(f"/api/subjects/{subject_id}/chat").json()
+        assert chat["socratic_state"]["stage"] == "self-testing"
+        assert chat["messages"][-1]["content"][0]["text"] == "回答正确。请说明 x 趋近于 0 时 2x 的极限。"
+
+
+def test_socratic_missing_prerequisite_returns_to_attempt(tmp_path):
+    fake = SocraticAssessmentFake(
+        "missing-prerequisite",
+        "先回顾函数在一点附近取值的含义，再尝试说明极限关注什么。",
+    )
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id = configure_socratic_chat(client)
+
+        response = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+            "intent": "attempt",
+            "content": "A limit describes nearby behavior, but I do not understand a function.",
+        })
+        operation = wait_for_operation(client, response.json()["operation"]["id"])
+
+        assert operation["status"] == "succeeded"
+        chat = client.get(f"/api/subjects/{subject_id}/chat").json()
+        assert chat["socratic_state"] == {
+            "stage": "awaiting-attempt",
+            "hint_level": 0,
+            "answer_revealed": False,
+        }
+        assert chat["messages"][-1]["content"][0]["text"].startswith("先回顾函数")
+
+
+def test_socratic_incorrect_self_test_does_not_complete(tmp_path):
+    fake = SocraticAssessmentFake("misunderstanding", "还需要区分函数值与附近行为，请修正后再试。")
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id = configure_socratic_chat(client)
+        explanation = client.post(
+            f"/api/subjects/{subject_id}/chat/messages",
+            json={"intent": "request-explanation"},
+        )
+        wait_for_operation(client, explanation.json()["operation"]["id"])
+        self_test = client.post(
+            f"/api/subjects/{subject_id}/chat/messages",
+            json={"intent": "request-self-test"},
+        )
+        wait_for_operation(client, self_test.json()["operation"]["id"])
+
+        response = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+            "intent": "self-test-answer",
+            "content": "A limit is the function value at the point.",
+        })
+        operation = wait_for_operation(client, response.json()["operation"]["id"])
+
+        assert operation["status"] == "succeeded"
+        chat = client.get(f"/api/subjects/{subject_id}/chat").json()
+        assert chat["socratic_state"]["stage"] == "self-testing"
+        assert chat["messages"][-1]["content"][0]["text"].startswith("还需要区分")
+
+
+def test_socratic_misunderstood_restate_requires_another_restate(tmp_path):
+    fake = SocraticAssessmentFake("misunderstanding", "复述仍混淆了点上取值与附近行为，请重新组织。")
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id = configure_socratic_chat(client)
+        attempt = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+            "intent": "attempt",
+            "content": "A limit is the function value at the point.",
+        })
+        wait_for_operation(client, attempt.json()["operation"]["id"])
+
+        restate = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
+            "intent": "restate",
+            "content": "A limit is only the value at that point.",
+        })
+        operation = wait_for_operation(client, restate.json()["operation"]["id"])
+
+        assert operation["status"] == "succeeded"
+        chat = client.get(f"/api/subjects/{subject_id}/chat").json()
+        assert chat["socratic_state"]["stage"] == "correcting"
+        assert chat["messages"][-1]["content"][0]["text"].startswith("复述仍混淆")
 
 
 def test_socratic_state_and_crash_course_artifact_persist(tmp_path):
