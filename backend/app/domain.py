@@ -96,6 +96,7 @@ def initial_workspace(now=None) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "active_subject_id": None,
+        "current_model_id": None,
         "subjects": [],
         "models": [],
         "created_at": timestamp,
@@ -895,6 +896,7 @@ def normalize_workspace(raw, now=None) -> tuple[dict, str | None]:
     workspace = {
         "schema_version": SCHEMA_VERSION,
         "active_subject_id": active_subject_id,
+        "current_model_id": raw.get("current_model_id") if raw.get("current_model_id") in model_ids else None,
         "subjects": subjects,
         "models": models,
         "created_at": _number_or(raw.get("created_at"), timestamp),

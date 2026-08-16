@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 
+import httpx
 from pydantic import ValidationError
 
 from .domain import (
@@ -45,6 +46,7 @@ class LearningService:
         self._now = now or (lambda: int(time.time() * 1000))
         self._ids = id_factory or (lambda prefix: f"{prefix}-{uuid.uuid4().hex}")
         self.selection_resolver = None
+        self.attachments = None
 
     # Subjects and models -------------------------------------------------
 
@@ -161,6 +163,51 @@ class LearningService:
         operation = self.operations.start("model-verification", worker, resource=resource)
         return {"operation": operation, "resource": resource}
 
+    def get_current_model(self) -> dict | None:
+        model_id = self.workspace_service.snapshot().get("current_model_id")
+        if not model_id:
+            return None
+        try:
+            return self.get_model(model_id)
+        except LearningError:
+            self.workspace_service.update_workspace(lambda workspace: {**workspace, "current_model_id": None})
+            return None
+
+    def select_current_model(self, model_id: str) -> dict:
+        model = self._model(model_id)
+        self.workspace_service.update_workspace(lambda workspace: {**workspace, "current_model_id": model_id})
+        return self._model_view(model)
+
+    def discover_models(self, payload: dict) -> dict:
+        provider = payload["provider"]
+        base_url = payload["base_url"].rstrip("/")
+        if provider == "ollama":
+            url = base_url if base_url.endswith("/api/tags") else f"{base_url}/api/tags"
+        else:
+            url = base_url if base_url.endswith("/models") else f"{base_url}/models"
+        headers = {}
+        if payload.get("api_key"):
+            headers["Authorization"] = f"Bearer {payload['api_key']}"
+        try:
+            response = httpx.get(url, headers=headers, timeout=8.0)
+            response.raise_for_status()
+            raw = response.json()
+            entries = raw.get("models", []) if provider == "ollama" else raw.get("data", [])
+            models = []
+            for item in entries:
+                name = item.get("name") or item.get("id")
+                if not name:
+                    continue
+                models.append({"name": name, "capabilities": {"text": True, "vision": "vision" in name.casefold()}})
+            return {"provider": provider, "models": models, "manual_model_allowed": True, "error": None}
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            return {
+                "provider": provider,
+                "models": [],
+                "manual_model_allowed": True,
+                "error": {"code": "MODEL_DISCOVERY_FAILED", "message": "无法获取模型列表，可手动填写模型名", "retryable": True, "details": {}},
+            }
+
     # Chat ----------------------------------------------------------------
 
     def get_chat(self, subject_id: str) -> dict:
@@ -192,6 +239,7 @@ class LearningService:
         self._model(model_id)
         chat = {**self.get_chat(subject_id), "active_model_id": model_id, "updated_at": self._now()}
         self._set_chat(subject_id, chat)
+        self.workspace_service.update_workspace(lambda workspace: {**workspace, "current_model_id": model_id})
         return chat
 
     def clear_chat(self, subject_id: str) -> None:
@@ -213,13 +261,26 @@ class LearningService:
         if chat["learning_mode"] == "socratic":
             self._validate_socratic_intent(chat.get("socratic_state"), intent)
 
-        model_id = payload.get("model_id") or chat.get("active_model_id")
+        model_id = payload.get("model_id") or chat.get("active_model_id") or self.workspace_service.snapshot().get("current_model_id")
         if not model_id:
             raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
         profile = self._model(model_id)
         source_ids = payload.get("source_version_ids", chat["source_version_ids"])
         grounding_mode = payload.get("grounding_mode", chat["grounding_mode"])
+        if payload.get("only_use_specified_sources"):
+            source_ids = list(payload.get("source_version_ids") or payload.get("focused_source_version_ids") or [])
+            if not source_ids:
+                raise LearningError(422, "VALIDATION_FAILED", "仅使用指定资料时必须提供资料版本")
         self._validate_source_scope(subject_id, source_ids, grounding_mode)
+        focused_ids = [item for item in payload.get("focused_source_version_ids") or [] if item in source_ids]
+        if payload.get("focused_source_version_ids") and len(focused_ids) != len(payload["focused_source_version_ids"]):
+            raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
+        attachment_ids = list(payload.get("attachment_ids") or [])
+        if self.attachments:
+            for attachment_id in attachment_ids:
+                attachment = self.attachments.require(subject_id, attachment_id)
+                if attachment.get("vision_required") and not profile.get("capabilities", {}).get("vision"):
+                    raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片附件，请更换具备视觉能力的模型")
         selection = payload.get("selection")
         selection_context = None
         if selection:
@@ -243,6 +304,15 @@ class LearningService:
 
         timestamp = self._now()
         content = payload.get("content") or self._intent_label(intent)
+        source_context = {
+            "source_version_ids": source_ids,
+            "focused_source_version_ids": focused_ids,
+            "only_use_specified_sources": bool(payload.get("only_use_specified_sources")),
+            "grounding_mode": grounding_mode,
+            "selection": selection,
+            "attachment_ids": attachment_ids,
+            "citations": [],
+        }
         user_message = {
             "id": self._ids("message"),
             "role": "user",
@@ -252,6 +322,7 @@ class LearningService:
             "grounding_mode": grounding_mode,
             "grounding_result": None,
             "citations": [],
+            "source_context": source_context,
             "selection": selection,
             "model": None,
             "error": None,
@@ -269,6 +340,7 @@ class LearningService:
             "grounding_mode": grounding_mode,
             "grounding_result": None,
             "citations": [],
+            "source_context": source_context,
             "selection": selection,
             "model": self._model_snapshot(profile),
             "error": None,
@@ -288,7 +360,8 @@ class LearningService:
             self._update_message(subject_id, assistant_id, {"status": "generating", "updated_at": self._now()})
             query = payload.get("content") or chat.get("goal") or "学习目标"
             try:
-                anchors = [] if grounding_mode == "general-knowledge" else self.source_library.retrieve(query, source_ids)
+                retrieval_ids = [*focused_ids, *[item for item in source_ids if item not in focused_ids]]
+                anchors = [] if grounding_mode == "general-knowledge" else self.source_library.retrieve(query, retrieval_ids)
                 selected_citations = [
                     self.source_library.get_citation(citation_id)
                     for citation_id in (selection or {}).get("citation_ids", [])
@@ -342,6 +415,163 @@ class LearningService:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "当前没有正在生成的回答")
         operation = self.operations.cancel(operation["id"])
         return {"operation": operation, "resource": operation.get("resource")}
+
+    # Multi-session chat -------------------------------------------------
+
+    def list_sessions(self, subject_id: str) -> dict:
+        subject = self._subject(subject_id)
+        data = subject.get("data", {})
+        sessions = [self._session_view(item, subject_id) for item in data.get("sessions", [])]
+        return {"items": sessions, "active_session_id": data.get("active_session_id")}
+
+    def create_session(self, subject_id: str, payload: dict) -> dict:
+        subject = self._subject(subject_id)
+        source_version_ids = list(payload.get("source_version_ids") or [])
+        self._validate_source_scope(subject_id, source_version_ids, "strict" if source_version_ids else "general-knowledge")
+        timestamp = self._now()
+        session = {
+            "id": self._ids("session"),
+            "subject_id": subject_id,
+            "title": payload.get("title") or "新会话",
+            "source_version_ids": source_version_ids,
+            "messages": [],
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        self._mutate(subject_id, lambda data: {
+            **data,
+            "sessions": [*data.get("sessions", []), session],
+            "active_session_id": session["id"],
+        })
+        return self._session_view(session, subject_id, active=True)
+
+    def get_session(self, session_id: str) -> dict:
+        subject, session = self._find_session(session_id)
+        return self._session_view(session, subject["id"])
+
+    def update_session(self, session_id: str, patch: dict) -> dict:
+        subject, session = self._find_session(session_id)
+        title = (patch.get("title") or "").strip()
+        if not title:
+            raise LearningError(422, "VALIDATION_FAILED", "会话标题不能为空")
+        siblings = subject.get("data", {}).get("sessions", [])
+        if any(item["id"] != session_id and item.get("title", "").casefold() == title.casefold() for item in siblings):
+            raise LearningError(409, "SESSION_NAME_DUPLICATE", "当前科目已有同名会话")
+        updated = {**session, "title": title, "updated_at": self._now()}
+        self._replace_session(subject["id"], session_id, updated)
+        return self._session_view(updated, subject["id"])
+
+    def delete_session(self, session_id: str) -> None:
+        subject, session = self._find_session(session_id)
+        if self.operations.has_active("session", session_id):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "会话仍有任务在运行")
+        data = subject.get("data", {})
+        remaining = [item for item in data.get("sessions", []) if item["id"] != session_id]
+        active_id = data.get("active_session_id")
+        if active_id == session_id:
+            active_id = remaining[-1]["id"] if remaining else None
+        self._mutate(subject["id"], lambda current: {**current, "sessions": remaining, "active_session_id": active_id})
+
+    def activate_session(self, session_id: str) -> dict:
+        subject, session = self._find_session(session_id)
+        self._mutate(subject["id"], lambda data: {**data, "active_session_id": session_id})
+        return self._session_view(session, subject["id"], active=True)
+
+    def list_session_sources(self, session_id: str) -> dict:
+        subject, session = self._find_session(session_id)
+        return {"items": [self._session_source_view(version_id, session.get("source_version_ids", []), subject["id"]) for version_id in session.get("source_version_ids", [])]}
+
+    def add_session_source(self, session_id: str, version_id: str) -> dict:
+        subject, session = self._find_session(session_id)
+        self._validate_source_scope(subject["id"], [version_id], "strict")
+        if version_id in session.get("source_version_ids", []):
+            raise LearningError(409, "SESSION_SOURCE_CONFLICT", "资料版本已在当前会话中")
+        self._replace_session(subject["id"], session_id, {**session, "source_version_ids": [*session.get("source_version_ids", []), version_id], "updated_at": self._now()})
+        return self._session_source_view(version_id, session.get("source_version_ids", []), subject["id"])
+
+    def update_session_source(self, session_id: str, old_version_id: str, new_version_id: str) -> dict:
+        subject, session = self._find_session(session_id)
+        if old_version_id not in session.get("source_version_ids", []):
+            raise LearningError(404, "RESOURCE_NOT_FOUND", "会话资料版本不存在")
+        self._validate_source_scope(subject["id"], [new_version_id], "strict")
+        ids = [new_version_id if item == old_version_id else item for item in session["source_version_ids"]]
+        if len(ids) != len(set(ids)):
+            raise LearningError(409, "SESSION_SOURCE_CONFLICT", "目标资料版本已在当前会话中")
+        self._replace_session(subject["id"], session_id, {**session, "source_version_ids": ids, "updated_at": self._now()})
+        return self._session_source_view(new_version_id, ids, subject["id"])
+
+    def remove_session_source(self, session_id: str, version_id: str) -> None:
+        subject, session = self._find_session(session_id)
+        if version_id not in session.get("source_version_ids", []):
+            raise LearningError(404, "RESOURCE_NOT_FOUND", "会话资料版本不存在")
+        self._replace_session(subject["id"], session_id, {**session, "source_version_ids": [item for item in session["source_version_ids"] if item != version_id], "updated_at": self._now()})
+
+    def create_session_message(self, session_id: str, payload: dict) -> dict:
+        subject, session = self._find_session(session_id)
+        model_id = payload.get("model_id") or self.workspace_service.snapshot().get("current_model_id")
+        if not model_id:
+            raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
+        profile = self._model(model_id)
+        selected_ids = list(payload.get("source_version_ids") or session.get("source_version_ids", []))
+        if payload.get("only_use_specified_sources"):
+            selected_ids = list(payload.get("source_version_ids") or payload.get("focused_source_version_ids") or [])
+            if not selected_ids:
+                raise LearningError(422, "VALIDATION_FAILED", "仅使用指定资料时必须提供资料版本")
+        self._validate_source_scope(subject["id"], selected_ids, "strict" if selected_ids else "general-knowledge")
+        focused_ids = [item for item in payload.get("focused_source_version_ids") or [] if item in selected_ids]
+        if payload.get("focused_source_version_ids") and len(focused_ids) != len(payload["focused_source_version_ids"]):
+            raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
+        attachment_ids = list(payload.get("attachment_ids") or [])
+        if self.attachments:
+            for attachment_id in attachment_ids:
+                attachment = self.attachments.require(subject["id"], attachment_id)
+                if attachment.get("vision_required") and not profile.get("capabilities", {}).get("vision"):
+                    raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片附件，请更换具备视觉能力的模型")
+        timestamp = self._now()
+        context = {
+            "source_version_ids": selected_ids,
+            "focused_source_version_ids": focused_ids,
+            "only_use_specified_sources": bool(payload.get("only_use_specified_sources")),
+            "grounding_mode": payload.get("grounding_mode") or ("strict" if selected_ids else "general-knowledge"),
+            "selection": payload.get("selection"),
+            "attachment_ids": attachment_ids,
+            "citations": [],
+        }
+        content = payload.get("content") or self._intent_label(payload["intent"])
+        user_message = {"id": self._ids("message"), "role": "user", "intent": payload["intent"], "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": payload.get("selection"), "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
+        assistant_id = self._ids("message")
+        assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": payload.get("selection"), "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
+        updated_session = {**session, "messages": [*session.get("messages", []), user_message, assistant], "updated_at": timestamp}
+        if len(updated_session["messages"]) == 2 and session.get("title") == "新会话":
+            updated_session["title"] = content[:60]
+        self._replace_session(subject["id"], session_id, updated_session)
+
+        async def worker():
+            self._update_session_message(subject["id"], session_id, assistant_id, {"status": "generating", "updated_at": self._now()})
+            try:
+                query_ids = [*focused_ids, *[item for item in selected_ids if item not in focused_ids]]
+                anchors = self.source_library.retrieve(content, query_ids) if query_ids else []
+                if context["grounding_mode"] == "strict" and not anchors:
+                    text = "选定资料未覆盖这个问题，我无法仅依据资料回答。"
+                    self._update_session_message(subject["id"], session_id, assistant_id, {"status": "complete", "content": [self._markdown_block(text)], "grounding_result": "not-covered", "completed_at": self._now(), "updated_at": self._now()})
+                    return {"type": "chat-message", "id": assistant_id}
+                citations = [self.source_library.create_citation(anchor) for anchor in anchors]
+                prompt = f"请回答用户问题。\n资料片段：\n{self._anchors_text(anchors) or '无'}\n用户输入：{content}"
+                response = await self.model_client.chat(profile, [{"role": "user", "content": prompt}])
+                final_context = {**context, "citations": citations}
+                result = "general-knowledge" if context["grounding_mode"] == "general-knowledge" else "covered"
+                self._update_session_message(subject["id"], session_id, assistant_id, {"status": "complete", "content": [self._markdown_block(response.get("text") or "")], "grounding_result": result, "citations": citations, "source_context": final_context, "completed_at": self._now(), "updated_at": self._now()})
+                return {"type": "chat-message", "id": assistant_id}
+            except asyncio.CancelledError:
+                self._update_session_message(subject["id"], session_id, assistant_id, {"status": "stopped", "completed_at": self._now(), "updated_at": self._now()})
+                raise
+            except (LearningError, SourceLibraryError, ModelClientError) as exc:
+                self._update_session_message(subject["id"], session_id, assistant_id, {"status": "error", "error": {"code": getattr(exc, "code", "MODEL_INVALID_RESPONSE"), "message": str(exc), "retryable": False, "details": {}}, "completed_at": self._now(), "updated_at": self._now()})
+                raise OperationFailure(getattr(exc, "code", "MODEL_INVALID_RESPONSE"), str(exc)) from exc
+
+        resource = {"type": "chat-message", "id": assistant_id}
+        operation = self.operations.start("chat-generation", worker, subject_id=subject["id"], resource=resource)
+        return {"operation": operation, "resource": resource}
 
     # Crash course artifacts ---------------------------------------------
 
@@ -457,6 +687,41 @@ class LearningService:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "科目空间不存在")
         return subject
 
+    def _find_session(self, session_id: str) -> tuple[dict, dict]:
+        snapshot = self.workspace_service.snapshot()
+        for subject in snapshot.get("subjects", []):
+            session = next((item for item in subject.get("data", {}).get("sessions", []) if item.get("id") == session_id), None)
+            if session:
+                return subject, session
+        raise LearningError(404, "SESSION_NOT_FOUND", "学习会话不存在")
+
+    def _session_view(self, session: dict, subject_id: str, active: bool | None = None) -> dict:
+        snapshot = self.workspace_service.snapshot()
+        subject = self._subject(subject_id, snapshot)
+        is_active = snapshot.get("active_subject_id") == subject_id and subject.get("data", {}).get("active_session_id") == session["id"]
+        if active is not None:
+            is_active = active
+        return {**session, "active": is_active, "messages": session.get("messages", [])}
+
+    def _replace_session(self, subject_id: str, session_id: str, replacement: dict) -> None:
+        self._mutate(subject_id, lambda data: {
+            **data,
+            "sessions": [replacement if item.get("id") == session_id else item for item in data.get("sessions", [])],
+        })
+
+    def _update_session_message(self, subject_id: str, session_id: str, message_id: str, changes: dict) -> None:
+        _, session = self._find_session(session_id)
+        updated = {**session, "messages": [{**message, **changes} if message.get("id") == message_id else message for message in session.get("messages", [])], "updated_at": self._now()}
+        self._replace_session(subject_id, session_id, updated)
+
+    def _session_source_view(self, version_id: str, version_ids: list[str], subject_id: str) -> dict:
+        try:
+            version = self.source_library.get_version(version_id)
+            source = self.source_library.get_source(version["source_id"])
+        except SourceLibraryError as exc:
+            raise LearningError(exc.status_code, exc.code, str(exc)) from exc
+        return {"source_version_id": version_id, "source_id": version["source_id"], "source_name": source["display_name"], "version_number": version["number"], "status": version["status"], "added_at": version.get("created_at", self._now())}
+
     def _model(self, model_id: str) -> dict:
         model = next((item for item in self.workspace_service.snapshot().get("models", []) if item["id"] == model_id), None)
         if not model:
@@ -514,7 +779,7 @@ class LearningService:
             "goal": None,
             "grounding_mode": "strict" if source_ids else "general-knowledge",
             "source_version_ids": source_ids,
-            "active_model_id": None,
+            "active_model_id": self.workspace_service.snapshot().get("current_model_id"),
             "socratic_state": None,
             "messages": [],
             "artifact_ids": [],
@@ -565,6 +830,7 @@ class LearningService:
                     "status": "complete",
                     "grounding_result": result,
                     "citations": citations,
+                    "source_context": {**(message.get("source_context") or {}), "citations": citations},
                     "updated_at": timestamp,
                     "completed_at": timestamp,
                 }

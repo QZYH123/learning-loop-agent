@@ -62,6 +62,21 @@ ErrorCode = Literal[
     "OPERATION_IN_PROGRESS",
     "OPERATION_NOT_CANCELABLE",
     "EVALUATION_ALREADY_RUNNING",
+    "SESSION_NAME_DUPLICATE",
+    "SESSION_NOT_FOUND",
+    "SESSION_SOURCE_CONFLICT",
+    "ATTACHMENT_NOT_FOUND",
+    "ATTACHMENT_EXPIRED",
+    "MODEL_DISCOVERY_UNSUPPORTED",
+    "MODEL_DISCOVERY_FAILED",
+    "MODEL_MANUAL_NAME_REQUIRED",
+    "AI_DOCUMENT_READ_ONLY",
+    "AI_DOCUMENT_VERSION_CONFLICT",
+    "AI_DOCUMENT_PROPOSAL_INVALID",
+    "ATTEMPT_ALREADY_COMPLETED",
+    "ATTEMPT_NOT_COMPLETED",
+    "GRADING_ALREADY_REQUESTED",
+    "GRADING_STALE",
 ]
 
 ResourceType = Literal[
@@ -79,6 +94,11 @@ ResourceType = Literal[
     "revision-proposal",
     "export",
     "evaluation-run",
+    "session",
+    "attachment",
+    "ai-document",
+    "ai-document-version",
+    "ai-document-proposal",
 ]
 
 OperationKind = Literal[
@@ -92,6 +112,8 @@ OperationKind = Literal[
     "subjective-feedback",
     "attempt-grading",
     "exam-revision",
+    "ai-document-generation",
+    "ai-document-revision",
     "exam-export",
     "evaluation",
 ]
@@ -252,6 +274,10 @@ class SourceAnchor(ContractModel):
     available: bool
 
 
+class SourceAnchorList(ContractModel):
+    items: list[SourceAnchor]
+
+
 class Citation(ContractModel):
     id: str
     source_id: str
@@ -387,6 +413,16 @@ class SelectionContext(ContractModel):
         return self
 
 
+class MessageSourceContext(ContractModel):
+    source_version_ids: list[str] = Field(default_factory=list)
+    focused_source_version_ids: list[str] = Field(default_factory=list)
+    only_use_specified_sources: bool = False
+    grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
+    selection: SelectionContext | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
+
+
 ChatMessageIntent = Literal[
     "start",
     "ask",
@@ -406,6 +442,9 @@ class ChatMessageInput(ContractModel):
     source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] = None
     selection: SelectionContext = None
+    focused_source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
+    only_use_specified_sources: bool = False
+    attachment_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
 
     @field_validator("source_version_ids")
     @classmethod
@@ -438,6 +477,9 @@ class ChatMessage(ContractModel):
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"] | None = None
     grounding_result: Literal["covered", "not-covered", "general-knowledge", "supplemental"] | None = None
     citations: list[Citation]
+    source_context: MessageSourceContext = Field(
+        default_factory=lambda: MessageSourceContext(grounding_mode="general-knowledge")
+    )
     selection: SelectionContext | None = None
     model: ModelSnapshot | None = None
     error: ApiError | None = None
@@ -465,6 +507,149 @@ class Chat(ContractModel):
     artifact_ids: list[str] = Field(default_factory=list)
     created_at: int
     updated_at: int
+
+
+class SessionInput(ContractModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    source_version_ids: list[str] = Field(default_factory=list)
+
+
+class SessionPatch(PatchModel):
+    title: str = Field(default=None, min_length=1, max_length=200)
+
+
+class Session(ContractModel):
+    id: str
+    subject_id: str
+    title: str
+    active: bool
+    source_version_ids: list[str]
+    messages: list[ChatMessage]
+    created_at: int
+    updated_at: int
+
+
+class SessionList(ContractModel):
+    items: list[Session]
+    active_session_id: str | None
+
+
+class SessionSource(ContractModel):
+    source_version_id: str
+    source_id: str
+    source_name: str
+    version_number: int = Field(ge=1)
+    status: Literal["processing", "ready", "failed", "unavailable"]
+    added_at: int
+
+
+class SessionSourceList(ContractModel):
+    items: list[SessionSource]
+
+
+class SessionSourceInput(ContractModel):
+    source_version_id: str
+
+
+class SessionSourcePatch(ContractModel):
+    source_version_id: str
+
+
+class TempAttachment(ContractModel):
+    id: str
+    subject_id: str
+    file_name: str
+    mime_type: str
+    size_bytes: int = Field(ge=0)
+    status: Literal["ready", "failed", "expired"]
+    vision_required: bool
+    failure: ApiError | None = None
+    created_at: int
+    expires_at: int
+
+
+class ModelDiscoveryInput(ContractModel):
+    provider: Literal["openai-compatible", "ollama"]
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(default="", max_length=2000)
+    manual_model_name: str | None = Field(default=None, max_length=120)
+
+
+class DiscoveredModel(ContractModel):
+    name: str
+    capabilities: dict[str, bool]
+
+
+class ModelDiscoveryResponse(ContractModel):
+    provider: Literal["openai-compatible", "ollama"]
+    models: list[DiscoveredModel]
+    manual_model_allowed: bool
+    error: ApiError | None = None
+
+
+class ModelSelection(ContractModel):
+    model_id: str
+
+
+class AiDocumentCreateInput(ContractModel):
+    title: str = Field(min_length=1, max_length=200)
+    instruction: str = Field(min_length=1, max_length=10000)
+    source_version_ids: list[str] = Field(default_factory=list)
+    grounding_mode: Literal["strict", "general-knowledge", "supplemental"]
+    model_id: str
+
+
+class AiDocumentVersion(ContractModel):
+    id: str
+    document_id: str
+    number: int = Field(ge=1)
+    status: Literal["ready", "unavailable"]
+    content: list[ContentBlock]
+    upstream_citations: list[Citation]
+    created_at: int
+
+
+class AiDocument(ContractModel):
+    id: str
+    subject_id: str
+    title: str
+    generated_by: Literal["ai"]
+    current_version_id: str
+    versions: list[AiDocumentVersion]
+    created_at: int
+    updated_at: int
+
+
+class AiDocumentList(ContractModel):
+    items: list[AiDocument]
+
+
+class AiDocumentRevisionInput(ContractModel):
+    base_version_id: str
+    instruction: str = Field(min_length=1, max_length=10000)
+    model_id: str
+
+
+class AiDocumentChange(ContractModel):
+    path: str = Field(min_length=1)
+    operation: Literal["add", "replace", "remove"]
+    before: Any = None
+    after: Any = None
+
+
+class AiDocumentRevisionProposal(ContractModel):
+    id: str
+    document_id: str
+    base_version_id: str
+    status: Literal["generating", "ready", "applied", "discarded", "failed"]
+    changes: list[AiDocumentChange]
+    error: ApiError | None = None
+    created_at: int
+    updated_at: int
+
+
+class AiDocumentRevisionProposalList(ContractModel):
+    items: list[AiDocumentRevisionProposal]
 
 
 class CrashCourseInput(ContractModel):

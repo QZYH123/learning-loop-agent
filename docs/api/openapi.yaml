@@ -1441,6 +1441,7 @@ paths:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/SourceAnchorList}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
         '410': {$ref: '#/components/responses/Conflict'}
 
   /api/subjects/{subject_id}/sessions:
@@ -1571,6 +1572,26 @@ paths:
           content:
             application/json:
               schema: {$ref: ./schemas.yaml#/components/schemas/SessionSource}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/sessions/{session_id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      operationId: createSessionMessage
+      tags: [Chat, Operations]
+      summary: 在指定学习会话中创建消息
+      description: 消息保存实际资料版本、模型、依据模式、选区和附件快照。
+      x-tickets: ['16']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ChatMessageInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationFailed'}

@@ -117,3 +117,15 @@ class WorkspaceService:
             saved = self.store.save(self.workspace)
             self.last_storage_error = None if saved["ok"] else saved["error"]
             return deepcopy(data)
+
+    def update_workspace(self, update) -> dict:
+        """Persist a root-level workspace update for cross-subject settings."""
+        with self._lock:
+            current = deepcopy(self.workspace)
+            updated = update(current)
+            self.workspace = updated
+            timestamp = int(time.time() * 1000)
+            self.workspace["updated_at"] = timestamp
+            saved = self.store.save(self.workspace)
+            self.last_storage_error = None if saved["ok"] else saved["error"]
+            return deepcopy(self.workspace)

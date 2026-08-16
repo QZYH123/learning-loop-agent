@@ -16,11 +16,14 @@ from .api_models import (
     Operation,
     OperationAccepted,
     Source,
+    SourceAnchorList,
     SourceAnchor,
     SourceList,
     SourceVersion,
     SourceVersionList,
 )
+from .ai_documents import AiDocumentService
+from .attachments import AttachmentService
 from .core_api import create_core_router
 from .exam_api import create_exam_router
 from .exams import ExamService
@@ -28,6 +31,7 @@ from .learning import LearningError, LearningService
 from .model_client import ObservedModelClient, OpenAiCompatibleModelClient
 from .observability import EvaluationService, ObservabilityService
 from .observability_api import create_observability_router
+from .issue16_api import create_issue16_router
 from .operations import OperationFailure, OperationManager
 from .rendering import ExamRenderingService
 from .rendering_api import create_rendering_router
@@ -70,7 +74,10 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     operations.set_observer(observability)
     client = ObservedModelClient(model_client or OpenAiCompatibleModelClient(), observability)
     sources = SourceLibrary(workspace, operations, data_path)
+    attachments = AttachmentService(workspace, data_path)
     learning = LearningService(workspace, sources, operations, client)
+    learning.attachments = attachments
+    documents = AiDocumentService(workspace, sources, operations, client)
     exams = ExamService(learning)
     rendering = ExamRenderingService(exams, data_path)
     evaluations = EvaluationService(learning, observability)
@@ -86,6 +93,8 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     app.state.model_client = client
     app.state.operations = operations
     app.state.source_library = sources
+    app.state.attachment_service = attachments
+    app.state.ai_document_service = documents
     app.state.learning_service = learning
     app.state.exam_service = exams
     app.state.rendering_service = rendering
@@ -123,6 +132,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
         }
         return _error_response(422, "VALIDATION_FAILED", "请求参数不符合 API 契约", details=details)
 
+    app.include_router(create_issue16_router(learning, attachments, documents))
     app.include_router(create_core_router(learning))
     app.include_router(create_exam_router(exams))
     app.include_router(create_rendering_router(rendering))
@@ -245,6 +255,15 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     def get_source_asset(version_id: str, asset_id: str):
         content, mime_type = sources.get_asset(version_id, asset_id)
         return Response(content=content, media_type=mime_type)
+
+    @app.get(
+        "/api/source-versions/{version_id}/anchors",
+        operation_id="listSourceVersionAnchors",
+        response_model=SourceAnchorList,
+        responses={404: {"model": ErrorResponse}, 410: {"model": ErrorResponse}},
+    )
+    def list_source_version_anchors(version_id: str):
+        return {"items": sources.list_anchors(version_id)}
 
     @app.get(
         "/api/citations/{citation_id}",

@@ -9,10 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = PROJECT_ROOT / "docs" / "api" / "openapi.yaml"
 SCHEMAS_PATH = PROJECT_ROOT / "docs" / "api" / "schemas.yaml"
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
-# Issue 16 is contracted before its implementation lands. The implementation
-# parity gate is expanded to it in the backend follow-up commit.
 TICKETS = {f"{number:02d}" for number in range(1, 17)}
-IMPLEMENTED_TICKETS = {f"{number:02d}" for number in range(1, 16)}
 
 
 def load_contract():
@@ -174,7 +171,7 @@ def test_implemented_backend_operations_match_target_contract(tmp_path):
     implemented = create_app(data_dir=tmp_path).openapi()
 
     for path, method, target_operation in iter_operations(target):
-        if not set(target_operation["x-tickets"]) & IMPLEMENTED_TICKETS:
+        if not set(target_operation["x-tickets"]) & TICKETS:
             continue
         actual_operation = implemented["paths"][path][method]
         assert actual_operation["operationId"] == target_operation["operationId"]

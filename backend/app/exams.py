@@ -576,6 +576,8 @@ class ExamService:
             "exam_version_id": exam["current_version_id"],
             "mode": payload["mode"],
             "status": "in-progress",
+            "completion_status": "in-progress",
+            "grading_status": "not-requested",
             "show_suggested_score": bool(payload.get("show_suggested_score")),
             "paper": paper,
             "answers": [],
@@ -583,6 +585,8 @@ class ExamService:
             "created_at": timestamp,
             "updated_at": timestamp,
             "submitted_at": None,
+            "completed_at": None,
+            "grading_error": None,
         }
         self._append(subject["id"], "attempts", attempt)
         return attempt
@@ -609,6 +613,8 @@ class ExamService:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt["status"] != "in-progress":
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答状态不能保存答案")
+        if attempt.get("completion_status", "in-progress") == "completed":
+            raise LearningError(409, "ATTEMPT_ALREADY_COMPLETED", "作答已完成，请先继续作答")
         question = self._attempt_question(subject, attempt, question_id)
         self._validate_answer_kind(question, answer)
         timestamp = self._now()
@@ -627,7 +633,10 @@ class ExamService:
         if attempt["mode"] == "practice" and question["type"] in {"single-choice", "multiple-choice", "fill-blank", "true-false"}:
             objective = self._objective_feedback(attempt, question, saved)
             feedback.append(objective)
-        updated = {**attempt, "answers": answers, "feedback": feedback, "updated_at": timestamp}
+        grading_status = attempt.get("grading_status", "not-requested")
+        if existing and attempt.get("feedback") and grading_status in {"completed", "failed"}:
+            grading_status = "stale"
+        updated = {**attempt, "answers": answers, "feedback": feedback, "grading_status": grading_status, "updated_at": timestamp}
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return saved
 
@@ -679,22 +688,37 @@ class ExamService:
 
     def resume_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
+        if attempt.get("completion_status") == "completed":
+            updated = {**attempt, "completion_status": "in-progress", "completed_at": None, "status": "in-progress", "updated_at": self._now()}
+            self._replace(subject["id"], "attempts", attempt_id, updated)
+            return updated
         if attempt["status"] != "paused":
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不在暂停状态")
         updated = {**attempt, "status": "in-progress", "updated_at": self._now()}
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return updated
 
+    def complete_attempt(self, attempt_id: str) -> dict:
+        subject, attempt = self.learning._find_owned("attempts", attempt_id)
+        if attempt.get("completion_status") == "completed":
+            raise LearningError(409, "ATTEMPT_ALREADY_COMPLETED", "作答已经标记完成")
+        if attempt["status"] not in {"in-progress", "paused"}:
+            raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前状态不能标记完成")
+        timestamp = self._now()
+        updated = {**attempt, "completion_status": "completed", "completed_at": timestamp, "updated_at": timestamp}
+        self._replace(subject["id"], "attempts", attempt_id, updated)
+        return updated
+
     def submit_attempt(self, attempt_id: str) -> dict:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
-        if attempt["status"] not in {"in-progress", "paused"}:
+        if attempt["status"] not in {"in-progress", "paused"} or attempt.get("grading_status") in {"queued", "grading"}:
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不能提交")
         if any(
             self.operations.has_active("feedback", f"feedback-{attempt_id}-{question['id']}")
             for question in self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])["questions"]
         ):
             raise LearningError(409, "OPERATION_IN_PROGRESS", "请等待当前题目反馈完成后再提交")
-        grading = {**attempt, "status": "grading", "feedback": [], "updated_at": self._now()}
+        grading = {**attempt, "status": "grading", "grading_status": "grading", "grading_error": None, "feedback": [], "updated_at": self._now()}
         self._replace(subject["id"], "attempts", attempt_id, grading)
         resource = {"type": "attempt", "id": attempt_id}
 
@@ -735,7 +759,7 @@ class ExamService:
                         counters={},
                     )
                 timestamp = self._now()
-                submitted = {**current, "status": "submitted", "feedback": feedback, "updated_at": timestamp, "submitted_at": timestamp}
+                submitted = {**current, "status": "submitted", "grading_status": "completed", "feedback": feedback, "updated_at": timestamp, "submitted_at": timestamp}
                 self._replace(subject["id"], "attempts", attempt_id, submitted)
                 return resource
             except asyncio.CancelledError:
@@ -743,10 +767,24 @@ class ExamService:
                 restored = {
                     **current,
                     "status": attempt["status"],
+                    "grading_status": "failed",
+                    "grading_error": {"code": "MODEL_CONNECTION_FAILED", "message": "批改已取消或失败", "retryable": True, "details": {}},
                     "feedback": attempt["feedback"],
                     "updated_at": self._now(),
                 }
                 self._replace(subject["id"], "attempts", attempt_id, restored)
+                raise
+            except Exception as exc:
+                current = self.get_attempt(attempt_id)
+                failed = {
+                    **current,
+                    "status": attempt["status"],
+                    "grading_status": "failed",
+                    "grading_error": {"code": getattr(exc, "code", "INTERNAL_ERROR"), "message": "批改失败，请重试", "retryable": True, "details": {}},
+                    "feedback": attempt["feedback"],
+                    "updated_at": self._now(),
+                }
+                self._replace(subject["id"], "attempts", attempt_id, failed)
                 raise
 
         operation = self.operations.start("attempt-grading", worker, subject_id=subject["id"], resource=resource)

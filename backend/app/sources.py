@@ -97,13 +97,24 @@ class SourceLibrary:
 
     def get_anchor(self, version_id: str, anchor_id: str) -> dict:
         version = self.get_version(version_id)
+        if version.get("status") == "unavailable":
+            raise SourceLibraryError(410, "SOURCE_UNAVAILABLE", "资料已不可用，来源位置仅保留历史身份")
+        if version.get("status") != "ready":
+            raise SourceLibraryError(409, "SOURCE_UNAVAILABLE", "资料尚未完成解析")
         index = self._load_version_index(version_id)
         anchor = next((item for item in index.get("anchors", []) if item.get("id") == anchor_id), None)
         if not anchor:
             raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "来源位置不存在")
+        return {**anchor, "available": True}
+
+    def list_anchors(self, version_id: str) -> list[dict]:
+        version = self.get_version(version_id)
         if version.get("status") == "unavailable":
             raise SourceLibraryError(410, "SOURCE_UNAVAILABLE", "资料已不可用，来源位置仅保留历史身份")
-        return {**anchor, "available": True}
+        if version.get("status") != "ready":
+            raise SourceLibraryError(409, "SOURCE_UNAVAILABLE", "资料尚未完成解析")
+        index = self._load_version_index(version_id)
+        return [{**anchor, "available": True} for anchor in index.get("anchors", [])]
 
     def get_asset(self, version_id: str, asset_id: str) -> tuple[bytes, str]:
         version = self.get_version(version_id)
