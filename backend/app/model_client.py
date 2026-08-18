@@ -25,7 +25,7 @@ class ModelApiClient:
         self.transport = transport
 
     async def validate(self, profile: dict) -> dict:
-        return await self._chat(profile, [{"role": "user", "content": "请只回复 ok"}], max_tokens=4)
+        return await self._chat(profile, [{"role": "user", "content": "请只回复 ok"}])
 
     async def chat(self, profile: dict, messages: list[dict]) -> dict:
         return await self._chat(profile, messages)
@@ -53,9 +53,14 @@ class ModelApiClient:
         else:
             raise ModelClientError("不支持的模型 API 格式", code="MODEL_API_FORMAT_UNSUPPORTED")
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://127.0.0.1:4173",
+            "X-Title": "Learning Loop",
+        }
         if profile.get("api_key"):
             headers["Authorization"] = f"Bearer {profile['api_key']}"
+            headers["X-Api-Key"] = profile["api_key"]
 
         async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
             try:
@@ -81,19 +86,9 @@ class ModelApiClient:
             raise ModelClientError("模型服务返回了无效响应", code="MODEL_INVALID_RESPONSE", status=response.status_code)
 
         if api_format == "openai-chat-completions":
-            choices = payload.get("choices")
-            first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
-            message = first.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
+            content = self._chat_completions_text(payload)
         elif api_format == "openai-responses":
-            output = payload.get("output")
-            content = "".join(
-                part.get("text", "")
-                for item in output
-                if isinstance(item, dict) and item.get("type") == "message"
-                for part in item.get("content", [])
-                if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str)
-            ) if isinstance(output, list) else None
+            content = self._responses_text(payload)
         else:
             message = payload.get("message")
             content = message.get("content") if isinstance(message, dict) else None
@@ -105,6 +100,36 @@ class ModelApiClient:
             "api_format": api_format,
             "model": profile["model"],
         }
+
+    @staticmethod
+    def _chat_completions_text(payload: dict) -> str | None:
+        choices = payload.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        message = first.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        return content if isinstance(content, str) else None
+
+    @staticmethod
+    def _responses_text(payload: dict) -> str | None:
+        chunks: list[str] = []
+        output = payload.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                if isinstance(item.get("text"), str) and item.get("type") in {None, "output_text", "text", "message"}:
+                    if item.get("type") in {"output_text", "text"}:
+                        chunks.append(item["text"])
+                for part in item.get("content") or []:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") in {"output_text", "text"} and isinstance(part.get("text"), str):
+                        chunks.append(part["text"])
+        joined = "".join(chunks)
+        if joined:
+            return joined
+        output_text = payload.get("output_text")
+        return output_text if isinstance(output_text, str) and output_text else None
 
     @staticmethod
     def _endpoint(base_url: str, suffix: str) -> str:

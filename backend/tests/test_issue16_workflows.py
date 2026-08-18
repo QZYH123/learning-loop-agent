@@ -369,8 +369,8 @@ def test_ollama_discovery_is_ephemeral_and_does_not_persist_credentials(tmp_path
         def json(self):
             return {"models": [{"name": "qwen2.5:7b"}]}
 
-    def fake_get(url, headers, timeout):
-        captured.update({"url": url, "headers": headers, "timeout": timeout})
+    def fake_get(url, headers, timeout, **kwargs):
+        captured.update({"url": url, "headers": headers, "timeout": timeout, **kwargs})
         return DiscoveryResponse()
 
     monkeypatch.setattr("backend.app.learning.httpx.get", fake_get)
@@ -386,11 +386,10 @@ def test_ollama_discovery_is_ephemeral_and_does_not_persist_credentials(tmp_path
             "name": "qwen2.5:7b",
             "capabilities": {"text": True, "vision": False},
         }]
-        assert captured == {
-            "url": "http://localhost:11434/api/tags",
-            "headers": {"Authorization": "Bearer temporary-secret"},
-            "timeout": 8.0,
-        }
+        assert captured["url"] == "http://localhost:11434/api/tags"
+        assert captured["headers"]["Authorization"] == "Bearer temporary-secret"
+        assert captured["headers"]["X-Api-Key"] == "temporary-secret"
+        assert captured["timeout"] == 15.0
         assert client.get("/api/models").json()["items"] == []
 
     workspace_file = tmp_path / "data" / "workspace.json"

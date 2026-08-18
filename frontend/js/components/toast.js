@@ -1,46 +1,23 @@
-import { icon } from '../icons.js';
+import { icons } from '../icons.js';
+import { escapeHtml } from '../util.js';
 
-export function renderToasts(stateOrToasts, container, handlers) {
-  const toasts = Array.isArray(stateOrToasts) ? stateOrToasts : (stateOrToasts?.toasts || []);
-  if (!container) return '';
-
-  if (!toasts || toasts.length === 0) {
-    container.innerHTML = '';
-    return;
-  }
-
-  container.innerHTML = `
-    <div class="toast-container" data-testid="toast-container">
-      ${toasts
-        .map((t) => {
-          const iconName = t.type === 'error' ? 'alertTriangle' : t.type === 'success' ? 'check' : 'info';
-          return `
-          <div class="toast-item toast-${t.type}" data-toast-id="${t.id}">
-            <span class="toast-icon">${icon(iconName, 16)}</span>
-            <div class="toast-content" style="flex: 1;">${escapeHtml(t.message)}</div>
-            <button type="button" class="btn-icon-hud btn-close-toast" data-toast-id="${t.id}" style="width: 20px; height: 20px; margin-left: 6px;" aria-label="关闭通知">
-              ${icon('x', 12)}
-            </button>
-          </div>
-        `;
-        })
-        .join('')}
-    </div>
-  `;
-
-  container.querySelectorAll('.btn-close-toast').forEach((btn) => {
-    btn.onclick = () => {
-      const toastId = btn.getAttribute('data-toast-id');
-      handlers?.onDismissToast?.(toastId);
-    };
-  });
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+export function renderToasts(state, root, handlers) {
+  const toasts = state.toasts || [];
+  root.innerHTML = toasts.length
+    ? `<div class="toasts">${toasts
+        .map(
+          (toast) => `
+        <div class="toast toast-${toast.type}">
+          ${toast.type === 'error' ? icons.alertTriangle(16) : toast.type === 'success' ? icons.check(16) : icons.info(16)}
+          <div>${escapeHtml(toast.message)}</div>
+          <button type="button" class="ghost-icon" data-id="${toast.id}" aria-label="关闭">${icons.x(12)}</button>
+        </div>
+      `,
+        )
+        .join('')}</div>`
+    : '';
+  root.onclick = (event) => {
+    const btn = event.target.closest('[data-id]');
+    if (btn) handlers.onDismissToast(btn.dataset.id);
+  };
 }

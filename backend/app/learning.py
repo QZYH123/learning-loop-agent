@@ -182,38 +182,104 @@ class LearningService:
 
     def discover_models(self, payload: dict) -> dict:
         api_format = payload["api_format"]
-        base_url = payload["base_url"].rstrip("/")
-        if api_format == "ollama":
-            if base_url.endswith("/api/tags"):
-                url = base_url
-            elif base_url.endswith("/api"):
-                url = f"{base_url}/tags"
-            else:
-                url = f"{base_url}/api/tags"
-        else:
-            url = base_url if base_url.endswith("/models") else f"{base_url}/models"
-        headers = {}
+        url = self._discovery_url(api_format, payload["base_url"])
+        headers = {
+            "Accept": "application/json",
+            "HTTP-Referer": "http://127.0.0.1:4173",
+            "X-Title": "Learning Loop",
+        }
         if payload.get("api_key"):
             headers["Authorization"] = f"Bearer {payload['api_key']}"
+            headers["X-Api-Key"] = payload["api_key"]
         try:
-            response = httpx.get(url, headers=headers, timeout=8.0)
+            response = httpx.get(url, headers=headers, timeout=15.0, follow_redirects=True)
             response.raise_for_status()
-            raw = response.json()
-            entries = raw.get("models", []) if api_format == "ollama" else raw.get("data", [])
-            models = []
-            for item in entries:
-                name = item.get("name") or item.get("id")
-                if not name:
-                    continue
-                models.append({"name": name, "capabilities": {"text": True, "vision": False}})
+            models = self._parse_discovered_models(api_format, response.json())
             return {"api_format": api_format, "models": models, "manual_model_allowed": True, "error": None}
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            provider_message = self._discovery_error_text(exc.response)
+            if status in {401, 403}:
+                message = provider_message or "模型列表请求被拒绝，请检查 API Key"
+            elif status == 404:
+                message = provider_message or "发现地址不存在，请检查 Base URL 和 API 格式"
+            else:
+                message = provider_message or "无法获取模型列表，可手动填写模型名"
+            return {
+                "api_format": api_format,
+                "models": [],
+                "manual_model_allowed": True,
+                "error": {
+                    "code": "MODEL_DISCOVERY_FAILED",
+                    "message": message,
+                    "retryable": True,
+                    "details": {"status": status},
+                },
+            }
         except (httpx.HTTPError, ValueError, TypeError):
             return {
                 "api_format": api_format,
                 "models": [],
                 "manual_model_allowed": True,
-                "error": {"code": "MODEL_DISCOVERY_FAILED", "message": "无法获取模型列表，可手动填写模型名", "retryable": True, "details": {}},
+                "error": {"code": "MODEL_DISCOVERY_FAILED", "message": "无法连接模型服务，请检查 Base URL 和网络", "retryable": True, "details": {}},
             }
+
+    @staticmethod
+    def _discovery_error_text(response) -> str:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict) and isinstance(error.get("message"), str) and error["message"].strip():
+                return error["message"].strip()[:300]
+            if isinstance(payload.get("message"), str) and payload["message"].strip():
+                return payload["message"].strip()[:300]
+        text = (getattr(response, "text", "") or "").strip().replace("\n", " ")
+        return text[:300] if text else ""
+
+    @staticmethod
+    def _discovery_url(api_format: str, base_url: str) -> str:
+        base = (base_url or "").rstrip("/")
+        for suffix in ("/chat/completions", "/completions", "/responses", "/api/chat", "/api/tags"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        if api_format == "ollama":
+            if base.endswith("/api/tags"):
+                return base
+            if base.endswith("/api"):
+                return f"{base}/tags"
+            return f"{base}/api/tags"
+        return base if base.endswith("/models") else f"{base}/models"
+
+    @staticmethod
+    def _parse_discovered_models(api_format: str, raw) -> list[dict]:
+        if isinstance(raw, list):
+            entries = raw
+        elif isinstance(raw, dict):
+            if api_format == "ollama" and isinstance(raw.get("models"), list):
+                entries = raw["models"]
+            elif isinstance(raw.get("data"), list):
+                entries = raw["data"]
+            elif isinstance(raw.get("models"), list):
+                entries = raw["models"]
+            else:
+                entries = []
+        else:
+            entries = []
+        models = []
+        for item in entries:
+            if isinstance(item, str):
+                name = item
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("id") or item.get("model")
+            else:
+                continue
+            if name:
+                models.append({"name": str(name), "capabilities": {"text": True, "vision": False}})
+        return models
 
     # Chat ----------------------------------------------------------------
 

@@ -77,6 +77,24 @@ def test_client_posts_responses_and_ignores_reasoning_output():
     assert result["text"] == "你好！"
 
 
+def test_client_reads_responses_output_text_fallback():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"output": [], "output_text": "ok"})
+
+    client = ModelApiClient(transport=httpx.MockTransport(handler))
+    result = run(client.chat(
+        {
+            "provider": "OpenAI",
+            "api_format": "openai-responses",
+            "model": "gpt-test",
+            "base_url": "http://localhost/v1",
+            "api_key": "sk-test",
+        },
+        [{"role": "user", "content": "hi"}],
+    ))
+    assert result["text"] == "ok"
+
+
 def test_client_posts_ollama_chat_with_base64_images():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/chat"
