@@ -12,7 +12,7 @@ class ExamFakeModel(ImmediateFakeModelClient):
         super().__init__(answer="选区解释")
         self.fill_attempts = 0
 
-    async def chat(self, profile, messages):
+    async def chat(self, profile, messages, max_tokens=None):
         self.chat_calls.append({"profile": profile, "messages": messages})
         content = messages[-1]["content"]
         if not isinstance(content, str):
@@ -278,8 +278,12 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
             },
         })
         assert wait_for_operation(client, session_selected.json()["operation"]["id"])["status"] == "succeeded"
-        assert len(fake.chat_calls) == call_count + 1
-        assert stem["text"] in fake.chat_calls[-1]["messages"][-1]["content"]
+        assert len(fake.chat_calls) == call_count + 2
+        generation = next(
+            call for call in fake.chat_calls[call_count:]
+            if "起一个不超过12个字" not in call["messages"][-1]["content"]
+        )
+        assert stem["text"] in generation["messages"][-1]["content"]
 
         invalid_selection = client.post(f"/api/subjects/{subject_id}/chat/messages", json={
             "intent": "ask",

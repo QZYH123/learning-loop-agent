@@ -752,6 +752,15 @@ components:
         only_use_specified_sources: false
         attachment_ids: []
 
+    ChatMessageRetryInput:
+      type: object
+      additionalProperties: false
+      properties:
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
     ChatMessage:
       type: object
       additionalProperties: false
@@ -992,6 +1001,15 @@ components:
         source_version_id: {$ref: '#/components/schemas/Identifier'}
       example: {source_version_id: source-version-2}
 
+    SessionNoteInput:
+      type: object
+      additionalProperties: false
+      required: [role, content]
+      properties:
+        role: {type: string, enum: [user, system]}
+        content: {type: string, minLength: 1, maxLength: 20000}
+      example: {role: user, content: '/组卷 考考我TCP'}
+
     TempAttachment:
       type: object
       additionalProperties: false
@@ -1083,7 +1101,7 @@ components:
     AiDocumentCreateInput:
       type: object
       additionalProperties: false
-      required: [title, instruction, source_version_ids, grounding_mode, model_id]
+      required: [instruction, source_version_ids, grounding_mode, model_id]
       properties:
         title: {type: string, minLength: 1, maxLength: 200}
         instruction: {type: string, minLength: 1, maxLength: 10000}

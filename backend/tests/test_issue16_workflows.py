@@ -4,7 +4,7 @@ from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam
 
 
 class FailingFakeModelClient(ImmediateFakeModelClient):
-    async def chat(self, profile, messages):
+    async def chat(self, profile, messages, max_tokens=None):
         raise ModelClientError("模型暂时不可用", code="MODEL_CONNECTION_FAILED")
 
 
@@ -13,11 +13,20 @@ class RetryableGradingModel(ExamFakeModel):
         super().__init__()
         self.fail_grading = False
 
-    async def chat(self, profile, messages):
+    async def chat(self, profile, messages, max_tokens=None):
         content = messages[-1]["content"]
         if self.fail_grading and isinstance(content, str) and "根据评分点评估答案" in content:
             raise ModelClientError("模型暂时不可用", code="MODEL_CONNECTION_FAILED")
         return await super().chat(profile, messages)
+
+
+def generation_call(model_client):
+    for call in reversed(model_client.chat_calls):
+        content = call["messages"][-1]["content"]
+        text = content if isinstance(content, str) else ""
+        if "起一个不超过12个字" not in text:
+            return call
+    raise AssertionError("missing generation call")
 
 
 def create_subject_and_source(client):
@@ -163,7 +172,7 @@ def test_focused_source_is_retrieved_before_other_session_sources(tmp_path):
             "focused_source_version_ids": [focused_version_id],
         }).json()
         wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
-        prompt = model_client.chat_calls[-1]["messages"][-1]["content"]
+        prompt = generation_call(model_client)["messages"][-1]["content"]
         assert prompt.index("[Focus]") < prompt.index("[Limits]")
 
 
@@ -195,7 +204,7 @@ def test_session_message_sends_attachment_and_grounding_rule_to_model(tmp_path):
         operation_id = sent.json()["operation"]["id"]
         wait_for(lambda: client.get(f"/api/operations/{operation_id}").json()["status"] == "succeeded")
 
-        prompt = model_client.chat_calls[-1]["messages"][0]["content"]
+        prompt = generation_call(model_client)["messages"][0]["content"]
         assert "attachment evidence" in prompt
         assert "只能依据" in prompt
 
@@ -425,7 +434,7 @@ def test_current_model_selection_applies_to_existing_chat(tmp_path):
 
 
 def test_attachment_and_ai_document_lifecycle(tmp_path):
-    model_client = ImmediateFakeModelClient(answer="文档内容")
+    model_client = ImmediateFakeModelClient(answer="电磁学摘要\n文档内容")
     client, _ = make_client(tmp_path, model_client=model_client)
     with client:
         subject_id, source_version_id = create_subject_and_source(client)
@@ -578,3 +587,217 @@ def test_context_id_lists_reject_duplicates_and_images_require_vision(tmp_path):
             "attachment_ids": [image["id"], image["id"]],
         })
         assert duplicate_attachments.status_code == 422
+
+
+def test_retry_session_message_after_failure(tmp_path):
+    from backend.app.model_client import ObservedModelClient
+
+    failing = FailingFakeModelClient()
+    success = ImmediateFakeModelClient(answer="重试成功")
+    client, app = make_client(tmp_path, model_client=failing)
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model_id = client.post(
+            "/api/models",
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
+        ).json()["id"]
+        client.put("/api/models/current", json={"model_id": model_id})
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+
+        failed = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "第一问"}).json()
+        wait_for(lambda: client.get(f"/api/operations/{failed['operation']['id']}").json()["status"] == "failed")
+        assistant_id = failed["resource"]["id"]
+        session_state = client.get(f"/api/sessions/{session['id']}").json()
+        assert session_state["messages"][-1]["status"] == "error"
+
+        app.state.learning_service.model_client = ObservedModelClient(success, app.state.observability_service)
+        retried = client.post(f"/api/sessions/{session['id']}/messages/{assistant_id}/retry").json()
+        wait_for(lambda: client.get(f"/api/operations/{retried['operation']['id']}").json()["status"] == "succeeded")
+        restored = client.get(f"/api/sessions/{session['id']}").json()
+        assert restored["messages"][-1]["status"] == "complete"
+        assert restored["messages"][-1]["content"][0]["text"] == "重试成功"
+
+
+def test_retry_session_message_rejects_non_failed_message(tmp_path):
+    client, _ = make_client(tmp_path, model_client=ImmediateFakeModelClient(answer="完成"))
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model_id = client.post(
+            "/api/models",
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
+        ).json()["id"]
+        client.put("/api/models/current", json={"model_id": model_id})
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "你好"}).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+        assistant_id = sent["resource"]["id"]
+
+        blocked = client.post(f"/api/sessions/{session['id']}/messages/{assistant_id}/retry")
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "RESOURCE_CONFLICT"
+
+
+def test_retry_session_message_blocks_while_generation_in_progress(tmp_path):
+    from backend.app.model_client import ObservedModelClient
+
+    failing = FailingFakeModelClient()
+    waiting = WaitingFakeModelClient()
+    client, app = make_client(tmp_path, model_client=failing)
+    with client:
+        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+        model_id = client.post(
+            "/api/models",
+            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
+        ).json()["id"]
+        client.put("/api/models/current", json={"model_id": model_id})
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+
+        failed = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "失败题"}).json()
+        wait_for(lambda: client.get(f"/api/operations/{failed['operation']['id']}").json()["status"] == "failed")
+        failed_assistant_id = failed["resource"]["id"]
+
+        app.state.learning_service.model_client = ObservedModelClient(waiting, app.state.observability_service)
+        in_flight = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "进行中"}).json()
+        wait_for(lambda: client.get(f"/api/sessions/{session['id']}").json()["messages"][-1]["status"] == "generating")
+
+        blocked = client.post(f"/api/sessions/{session['id']}/messages/{failed_assistant_id}/retry")
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "OPERATION_IN_PROGRESS"
+
+        waiting.release.set()
+        wait_for(lambda: client.get(f"/api/operations/{in_flight['operation']['id']}").json()["status"] == "succeeded")
+
+
+class SequenceTitleModel(ImmediateFakeModelClient):
+    def __init__(self, answer, title):
+        super().__init__(answer=answer)
+        self.title = title
+
+    async def chat(self, profile, messages, max_tokens=None):
+        self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens})
+        text = self.title if max_tokens is not None else self.answer
+        return {"text": text, "provider": profile["provider"], "model": profile["model"]}
+
+
+class NamingErrorModel(ImmediateFakeModelClient):
+    async def chat(self, profile, messages, max_tokens=None):
+        if max_tokens is not None:
+            self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens})
+            raise RuntimeError("naming failed")
+        return await super().chat(profile, messages, max_tokens)
+
+
+def _subject_and_model(client):
+    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
+    model_id = client.post(
+        "/api/models",
+        json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
+    ).json()["id"]
+    client.put("/api/models/current", json={"model_id": model_id})
+    return subject_id, model_id
+
+
+def test_session_notes_append_and_validate(tmp_path):
+    client, _ = make_client(tmp_path)
+    with client:
+        subject_id, _ = _subject_and_model(client)
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+        user_note = client.post(
+            f"/api/sessions/{session['id']}/notes",
+            json={"role": "user", "content": "/组卷 考考我TCP"},
+        )
+        assert user_note.status_code == 201
+        assert user_note.json()["role"] == "user"
+        assert user_note.json()["status"] == "complete"
+        assert user_note.json()["content"][0]["text"] == "/组卷 考考我TCP"
+        system_note = client.post(
+            f"/api/sessions/{session['id']}/notes",
+            json={"role": "system", "content": "已生成蓝图「TCP」，请在组卷区确认题型与总分"},
+        )
+        assert system_note.status_code == 201
+        messages = client.get(f"/api/sessions/{session['id']}").json()["messages"]
+        assert [item["role"] for item in messages] == ["user", "system"]
+        assert messages[1]["status"] == "complete"
+        invalid_role = client.post(
+            f"/api/sessions/{session['id']}/notes",
+            json={"role": "assistant", "content": "不行"},
+        )
+        assert invalid_role.status_code == 422
+        missing = client.post(
+            "/api/sessions/session-missing/notes",
+            json={"role": "user", "content": "你好"},
+        )
+        assert missing.status_code == 404
+
+
+def test_ai_document_title_from_first_line(tmp_path):
+    model_client = ImmediateFakeModelClient(answer="计网大纲\n# 第一章 概述\n传输层")
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id, model_id = _subject_and_model(client)
+        created = client.post(f"/api/subjects/{subject_id}/documents", json={
+            "instruction": "整理计网",
+            "source_version_ids": [],
+            "grounding_mode": "general-knowledge",
+            "model_id": model_id,
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{created['operation']['id']}").json()["status"] == "succeeded")
+        document = client.get(f"/api/documents/{created['resource']['id']}").json()
+        assert document["title"] == "计网大纲"
+        body = document["versions"][0]["content"][0]["text"]
+        assert "计网大纲" not in body
+        assert "第一章" in body
+
+
+def test_ai_document_title_fallback_when_unformatted(tmp_path):
+    model_client = ImmediateFakeModelClient(answer="   \n")
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id, model_id = _subject_and_model(client)
+        created = client.post(f"/api/subjects/{subject_id}/documents", json={
+            "instruction": "整理笔记",
+            "source_version_ids": [],
+            "grounding_mode": "general-knowledge",
+            "model_id": model_id,
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{created['operation']['id']}").json()["status"] == "succeeded")
+        document = client.get(f"/api/documents/{created['resource']['id']}").json()
+        assert document["title"] == "学习笔记"
+
+
+def test_session_auto_title_from_naming_call(tmp_path):
+    model_client = SequenceTitleModel(answer="TCP 通过三次握手建立连接。", title="TCP 三次握手")
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id, model_id = _subject_and_model(client)
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "content": "请解释 TCP 三次握手",
+            "model_id": model_id,
+            "grounding_mode": "general-knowledge",
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+        restored = client.get(f"/api/sessions/{session['id']}").json()
+        assert restored["title"] == "TCP 三次握手"
+        assert len(model_client.chat_calls) == 2
+        assert model_client.chat_calls[1]["max_tokens"] == 24
+        assert "起一个不超过12个字" in model_client.chat_calls[1]["messages"][0]["content"]
+
+
+def test_session_auto_title_keeps_fallback_when_naming_fails(tmp_path):
+    model_client = NamingErrorModel(answer="这是兜底回答")
+    client, _ = make_client(tmp_path, model_client=model_client)
+    with client:
+        subject_id, model_id = _subject_and_model(client)
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
+        content = "请解释 TCP 三次握手"
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "content": content,
+            "model_id": model_id,
+            "grounding_mode": "general-knowledge",
+        }).json()
+        wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
+        restored = client.get(f"/api/sessions/{session['id']}").json()
+        assert restored["title"] == content[:60]
+        assert restored["messages"][-1]["status"] == "complete"
+        assert restored["messages"][-1]["content"][0]["text"] == "这是兜底回答"

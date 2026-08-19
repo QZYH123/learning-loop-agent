@@ -27,8 +27,8 @@ class ModelApiClient:
     async def validate(self, profile: dict) -> dict:
         return await self._chat(profile, [{"role": "user", "content": "请只回复 ok"}])
 
-    async def chat(self, profile: dict, messages: list[dict]) -> dict:
-        return await self._chat(profile, messages)
+    async def chat(self, profile: dict, messages: list[dict], max_tokens: int | None = None) -> dict:
+        return await self._chat(profile, messages, max_tokens=max_tokens)
 
     async def _chat(self, profile: dict, messages: list[dict], max_tokens: int | None = None) -> dict:
         api_format = profile.get("api_format", "openai-chat-completions")
@@ -240,8 +240,10 @@ class ObservedModelClient:
     async def validate(self, profile: dict) -> dict:
         return await self._call("validate", profile)
 
-    async def chat(self, profile: dict, messages: list[dict]) -> dict:
-        return await self._call("chat", profile, messages)
+    async def chat(self, profile: dict, messages: list[dict], max_tokens: int | None = None) -> dict:
+        if max_tokens is None:
+            return await self._call("chat", profile, messages)
+        return await self._call("chat", profile, messages, max_tokens)
 
     async def _call(self, method: str, profile: dict, *args) -> dict:
         operation_id = CURRENT_OPERATION_ID.get()

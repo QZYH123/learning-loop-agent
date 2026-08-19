@@ -16,8 +16,8 @@ class ImmediateFakeModelClient:
         self.validate_calls.append(profile)
         return {"text": "ok", "provider": profile["provider"], "model": profile["model"]}
 
-    async def chat(self, profile, messages):
-        self.chat_calls.append({"profile": profile, "messages": messages})
+    async def chat(self, profile, messages, max_tokens=None):
+        self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens})
         return {"text": self.answer, "provider": profile["provider"], "model": profile["model"]}
 
 
@@ -30,7 +30,7 @@ class WaitingFakeModelClient:
     async def validate(self, profile):
         return {"text": "ok", "provider": profile["provider"], "model": profile["model"]}
 
-    async def chat(self, profile, messages):
+    async def chat(self, profile, messages, max_tokens=None):
         self.started.set()
         try:
             await self.release.wait()

@@ -142,3 +142,19 @@ def test_index_page_is_served(tmp_path):
     response = client.get("/")
     assert response.status_code == 200
     assert "AI 学习工具" in response.text
+
+
+def test_update_model_resets_validation_to_unknown(tmp_path):
+    client, _ = make_client(tmp_path)
+    with client:
+        model_id = create_model(client)
+        verified = client.post(f"/api/models/{model_id}/verify")
+        assert verified.status_code == 202
+        from backend.tests.test_sources_api import wait_for_operation
+
+        wait_for_operation(client, verified.json()["operation"]["id"])
+        assert client.get(f"/api/models/{model_id}").json()["validation"]["status"] == "ok"
+
+        updated = client.patch(f"/api/models/{model_id}", json={"provider": "Updated Provider"})
+        assert updated.status_code == 200
+        assert client.get(f"/api/models/{model_id}").json()["validation"]["status"] == "unknown"

@@ -47,6 +47,8 @@ class AiDocumentService:
                     raise OperationFailure("GROUNDING_SOURCE_REQUIRED", "资料未覆盖该文档要求")
                 prompt = (
                     f"{self._grounding_instruction(payload['grounding_mode'])}"
+                    "\n第一行只输出文档标题（创建要求中明确指定了名称或标题时必须原样使用指定名称），"
+                    "从第二行开始输出正文，不要在标题行加任何前缀符号"
                     f"\n\n创建资料文档：{payload['instruction']}"
                     f"\n\n资料片段：\n{self._anchor_text(anchors) or '无'}"
                 )
@@ -55,11 +57,12 @@ class AiDocumentService:
                     "content": self._grounded_content(prompt, anchors, profile),
                 }])
                 citations = self._citations_for_anchors(anchors)
-                version = {"id": version_id, "document_id": document_id, "number": 1, "status": "ready", "content": [{"id": self._ids("block"), "type": "markdown", "text": response.get("text") or ""}], "upstream_citations": citations, "created_at": timestamp}
+                title, body = self._parse_generated_document(response.get("text") or "", payload.get("title"))
+                version = {"id": version_id, "document_id": document_id, "number": 1, "status": "ready", "content": [{"id": self._ids("block"), "type": "markdown", "text": body}], "upstream_citations": citations, "created_at": timestamp}
                 document = {
                     "id": document_id,
                     "subject_id": subject_id,
-                    "title": payload["title"],
+                    "title": title,
                     "generated_by": "ai",
                     "current_version_id": version_id,
                     "versions": [version],
@@ -309,6 +312,32 @@ class AiDocumentService:
             encoded = base64.b64encode(raw).decode("ascii")
             content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}})
         return content
+
+    @classmethod
+    def _parse_generated_document(cls, text: str, fallback_title: str | None) -> tuple[str, str]:
+        raw = text or ""
+        lines = raw.splitlines()
+        first_idx = next((index for index, line in enumerate(lines) if line.strip()), None)
+        if first_idx is None:
+            return (fallback_title or "学习笔记"), raw
+        title = cls._strip_generated_title(lines[first_idx])
+        if not title:
+            return (fallback_title or "学习笔记"), raw
+        return title[:60], "\n".join(lines[first_idx + 1 :])
+
+    @staticmethod
+    def _strip_generated_title(line: str) -> str:
+        title = (line or "").strip()
+        while title.startswith("#"):
+            title = title[1:].strip()
+        if title.startswith("《"):
+            title = title[1:]
+            if title.endswith("》"):
+                title = title[:-1]
+            title = title.strip()
+        if len(title) >= 2 and title[0] in "\"'“‘「" and title[-1] in "\"'”’」":
+            title = title[1:-1].strip()
+        return title
 
     @staticmethod
     def _grounding_instruction(grounding_mode: str) -> str:

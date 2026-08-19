@@ -620,6 +620,49 @@ class LearningService:
             raise LearningError(404, "RESOURCE_NOT_FOUND", "会话资料版本不存在")
         self._replace_session(subject["id"], session_id, {**session, "source_version_ids": [item for item in session["source_version_ids"] if item != version_id], "updated_at": self._now()})
 
+    def append_session_note(self, session_id: str, payload: dict) -> dict:
+        subject, session = self._find_session(session_id)
+        role = payload.get("role")
+        raw_content = payload.get("content")
+        content = raw_content.strip() if isinstance(raw_content, str) else ""
+        if role not in {"user", "system"}:
+            raise LearningError(422, "VALIDATION_FAILED", "笔记角色必须是 user 或 system")
+        if not content:
+            raise LearningError(422, "VALIDATION_FAILED", "笔记内容不能为空")
+        timestamp = self._now()
+        message = {
+            "id": self._ids("message"),
+            "role": role,
+            "intent": "ask",
+            "chat_style": self._stored_chat_style(session),
+            "content": [self._markdown_block(content)],
+            "status": "complete",
+            "grounding_mode": None,
+            "grounding_result": None,
+            "citations": [],
+            "source_context": {
+                "source_version_ids": [],
+                "focused_source_version_ids": [],
+                "only_use_specified_sources": False,
+                "grounding_mode": "general-knowledge",
+                "selection": None,
+                "attachment_ids": [],
+                "citations": [],
+            },
+            "selection": None,
+            "model": None,
+            "error": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "completed_at": timestamp,
+        }
+        self._replace_session(
+            subject["id"],
+            session_id,
+            {**session, "messages": [*session.get("messages", []), message], "updated_at": timestamp},
+        )
+        return message
+
     def create_session_message(self, session_id: str, payload: dict) -> dict:
         subject, session = self._find_session(session_id)
         chat_style = self._requested_chat_style(payload, self._stored_chat_style(session))
@@ -684,55 +727,255 @@ class LearningService:
         self._replace_session(subject["id"], session_id, updated_session)
 
         async def worker():
-            self._update_session_message(subject["id"], session_id, assistant_id, {"status": "generating", "updated_at": self._now()})
-            try:
-                query_ids = [*focused_ids, *[item for item in selected_ids if item not in focused_ids]]
-                anchors = (
-                    self.source_library.retrieve(
-                        content,
-                        query_ids,
-                        priority_version_ids=focused_ids,
-                    )
-                    if query_ids and grounding_mode != "general-knowledge" else []
-                )
-                selected_citations = [
-                    self.source_library.get_citation(citation_id)
-                    for citation_id in (selection or {}).get("citation_ids", [])
-                ]
-                has_selection_context = bool((selection or {}).get("selected_text") or (selection or {}).get("image_asset"))
-                if grounding_mode == "strict" and not anchors and not selected_citations and not has_selection_context and not attachment_inputs:
-                    text = "选定资料未覆盖这个问题，我无法仅依据资料回答。"
-                    self._update_session_message(subject["id"], session_id, assistant_id, {"status": "complete", "content": [self._markdown_block(text)], "grounding_result": "not-covered", "completed_at": self._now(), "updated_at": self._now()})
-                    return {"type": "chat-message", "id": assistant_id}
-                citations = self._citations_for_anchors(anchors, selected_citations)
-                messages = self._grounded_messages(
-                    {"messages": session.get("messages", []), "chat_style": chat_style},
-                    {**payload, "chat_style": chat_style},
-                    anchors,
-                    grounding_mode,
-                    profile,
-                    selection_context,
-                    attachment_inputs,
-                )
-                response = await self.model_client.chat(profile, messages)
-                final_context = {**context, "citations": citations}
-                result = (
-                    "general-knowledge"
-                    if context["grounding_mode"] == "general-knowledge"
-                    else "supplemental" if context["grounding_mode"] == "supplemental" else "covered"
-                )
-                self._update_session_message(subject["id"], session_id, assistant_id, {"status": "complete", "content": [self._markdown_block(response.get("text") or "")], "grounding_result": result, "citations": citations, "source_context": final_context, "completed_at": self._now(), "updated_at": self._now()})
-                return {"type": "chat-message", "id": assistant_id}
-            except asyncio.CancelledError:
-                self._update_session_message(subject["id"], session_id, assistant_id, {"status": "stopped", "completed_at": self._now(), "updated_at": self._now()})
-                raise
-            except (LearningError, SourceLibraryError, ModelClientError) as exc:
-                self._update_session_message(subject["id"], session_id, assistant_id, {"status": "error", "error": {"code": getattr(exc, "code", "MODEL_INVALID_RESPONSE"), "message": str(exc), "retryable": False, "details": {}}, "completed_at": self._now(), "updated_at": self._now()})
-                raise OperationFailure(getattr(exc, "code", "MODEL_INVALID_RESPONSE"), str(exc)) from exc
+            return await self._generate_session_assistant(
+                subject_id=subject["id"],
+                session_id=session_id,
+                assistant_id=assistant_id,
+                profile=profile,
+                payload={**payload, "chat_style": chat_style},
+                context=context,
+                chat_style=chat_style,
+                selection_context=selection_context,
+                attachment_inputs=attachment_inputs,
+            )
 
         resource = {"type": "chat-message", "id": assistant_id}
         operation = self.operations.start("chat-generation", worker, subject_id=subject["id"], resource=resource)
         return {"operation": operation, "resource": resource}
+
+    def retry_session_message(self, session_id: str, message_id: str, payload: dict) -> dict:
+        subject, session = self._find_session(session_id)
+        if self.operations.active_for_subject(subject["id"], "chat-generation"):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "已有回答正在生成")
+        messages = session.get("messages", [])
+        assistant_index = next((index for index, item in enumerate(messages) if item.get("id") == message_id), None)
+        if assistant_index is None:
+            raise LearningError(404, "RESOURCE_NOT_FOUND", "消息不存在")
+        assistant = messages[assistant_index]
+        if assistant.get("role") != "assistant" or assistant.get("status") not in {"error", "stopped"}:
+            raise LearningError(409, "RESOURCE_CONFLICT", "只能重试失败或已停止的回答")
+        user_message = next(
+            (item for item in reversed(messages[:assistant_index]) if item.get("role") == "user"),
+            None,
+        )
+        if not user_message:
+            raise LearningError(422, "VALIDATION_FAILED", "找不到对应的用户消息")
+        model_id = (
+            payload.get("model_id")
+            or self.workspace_service.snapshot().get("current_model_id")
+            or (assistant.get("model") or {}).get("id")
+        )
+        if not model_id:
+            raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
+        profile = self._model(model_id)
+        context = dict(assistant.get("source_context") or user_message.get("source_context") or {})
+        chat_style = assistant.get("chat_style") or user_message.get("chat_style") or self._stored_chat_style(session)
+        selection = user_message.get("selection")
+        selection_context = None
+        if selection and self.selection_resolver is not None:
+            resolved = self.selection_resolver(selection, include_context=True)
+            if isinstance(resolved, tuple):
+                selection, selection_context = resolved
+            else:
+                selection = resolved
+        attachment_ids = list(context.get("attachment_ids") or [])
+        attachment_inputs = self._attachment_inputs(subject["id"], attachment_ids, profile) if attachment_ids else []
+        content = self._content_text(user_message.get("content", []))
+        retry_payload = {
+            "intent": user_message.get("intent", "ask"),
+            "content": content,
+            "chat_style": chat_style,
+            "grounding_mode": user_message.get("grounding_mode") or context.get("grounding_mode"),
+            "selection": selection,
+        }
+        timestamp = self._now()
+        self._update_session_message(
+            subject["id"],
+            session_id,
+            message_id,
+            {
+                "status": "queued",
+                "content": [],
+                "error": None,
+                "grounding_result": None,
+                "citations": [],
+                "completed_at": None,
+                "updated_at": timestamp,
+                "model": self._model_snapshot(profile),
+            },
+        )
+
+        async def worker():
+            return await self._generate_session_assistant(
+                subject_id=subject["id"],
+                session_id=session_id,
+                assistant_id=message_id,
+                profile=profile,
+                payload=retry_payload,
+                context=context,
+                chat_style=chat_style,
+                selection_context=selection_context,
+                attachment_inputs=attachment_inputs,
+            )
+
+        resource = {"type": "chat-message", "id": message_id}
+        operation = self.operations.start("chat-generation", worker, subject_id=subject["id"], resource=resource)
+        return {"operation": operation, "resource": resource}
+
+    async def _generate_session_assistant(
+        self,
+        *,
+        subject_id: str,
+        session_id: str,
+        assistant_id: str,
+        profile: dict,
+        payload: dict,
+        context: dict,
+        chat_style: str,
+        selection_context=None,
+        attachment_inputs=None,
+    ) -> dict:
+        _, session = self._find_session(session_id)
+        content = payload.get("content") or self._intent_label(payload.get("intent", "ask"))
+        selected_ids = list(context.get("source_version_ids") or [])
+        focused_ids = list(context.get("focused_source_version_ids") or [])
+        grounding_mode = context.get("grounding_mode") or "general-knowledge"
+        selection = payload.get("selection") or context.get("selection")
+        attachment_inputs = attachment_inputs or []
+
+        self._update_session_message(subject_id, session_id, assistant_id, {"status": "generating", "updated_at": self._now()})
+        try:
+            query_ids = [*focused_ids, *[item for item in selected_ids if item not in focused_ids]]
+            anchors = (
+                self.source_library.retrieve(
+                    content,
+                    query_ids,
+                    priority_version_ids=focused_ids,
+                )
+                if query_ids and grounding_mode != "general-knowledge" else []
+            )
+            selected_citations = [
+                self.source_library.get_citation(citation_id)
+                for citation_id in (selection or {}).get("citation_ids", [])
+            ]
+            has_selection_context = bool((selection or {}).get("selected_text") or (selection or {}).get("image_asset"))
+            if grounding_mode == "strict" and not anchors and not selected_citations and not has_selection_context and not attachment_inputs:
+                text = "选定资料未覆盖这个问题，我无法仅依据资料回答。"
+                self._update_session_message(
+                    subject_id,
+                    session_id,
+                    assistant_id,
+                    {
+                        "status": "complete",
+                        "content": [self._markdown_block(text)],
+                        "grounding_result": "not-covered",
+                        "completed_at": self._now(),
+                        "updated_at": self._now(),
+                    },
+                )
+                await self._maybe_name_new_session(session_id, profile, content, text)
+                return {"type": "chat-message", "id": assistant_id}
+            citations = self._citations_for_anchors(anchors, selected_citations)
+            messages = self._grounded_messages(
+                {"messages": session.get("messages", []), "chat_style": chat_style},
+                {**payload, "chat_style": chat_style},
+                anchors,
+                grounding_mode,
+                profile,
+                selection_context,
+                attachment_inputs,
+            )
+            response = await self.model_client.chat(profile, messages)
+            final_context = {**context, "citations": citations}
+            result = (
+                "general-knowledge"
+                if context["grounding_mode"] == "general-knowledge"
+                else "supplemental" if context["grounding_mode"] == "supplemental" else "covered"
+            )
+            assistant_text = response.get("text") or ""
+            self._update_session_message(
+                subject_id,
+                session_id,
+                assistant_id,
+                {
+                    "status": "complete",
+                    "content": [self._markdown_block(assistant_text)],
+                    "grounding_result": result,
+                    "citations": citations,
+                    "source_context": final_context,
+                    "completed_at": self._now(),
+                    "updated_at": self._now(),
+                },
+            )
+            await self._maybe_name_new_session(session_id, profile, content, assistant_text)
+            return {"type": "chat-message", "id": assistant_id}
+        except asyncio.CancelledError:
+            self._update_session_message(
+                subject_id,
+                session_id,
+                assistant_id,
+                {"status": "stopped", "completed_at": self._now(), "updated_at": self._now()},
+            )
+            raise
+        except (LearningError, SourceLibraryError, ModelClientError) as exc:
+            self._update_session_message(
+                subject_id,
+                session_id,
+                assistant_id,
+                {
+                    "status": "error",
+                    "error": {
+                        "code": getattr(exc, "code", "MODEL_INVALID_RESPONSE"),
+                        "message": str(exc),
+                        "retryable": False,
+                        "details": {},
+                    },
+                    "completed_at": self._now(),
+                    "updated_at": self._now(),
+                },
+            )
+            raise OperationFailure(getattr(exc, "code", "MODEL_INVALID_RESPONSE"), str(exc)) from exc
+
+    async def _maybe_name_new_session(self, session_id: str, profile: dict, user_content: str, assistant_text: str) -> None:
+        fallback = (user_content or "")[:60]
+        try:
+            _, session = self._find_session(session_id)
+            if len(session.get("messages", [])) != 2:
+                return
+            if session.get("title") != fallback:
+                return
+            response = await self.model_client.chat(
+                profile,
+                [{
+                    "role": "user",
+                    "content": (
+                        "为这段学习对话起一个不超过12个字的中文标题，只输出标题本身，不要引号：\n"
+                        f"用户：{(user_content or '')[:200]}\n"
+                        f"AI：{(assistant_text or '')[:200]}"
+                    ),
+                }],
+                max_tokens=24,
+            )
+            title = self._clean_session_title(response.get("text") or "")
+            if not title:
+                return
+            subject, session = self._find_session(session_id)
+            if session.get("title") != fallback:
+                return
+            self._replace_session(
+                subject["id"],
+                session_id,
+                {**session, "title": title, "updated_at": self._now()},
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _clean_session_title(text: str) -> str:
+        title = (text or "").replace("\r", "").replace("\n", "").strip()
+        for mark in ('"', "'", "“", "”", "‘", "’", "「", "」"):
+            title = title.replace(mark, "")
+        return title.strip()[:24]
 
     # Crash course artifacts ---------------------------------------------
 

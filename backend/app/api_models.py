@@ -478,6 +478,10 @@ class ChatMessageInput(ContractModel):
         return self
 
 
+class ChatMessageRetryInput(ContractModel):
+    model_id: str | None = None
+
+
 class ModelSnapshot(ContractModel):
     model_id: str
     provider: str
@@ -595,6 +599,11 @@ class SessionSourcePatch(ContractModel):
     source_version_id: str
 
 
+class SessionNoteInput(ContractModel):
+    role: Literal["user", "system"]
+    content: str = Field(min_length=1, max_length=20000)
+
+
 class TempAttachment(ContractModel):
     id: str
     subject_id: str
@@ -643,7 +652,7 @@ class ModelSelection(ContractModel):
 
 
 class AiDocumentCreateInput(ContractModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str = Field(default=None, min_length=1, max_length=200)
     instruction: str = Field(min_length=1, max_length=10000)
     source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     grounding_mode: Literal["strict", "general-knowledge", "supplemental"]

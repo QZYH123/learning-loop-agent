@@ -5,7 +5,7 @@ from backend.tests.test_sources_api import upload_source, wait_for_operation
 
 
 class LearningFakeModel(ImmediateFakeModelClient):
-    async def chat(self, profile, messages):
+    async def chat(self, profile, messages, max_tokens=None):
         self.chat_calls.append({"profile": profile, "messages": messages})
         text = messages[-1]["content"]
         if isinstance(text, str) and "章节速成目录" in text:

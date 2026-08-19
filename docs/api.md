@@ -78,7 +78,7 @@ queued -> running -> succeeded
 
 普通消息始终使用自然语言 `content`，可以在会话上配置默认 `chat_style`，也可以单条消息临时覆盖。苏格拉底和章节速成不再通过 `intent`、提示层级或应用状态机推进；模型结合提示风格和完整对话决定如何追问、解释或总结。旧阶段字段在迁移完成后废弃。
 
-选区问答使用 `SelectionContext` 固定到文档版本、题目和内容块。创建消息只更新会话和异步任务，不具备修改试卷的副作用。
+选区问答使用 `SelectionContext` 固定到文档版本、题目和内容块。创建消息只更新会话和异步任务，不具备修改试卷的副作用。失败或已停止的 assistant 消息可通过 `POST /api/sessions/{session_id}/messages/{message_id}/retry` 重试，可选 `model_id` 覆盖当前模型。斜杠命令回显和执行结果通过 `POST /api/sessions/{session_id}/notes` 写入 `user` 或 `system` 笔记，不触发模型生成。
 
 当前消息请求形状：
 

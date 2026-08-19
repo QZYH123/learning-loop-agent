@@ -11,7 +11,9 @@ from .api_models import (
     AiDocumentRevisionProposal,
     AiDocumentRevisionProposalList,
     AiDocumentVersionList,
+    ChatMessage,
     ChatMessageInput,
+    ChatMessageRetryInput,
     ErrorResponse,
     ModelDiscoveryInput,
     ModelDiscoveryResponse,
@@ -23,6 +25,7 @@ from .api_models import (
     SessionList,
     SessionPatch,
     SessionSource,
+    SessionNoteInput,
     SessionSourceInput,
     SessionSourceList,
     SessionSourcePatch,
@@ -78,6 +81,27 @@ def create_issue16_router(learning, attachments, documents) -> APIRouter:
     @router.post("/api/sessions/{session_id}/messages", operation_id="createSessionMessage", status_code=202, response_model=OperationAccepted, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}})
     async def create_session_message(session_id: str, payload: ChatMessageInput):
         return learning.create_session_message(session_id, payload.model_dump(exclude_none=True))
+
+    @router.post(
+        "/api/sessions/{session_id}/messages/{message_id}/retry",
+        operation_id="retrySessionMessage",
+        status_code=202,
+        response_model=OperationAccepted,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    async def retry_session_message(session_id: str, message_id: str, payload: ChatMessageRetryInput | None = None):
+        body = (payload or ChatMessageRetryInput()).model_dump(exclude_none=True)
+        return learning.retry_session_message(session_id, message_id, body)
+
+    @router.post(
+        "/api/sessions/{session_id}/notes",
+        operation_id="appendSessionNote",
+        status_code=201,
+        response_model=ChatMessage,
+        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    def append_session_note(session_id: str, payload: SessionNoteInput):
+        return learning.append_session_note(session_id, payload.model_dump())
 
     @router.post("/api/subjects/{subject_id}/attachments", operation_id="uploadChatAttachment", status_code=201, response_model=TempAttachment, responses={404: {"model": ErrorResponse}, 413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}, 422: {"model": ErrorResponse}})
     async def upload_chat_attachment(subject_id: str, file: UploadFile = File(...)):
