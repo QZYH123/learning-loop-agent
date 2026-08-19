@@ -482,6 +482,11 @@ class ExamRevisionProposalInput(ContractModel):
     model_id: str | None = None
 
 
+class DraftRevisionProposalInput(ContractModel):
+    instruction: str = Field(min_length=1, max_length=10000)
+    model_id: str | None = None
+
+
 class ExamChange(ContractModel):
     path: str = Field(min_length=1)
     operation: Literal["add", "replace", "remove", "move"]
@@ -506,6 +511,23 @@ class ExamRevisionProposal(ContractModel):
 
 class ExamRevisionProposalList(ContractModel):
     items: list[ExamRevisionProposal]
+
+
+class DraftRevisionProposal(ContractModel):
+    id: str
+    draft_id: str
+    instruction: str
+    scope: RevisionScope
+    status: Literal["generating", "ready", "applied", "discarded", "failed"]
+    changes: list[ExamChange]
+    model: ModelSnapshot | None = None
+    error: ApiError | None = None
+    created_at: int
+    updated_at: int
+
+
+class DraftRevisionProposalList(ContractModel):
+    items: list[DraftRevisionProposal]
 
 
 ExamEdition = Literal["questions", "solutions"]

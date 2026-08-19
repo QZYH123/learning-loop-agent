@@ -320,6 +320,52 @@ export function pendingProposal(items) {
   return (items || []).find((item) => item.status === 'ready' || item.status === 'generating') || null;
 }
 
+export function sanitizeErrorMessage(message) {
+  const text = String(message || '').trim();
+  if (!text) return '操作失败';
+  const lower = text.toLowerCase();
+  if (lower.includes('api key') || lower.includes('incorrect api key') || text.includes('sk-')) {
+    return '模型服务拒绝了请求，请检查 API Key';
+  }
+  if (text.includes('{') || text.includes('"error"') || /https?:\/\//.test(text)) {
+    const status = text.match(/HTTP (\d{3})/);
+    if (status?.[1] === '401') return '模型服务拒绝了请求，请检查 API Key';
+    if (status?.[1] === '403') return '模型服务暂时不可用';
+    if (status?.[1] === '429') return '模型服务请求过于频繁，请稍后再试';
+    if (status) return `模型服务返回错误（HTTP ${status[1]}）`;
+    return '模型服务返回了无法展示的错误';
+  }
+  if (lower.includes('blank')) return '填空题缺少填空定义，请重试生成';
+  if (lower.includes('scoring_point')) return '主观题缺少得分点，请重试生成';
+  if (lower.includes('content block')) return '题目正文格式无效，请重试生成';
+  if (/^['"]?[a-z_]+['"]?$/i.test(text)) return '题目结构不完整，请重试生成';
+  return text;
+}
+
+export function sourceAnchorLabel(anchor, index) {
+  const label = String(anchor?.location?.label || '').trim();
+  const firstLine = blocksToText(anchor?.content).split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).find(Boolean) || '';
+  const last = label.split('/').map((part) => part.trim()).filter(Boolean).pop() || '';
+  if (!label || last === firstLine || firstLine.startsWith(last) || last.startsWith(firstLine)) {
+    const kind = anchor?.location?.kind;
+    if (kind === 'page' || kind === 'slide') return `第 ${index + 1} ${kind === 'slide' ? '张' : '页'}`;
+    return `原文位置 ${index + 1}`;
+  }
+  return last || label;
+}
+
+export function draftPublishState(draft) {
+  const questions = draft?.questions || [];
+  if (!questions.length) return { canPublish: false, needsConfirm: false };
+  if (questions.some((item) => ['failed', 'generating', 'queued'].includes(item.status) || !item.question)) {
+    return { canPublish: false, needsConfirm: false };
+  }
+  if (questions.some((item) => item.status === 'needs-review')) {
+    return { canPublish: true, needsConfirm: true };
+  }
+  return { canPublish: true, needsConfirm: false };
+}
+
 export function answerForQuestion(attempt, questionId) {
   return (attempt?.answers || []).find((item) => item.question_id === questionId) || null;
 }

@@ -5,6 +5,7 @@ import {
   formatTime,
   pendingProposal,
   renderBlocks,
+  sourceAnchorLabel,
   statusLabel,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
@@ -133,9 +134,9 @@ function renderFiles(state, source) {
       ${sources
         .map(
           (item) => `
-        <button type="button" class="mini ${item.id === state.activeSourceId ? 'is-active' : ''}" data-action="select-source" data-id="${item.id}">
+        <button type="button" class="mini ${item.id === state.activeSourceId ? 'is-active' : ''}" data-action="select-source" data-id="${item.id}" title="${escapeHtml(item.display_name)}">
           <div class="item-title">${escapeHtml(item.display_name)}</div>
-          <div class="item-sub"><span>${statusLabel('source', item.status)}</span><span>${formatTime(item.updated_at)}</span></div>
+          <div class="item-sub"><span>${statusLabel('source', item.status)}</span>${item.version_count > 1 ? `<span>v${item.current_version?.number || item.version_count}</span>` : ''}<span>${formatTime(item.updated_at)}</span></div>
         </button>
       `,
         )
@@ -149,16 +150,20 @@ function renderFiles(state, source) {
           : source.status === 'failed'
             ? `<div class="fail"><h3>处理失败</h3><p>${escapeHtml(source.failure?.message || '')}</p><button type="button" class="btn btn-ghost" data-action="upload-source">重新上传</button></div>`
             : (state.sourceAnchors || []).length
-              ? state.sourceAnchors
+              ? `${
+                  (state.sourceVersions || []).length > 1
+                    ? `<p class="item-sub" style="margin-bottom:10px">共 ${(state.sourceVersions || []).length} 个版本，当前 v${source.current_version?.number || 1}</p>`
+                    : ''
+                }${state.sourceAnchors
                   .map(
-                    (anchor) => `
+                    (anchor, index) => `
           <section class="anchor" data-question-id="">
-            <div class="anchor-label">${escapeHtml(anchor.location?.label || '原文位置')}</div>
+            <div class="anchor-label">${escapeHtml(sourceAnchorLabel(anchor, index))}</div>
             ${renderBlocks(anchor.content)}
           </section>
         `,
                   )
-                  .join('')
+                  .join('')}`
               : `<div class="empty"><h3>暂无正文</h3></div>`
     }
   `;

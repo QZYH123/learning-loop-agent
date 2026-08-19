@@ -260,7 +260,7 @@ class ExamService:
                             "question": None,
                             "error": {
                                 "code": "QUESTION_STRUCTURE_INVALID",
-                                "message": str(exc) or "题目结构不完整",
+                                "message": self._structure_error_message(exc),
                                 "retryable": True,
                                 "details": {},
                             },
@@ -403,7 +403,7 @@ class ExamService:
                 self._update_slot(subject["id"], draft_id, question_id, {
                     "status": "needs-review",
                     "question": None,
-                    "error": {"code": "QUESTION_STRUCTURE_INVALID", "message": str(exc), "retryable": True, "details": {}},
+                    "error": {"code": "QUESTION_STRUCTURE_INVALID", "message": self._structure_error_message(exc), "retryable": True, "details": {}},
                     "updated_at": self._now(),
                 })
                 raise OperationFailure("QUESTION_STRUCTURE_INVALID", "题目结构不完整", retryable=True) from exc
@@ -482,6 +482,132 @@ class ExamService:
             }
         self.learning._mutate(subject["id"], update)
         return exam
+
+    def list_draft_revision_proposals(self, draft_id: str) -> list[dict]:
+        subject, _ = self.learning._find_owned("exam_drafts", draft_id)
+        return [
+            item
+            for item in subject.get("data", {}).get("draft_revision_proposals", [])
+            if item.get("draft_id") == draft_id
+        ]
+
+    def create_draft_revision_proposal(self, draft_id: str, payload: dict) -> dict:
+        subject, draft = self.learning._find_owned("exam_drafts", draft_id)
+        if draft["status"] != "editable":
+            raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可修改")
+        questions = [copy.deepcopy(item["question"]) for item in draft["questions"] if item.get("question")]
+        if not questions:
+            raise LearningError(409, "QUESTION_STRUCTURE_INVALID", "草稿还没有可修改的题目")
+        document = {
+            "title": draft["title"],
+            "instructions": draft.get("instructions") or [],
+            "questions": questions,
+        }
+        profile = self._selected_model(subject["id"], payload.get("model_id"))
+        timestamp = self._now()
+        proposal_id = self._ids("draft-revision-proposal")
+        proposal = {
+            "id": proposal_id,
+            "draft_id": draft_id,
+            "instruction": payload["instruction"],
+            "scope": {"kind": "whole-exam", "question_ids": [], "block_ids": []},
+            "status": "generating",
+            "changes": [],
+            "model": self.learning._model_snapshot(profile),
+            "error": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        self._append(subject["id"], "draft_revision_proposals", proposal)
+        resource = {"type": "draft-revision-proposal", "id": proposal_id}
+
+        async def worker():
+            try:
+                response = await self.model_client.chat(profile, [{
+                    "role": "user",
+                    "content": (
+                        "根据修改指令生成结构化差异预览，只返回 JSON："
+                        '{"changes":[{"path":"/title","operation":"replace","summary":"...","before":"...","after":"..."}]}。'
+                        "path 使用 JSON Pointer；move 操作的 before 填源路径，path 填目标路径。不要直接应用修改。\n\n"
+                        f"修改范围：整份草稿\n试卷：{json.dumps(document, ensure_ascii=False)}\n\n指令：{payload['instruction']}"
+                    ),
+                }])
+                raw_changes = json.loads(response["text"])["changes"]
+                changes = [ExamChange.model_validate(item).model_dump() for item in raw_changes]
+                if not isinstance(changes, list) or not changes:
+                    raise ValueError("changes is required")
+                self._validate_revision_changes(document, proposal["scope"], changes)
+                self._apply_revision_changes(copy.deepcopy(document), changes)
+                ready = {**proposal, "status": "ready", "changes": changes, "updated_at": self._now()}
+                self._replace(subject["id"], "draft_revision_proposals", proposal_id, ready)
+                return resource
+            except asyncio.CancelledError:
+                canceled = {
+                    **proposal,
+                    "status": "failed",
+                    "error": {"code": "REVISION_PROPOSAL_INVALID", "message": "修改提案生成已取消", "retryable": True, "details": {}},
+                    "updated_at": self._now(),
+                }
+                self._replace(subject["id"], "draft_revision_proposals", proposal_id, canceled)
+                raise
+            except Exception as exc:
+                failed = {
+                    **proposal,
+                    "status": "failed",
+                    "error": {"code": "REVISION_PROPOSAL_INVALID", "message": self._structure_error_message(exc), "retryable": True, "details": {}},
+                    "updated_at": self._now(),
+                }
+                self._replace(subject["id"], "draft_revision_proposals", proposal_id, failed)
+                raise OperationFailure("REVISION_PROPOSAL_INVALID", "修改提案无效", retryable=True) from exc
+
+        operation = self.operations.start("exam-revision", worker, subject_id=subject["id"], resource=resource)
+        return {"operation": operation, "resource": resource}
+
+    def apply_draft_revision_proposal(self, proposal_id: str) -> dict:
+        subject, proposal = self.learning._find_owned("draft_revision_proposals", proposal_id)
+        if proposal["status"] != "ready":
+            raise LearningError(409, "RESOURCE_CONFLICT", "只能应用已就绪的修改预览")
+        _, draft = self.learning._find_owned("exam_drafts", proposal["draft_id"])
+        if draft["status"] != "editable":
+            raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可修改")
+        document = {
+            "title": draft["title"],
+            "instructions": draft.get("instructions") or [],
+            "questions": [copy.deepcopy(item["question"]) for item in draft["questions"] if item.get("question")],
+        }
+        updated_document = self._apply_revision_changes(document, proposal["changes"])
+        questions_by_id = {item["id"]: item for item in updated_document["questions"]}
+        slots = []
+        for slot in draft["questions"]:
+            question = questions_by_id.get(slot["id"], slot.get("question"))
+            if question is None:
+                slots.append(slot)
+                continue
+            slots.append({
+                **slot,
+                "question": question,
+                "planned_type": question.get("type", slot.get("planned_type")),
+                "status": "complete" if question.get("reliability") == "reliable" else "needs-review",
+                "error": None,
+                "updated_at": self._now(),
+            })
+        updated_draft = {
+            **draft,
+            "title": updated_document.get("title") or draft["title"],
+            "instructions": updated_document.get("instructions", draft.get("instructions") or []),
+            "questions": slots,
+            "total_score": self._draft_score(slots),
+            "updated_at": self._now(),
+        }
+        applied = {**proposal, "status": "applied", "updated_at": self._now()}
+        self._replace(subject["id"], "exam_drafts", draft["id"], updated_draft)
+        self._replace(subject["id"], "draft_revision_proposals", proposal_id, applied)
+        return self._draft_view(updated_draft)
+
+    def discard_draft_revision_proposal(self, proposal_id: str) -> None:
+        subject, proposal = self.learning._find_owned("draft_revision_proposals", proposal_id)
+        discarded = {**proposal, "status": "discarded", "updated_at": self._now()}
+        self._replace(subject["id"], "draft_revision_proposals", proposal_id, discarded)
 
     # Exams and attempts --------------------------------------------------
 
@@ -1752,6 +1878,22 @@ class ExamService:
         if isinstance(value, list):
             return [item if isinstance(item, dict) else self.learning._markdown_block(str(item)) for item in value]
         raise ValueError("content blocks must be a string or list")
+
+    @staticmethod
+    def _structure_error_message(exc: Exception) -> str:
+        if isinstance(exc, LearningError):
+            return str(exc)
+        text = str(exc or "")
+        lowered = text.lower()
+        if "blank" in lowered:
+            return "填空题缺少填空定义，请重试生成"
+        if "scoring_point" in lowered:
+            return "主观题缺少得分点，请重试生成"
+        if "content block" in lowered:
+            return "题目正文格式无效，请重试生成"
+        if "json" in lowered or "expecting" in lowered:
+            return "题目生成结果无法解析，请重试"
+        return "题目结构不完整，请重试生成"
 
     def _record_structure_stage(self, started_at: int, started: float, status: str) -> None:
         self.operations.record_stage(

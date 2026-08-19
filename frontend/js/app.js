@@ -39,6 +39,8 @@ import {
   readySourceVersionIds,
   sessionVisible,
   titleFromMessage,
+  draftPublishState,
+  sanitizeErrorMessage,
 } from './util.js';
 
 class App {
@@ -75,6 +77,7 @@ class App {
 
   bindGlobals() {
     document.addEventListener('click', (event) => this.onClick(event));
+    document.addEventListener('change', (event) => this.onFieldChange(event));
     document.addEventListener('mouseup', (event) => this.onMouseUp(event));
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') store.setState({ openMenu: null, modal: null });
@@ -163,6 +166,12 @@ class App {
       onVerifyModel: (id) => this.verifyModel(id),
       onDeleteModel: (id) => this.deleteModel(id),
       onSaveAnswer: (attemptId, questionId, answer) => this.saveAnswer(attemptId, questionId, answer),
+      onCommandNeeds: () => ({
+        exam: !!store.activeExam(),
+        draft: !!store.activeDraft(),
+        aiDocument: !!store.activeAiDocument(),
+      }),
+      onConfirmModal: () => this.confirmModal(),
     };
   }
 
@@ -368,6 +377,8 @@ class App {
       else if (action === 'select-draft') await this.selectDraft(id);
       else if (action === 'retry-question') await this.retryQuestion(target.dataset.draftId, id);
       else if (action === 'publish-draft') await this.publishDraft(id);
+      else if (action === 'apply-draft-proposal') await this.applyDraftProposal(id);
+      else if (action === 'discard-draft-proposal') await this.discardDraftProposal(id);
       else if (action === 'select-exam') await this.selectExam(id);
       else if (action === 'apply-exam-proposal') await this.applyExamProposal(id);
       else if (action === 'discard-exam-proposal') await this.discardExamProposal(id);
@@ -384,8 +395,43 @@ class App {
       else if (action === 'resume-attempt') await this.run('恢复失败', () => api.resumeAttempt(id), () => this.refreshAttempt(id));
       else if (action === 'ask-feedback') await this.askFeedback(target.dataset.attemptId, id);
     } catch (err) {
-      store.addToast(err.message, 'error');
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
     }
+  }
+
+  async onFieldChange(event) {
+    const target = event.target.closest('[data-action]');
+    if (!target) return;
+    const action = target.dataset.action;
+    const id = target.dataset.id;
+    const index = Number(target.dataset.index);
+    try {
+      if (action === 'plan-count' || action === 'plan-score') {
+        await this.updateBlueprintPlan(id, index, action === 'plan-count' ? 'count' : 'score_each', target.value);
+      }
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  askConfirm({ title, message, ok = '确认', action }) {
+    store.setState({
+      modal: 'confirm',
+      confirmTitle: title,
+      confirmMessage: message,
+      confirmOk: ok,
+      confirmAction: action,
+      openMenu: null,
+    });
+  }
+
+  async confirmModal() {
+    const action = store.state.confirmAction;
+    store.setState({ modal: null, confirmAction: null });
+    if (action === 'delete-subject') await this.deleteSubjectConfirmed();
+    else if (action === 'delete-session') await this.deleteSessionConfirmed(store.state.confirmSessionId);
+    else if (action === 'delete-source') await this.deleteSourceConfirmed(store.state.confirmSourceId);
+    else if (action === 'publish-draft') await this.publishDraftConfirmed(store.state.confirmDraftId, true);
   }
 
   setMobilePane(pane) {
@@ -503,6 +549,8 @@ class App {
       activeDraftId: store.state.activeDraftId && drafts.some((item) => item.id === store.state.activeDraftId) ? store.state.activeDraftId : drafts[0]?.id || null,
       exams,
       activeExamId: store.state.activeExamId && exams.some((item) => item.id === store.state.activeExamId) ? store.state.activeExamId : exams[0]?.id || null,
+      examProposals: [],
+      draftProposals: [],
     });
     if (store.state.activeSourceId) await this.loadSourceDetail(store.state.activeSourceId);
     if (store.state.activeAiDocumentId) await this.loadAiDocDetail(store.state.activeAiDocumentId);
@@ -551,7 +599,7 @@ class App {
   }
 
   async createSubject(name) {
-    if (!name) return;
+    if (!name) return store.addToast('请填写科目名称', 'error');
     const subject = await api.createSubject(name);
     store.addToast('科目已创建', 'success');
     store.setState({ modal: null });
@@ -560,7 +608,7 @@ class App {
   }
 
   async renameSubject(name) {
-    if (!name || !store.state.activeSubjectId) return;
+    if (!name || !store.state.activeSubjectId) return store.addToast('请填写科目名称', 'error');
     await api.renameSubject(store.state.activeSubjectId, name);
     store.addToast('已重命名', 'success');
     store.setState({ modal: null });
@@ -568,14 +616,33 @@ class App {
   }
 
   async switchSubject(subjectId) {
-    store.setState({ openMenu: null, activeSubjectId: subjectId });
+    const previous = store.state.activeSubjectId;
+    const drafts = { ...store.state.composerBySubject };
+    if (previous) drafts[previous] = store.state.composerText;
+    store.setState({
+      openMenu: null,
+      activeSubjectId: subjectId,
+      composerBySubject: drafts,
+      composerText: drafts[subjectId] || '',
+      attachments: [],
+      selection: null,
+    });
     await api.activateSubject(subjectId).catch(() => {});
     await this.loadSubject(subjectId);
   }
 
   async deleteSubject() {
     if (!store.state.activeSubjectId) return;
-    if (!window.confirm('删除该科目及其资料、试卷？')) return;
+    this.askConfirm({
+      title: '删除科目',
+      message: '将删除该科目下的资料、会话、试卷和作答，无法恢复。',
+      ok: '删除',
+      action: 'delete-subject',
+    });
+  }
+
+  async deleteSubjectConfirmed() {
+    if (!store.state.activeSubjectId) return;
     await api.deleteSubject(store.state.activeSubjectId);
     store.addToast('科目已删除');
     store.setState({ openMenu: null });
@@ -613,7 +680,17 @@ class App {
   }
 
   async deleteSession(sessionId) {
-    if (!window.confirm('删除该会话？')) return;
+    store.setState({ confirmSessionId: sessionId });
+    this.askConfirm({
+      title: '删除会话',
+      message: '将删除该会话的全部消息，无法恢复。',
+      ok: '删除',
+      action: 'delete-session',
+    });
+  }
+
+  async deleteSessionConfirmed(sessionId) {
+    if (!sessionId) return;
     await api.deleteSession(sessionId);
     const data = await api.listSessions(store.state.activeSubjectId);
     const remaining = (data.items || []).filter(sessionVisible);
@@ -766,6 +843,12 @@ class App {
 
   async runCommand(def, args, rawCommand) {
     if (!store.activeModel()) return store.addToast('请先配置模型', 'error');
+    if (def.run === 'proposeExamEdit' && !store.activeExam() && !store.activeDraft()) {
+      return store.addToast('请先选择一份草稿或试卷', 'error');
+    }
+    if (def.run === 'proposeDocEdit' && !store.activeAiDocument()) {
+      return store.addToast('请先选择一份 AI 文档', 'error');
+    }
     const commandText = rawCommand || `${def.name} ${args}`.trim();
     const sid = await this.ensureSession(commandText);
     await api.appendSessionNote(sid, { role: 'user', content: commandText });
@@ -792,8 +875,8 @@ class App {
           }
           break;
         case 'proposeExamEdit':
-          if (!store.activeExam()) throw new Error('请先选择一份试卷');
-          await this.proposeExamEdit(args);
+          if (store.activeExam()) await this.proposeExamEdit(args);
+          else await this.proposeDraftEdit(args);
           resultText = '修改预览已就绪，请应用或放弃';
           break;
         case 'createAiDocument':
@@ -951,6 +1034,40 @@ class App {
     store.addToast('蓝图已生成', 'success');
     const blueprint = (data.items || []).find((item) => item.id === id);
     return blueprint?.title || '';
+  }
+
+  async proposeDraftEdit(instruction) {
+    const draft = store.activeDraft();
+    if (!draft) throw new Error('请先选择一份草稿或试卷');
+    const accepted = await api.createDraftRevisionProposal(draft.id, {
+      instruction,
+      model_id: store.state.currentModelId,
+    });
+    store.trackOperation(accepted.operation);
+    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    await this.loadDraftProposals(draft.id);
+    store.setState({ examTab: 'draft', workspace: 'exam', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
+    store.addToast('修改预览已就绪', 'success');
+  }
+
+  async loadDraftProposals(draftId) {
+    const proposals = await api.listDraftRevisionProposals(draftId);
+    store.setState({ draftProposals: proposals.items || [] });
+  }
+
+  async applyDraftProposal(proposalId) {
+    await api.applyDraftRevisionProposal(proposalId);
+    const draftId = store.state.activeDraftId;
+    if (draftId) {
+      await this.selectDraft(draftId);
+      await this.loadDraftProposals(draftId);
+    }
+    store.addToast('已应用修改', 'success');
+  }
+
+  async discardDraftProposal(proposalId) {
+    await api.discardDraftRevisionProposal(proposalId);
+    if (store.state.activeDraftId) await this.loadDraftProposals(store.state.activeDraftId);
   }
 
   async proposeExamEdit(instruction) {
@@ -1129,12 +1246,16 @@ class App {
   async loadSourceDetail(sourceId) {
     const source = await api.getSource(sourceId);
     const versionId = source.current_version?.id;
-    const anchors = versionId && source.status === 'ready'
-      ? ((await api.listSourceVersionAnchors(versionId).catch(() => ({ items: [] }))).items || [])
-      : [];
+    const [anchorsRes, versionsRes] = await Promise.all([
+      versionId && source.status === 'ready'
+        ? api.listSourceVersionAnchors(versionId).catch(() => ({ items: [] }))
+        : Promise.resolve({ items: [] }),
+      api.listSourceVersions(sourceId).catch(() => ({ items: [] })),
+    ]);
     store.setState({
       sources: store.state.sources.map((item) => (item.id === sourceId ? source : item)),
-      sourceAnchors: anchors,
+      sourceAnchors: anchorsRes.items || [],
+      sourceVersions: versionsRes.items || [],
     });
   }
 
@@ -1156,10 +1277,20 @@ class App {
   }
 
   async deleteSource(sourceId) {
-    if (!window.confirm('删除这份资料？')) return;
+    store.setState({ confirmSourceId: sourceId });
+    this.askConfirm({
+      title: '删除资料',
+      message: '将删除这份资料。已引用它的会话和试卷仍会保留历史来源。',
+      ok: '删除',
+      action: 'delete-source',
+    });
+  }
+
+  async deleteSourceConfirmed(sourceId) {
+    if (!sourceId) return;
     await api.deleteSource(sourceId);
     const data = await api.listSources(store.state.activeSubjectId);
-    store.setState({ sources: data.items || [], activeSourceId: data.items?.[0]?.id || null, sourceAnchors: [] });
+    store.setState({ sources: data.items || [], activeSourceId: data.items?.[0]?.id || null, sourceAnchors: [], sourceVersions: [] });
   }
 
   async selectAiDoc(docId) {
@@ -1222,14 +1353,17 @@ class App {
   async generateDraft(id) {
     const accepted = await api.generateDraftFromBlueprint(id);
     store.trackOperation(accepted.operation);
-    store.setState({ examTab: 'draft' });
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
     const data = await api.listDrafts(store.state.activeSubjectId);
     const draftId = accepted.resource?.id || data.items?.[0]?.id;
-    store.setState({ drafts: data.items || [], activeDraftId: draftId });
+    store.setState({ examTab: 'draft', drafts: data.items || [], activeDraftId: draftId || null });
     if (draftId) await this.selectDraft(draftId);
     this.watchDraft();
     store.addToast('已开始组题', 'success');
+    api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) })
+      .then(async () => {
+        if (store.state.activeDraftId) await this.selectDraft(store.state.activeDraftId);
+      })
+      .catch((err) => store.addToast(sanitizeErrorMessage(err.message), 'error'));
   }
 
   async selectDraft(id) {
@@ -1239,7 +1373,24 @@ class App {
       drafts: store.state.drafts.map((item) => (item.id === id ? draft : item)),
       examTab: 'draft',
     });
+    await this.loadDraftProposals(id).catch(() => store.setState({ draftProposals: [] }));
     this.watchDraft();
+  }
+
+  async updateBlueprintPlan(blueprintId, index, field, rawValue) {
+    const current = store.state.blueprints.find((item) => item.id === blueprintId);
+    if (!current || current.status !== 'draft') return;
+    const plan = (current.question_plan || []).map((row, rowIndex) => ({ ...row }));
+    if (!plan[index]) return;
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value <= 0) return;
+    plan[index][field] = field === 'count' ? Math.max(1, Math.round(value)) : value;
+    const total = plan.reduce((sum, row) => sum + row.count * row.score_each, 0);
+    await api.updateBlueprint(blueprintId, { question_plan: plan, total_score: total });
+    const detail = await api.getBlueprint(blueprintId);
+    store.setState({
+      blueprints: store.state.blueprints.map((item) => (item.id === blueprintId ? detail : item)),
+    });
   }
 
   watchDraft() {
@@ -1357,12 +1508,27 @@ class App {
   }
 
   async publishDraft(id) {
-    const accepted = await api.publishDraft(id, {});
-    store.trackOperation(accepted.operation);
-    const done = await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
-    store.trackOperation(done);
+    const draft = store.state.drafts.find((item) => item.id === id) || store.activeDraft();
+    const state = draftPublishState(draft);
+    if (!state.canPublish) return store.addToast('先重试失败或未完成的题目', 'error');
+    if (state.needsConfirm) {
+      store.setState({ confirmDraftId: id });
+      this.askConfirm({
+        title: '发布试卷',
+        message: '草稿仍有待复查题目。确认后将按当前内容发布。',
+        ok: '仍要发布',
+        action: 'publish-draft',
+      });
+      return;
+    }
+    await this.publishDraftConfirmed(id, false);
+  }
+
+  async publishDraftConfirmed(id, acceptNeedsReview) {
+    if (!id) return;
+    const exam = await api.publishDraft(id, { accept_needs_review: !!acceptNeedsReview });
     const data = await api.listExams(store.state.activeSubjectId);
-    const examId = accepted.resource?.id || done.result?.id || data.items?.[0]?.id;
+    const examId = exam?.id || data.items?.[0]?.id;
     store.setState({ exams: data.items || [], activeExamId: examId, examTab: 'exam' });
     if (examId) await this.loadExamDetail(examId);
     store.addToast('试卷已发布', 'success');

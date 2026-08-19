@@ -863,6 +863,67 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
 
+  /api/exam-drafts/{draft_id}/revision-proposals:
+    parameters:
+      - $ref: '#/components/parameters/DraftId'
+    get:
+      operationId: listDraftRevisionProposals
+      tags: [ExamDrafts]
+      summary: 列出草稿修改提案
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 修改提案列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/DraftRevisionProposalList}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createDraftRevisionProposal
+      tags: [ExamDrafts, Operations]
+      summary: 让 AI 生成草稿修改预览
+      description: 只生成差异提案，不直接修改草稿。
+      x-tickets: ['13']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/DraftRevisionProposalInput}
+      responses:
+        '202': {$ref: '#/components/responses/OperationAccepted'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/draft-revision-proposals/{proposal_id}/apply:
+    parameters:
+      - $ref: '#/components/parameters/ProposalId'
+    post:
+      operationId: applyDraftRevisionProposal
+      tags: [ExamDrafts]
+      summary: 应用草稿修改提案
+      x-tickets: ['13']
+      responses:
+        '200':
+          description: 已应用到草稿
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/ExamDraft}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/draft-revision-proposals/{proposal_id}/discard:
+    parameters:
+      - $ref: '#/components/parameters/ProposalId'
+    post:
+      operationId: discardDraftRevisionProposal
+      tags: [ExamDrafts]
+      summary: 放弃草稿修改提案
+      x-tickets: ['13']
+      responses:
+        '204': {description: 已放弃，草稿保持不变}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /api/subjects/{subject_id}/exams:
     parameters:
       - $ref: '#/components/parameters/SubjectId'

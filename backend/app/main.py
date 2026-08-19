@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api_models import (
@@ -306,6 +306,10 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
                 details=exc.details,
             )
         return {"operation": operation, "resource": operation.get("resource")}
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        return FileResponse(FRONTEND_DIR / "favicon.svg", media_type="image/svg+xml")
 
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
     return app

@@ -274,6 +274,18 @@ export const api = {
   publishDraft(draftId, payload = {}) {
     return json('POST', `/api/exam-drafts/${encodeURIComponent(draftId)}/publish`, payload);
   },
+  listDraftRevisionProposals(draftId) {
+    return request(`/api/exam-drafts/${encodeURIComponent(draftId)}/revision-proposals`);
+  },
+  createDraftRevisionProposal(draftId, payload) {
+    return json('POST', `/api/exam-drafts/${encodeURIComponent(draftId)}/revision-proposals`, payload);
+  },
+  applyDraftRevisionProposal(proposalId) {
+    return json('POST', `/api/draft-revision-proposals/${encodeURIComponent(proposalId)}/apply`);
+  },
+  discardDraftRevisionProposal(proposalId) {
+    return json('POST', `/api/draft-revision-proposals/${encodeURIComponent(proposalId)}/discard`);
+  },
 
   listExams(subjectId) {
     return request(`/api/subjects/${encodeURIComponent(subjectId)}/exams`);

@@ -69,11 +69,8 @@ class ModelApiClient:
                 raise ModelClientError("无法连接模型服务，请检查 Base URL 和网络设置", code="MODEL_CONNECTION_FAILED") from exc
 
         if response.status_code >= 400:
-            detail = (response.text or "").strip().replace("\n", " ")
-            if len(detail) > 300:
-                detail = detail[:300] + "…"
             raise ModelClientError(
-                f"模型服务返回错误（HTTP {response.status_code}）：{detail or '未提供错误详情'}",
+                self._public_http_error(response.status_code),
                 code="MODEL_HTTP_ERROR",
                 status=response.status_code,
             )
@@ -130,6 +127,16 @@ class ModelApiClient:
             return joined
         output_text = payload.get("output_text")
         return output_text if isinstance(output_text, str) and output_text else None
+
+    @staticmethod
+    def _public_http_error(status: int) -> str:
+        if status == 401:
+            return "模型服务拒绝了请求，请检查 API Key"
+        if status == 403:
+            return "模型服务暂时不可用"
+        if status == 429:
+            return "模型服务请求过于频繁，请稍后再试"
+        return f"模型服务返回错误（HTTP {status}）"
 
     @staticmethod
     def _endpoint(base_url: str, suffix: str) -> str:

@@ -84,6 +84,20 @@ def test_source_versions_cache_delete_and_subject_isolation(tmp_path):
         assert [version["number"] for version in versions] == [1, 2]
         assert client.get(f"/api/source-versions/{first_version_id}").json()["status"] == "ready"
 
+        same_name = upload_source(
+            client,
+            math_id,
+            "notes.md",
+            b"# Limits\n\nA newer version of the notes.\n",
+            "text/markdown",
+            "极限笔记",
+        )
+        assert same_name.status_code == 202
+        wait_for_operation(client, same_name.json()["operation"]["id"])
+        assert same_name.json()["resource"]["id"] == source_id
+        versions_after_reupload = client.get(f"/api/sources/{source_id}/versions").json()["items"]
+        assert [version["number"] for version in versions_after_reupload] == [1, 2, 3]
+
         math_sources = client.get(f"/api/subjects/{math_id}/sources").json()["items"]
         english_sources = client.get(f"/api/subjects/{english_id}/sources").json()["items"]
         assert len(math_sources) == 2

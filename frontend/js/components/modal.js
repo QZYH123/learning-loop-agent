@@ -24,7 +24,7 @@ export function renderModals(state, root, handlers) {
       state.confirmTitle || '确认',
       `<p>${escapeHtml(state.confirmMessage || '')}</p>`,
       `<button type="button" class="btn btn-ghost" data-action="close">取消</button>
-       <button type="button" class="btn btn-danger" data-action="confirm-ok">确认</button>`,
+       <button type="button" class="btn btn-danger" data-action="confirm-ok">${escapeHtml(state.confirmOk || '确认')}</button>`,
     );
   } else {
     root.innerHTML = '';

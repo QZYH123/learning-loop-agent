@@ -19,6 +19,8 @@ from .exam_models import (
     ExamBlueprintPromptInput,
     ExamDraft,
     ExamDraftList,
+    DraftRevisionProposalInput,
+    DraftRevisionProposalList,
     ExamDraftPatch,
     ExamDocumentReplaceInput,
     ExamList,
@@ -183,6 +185,44 @@ def create_exam_router(exams) -> APIRouter:
     )
     def publish_draft(draft_id: str, payload: PublishExamInput | None = None):
         return exams.publish_draft(draft_id, payload.accept_needs_review if payload else False)
+
+    @router.get(
+        "/api/exam-drafts/{draft_id}/revision-proposals",
+        operation_id="listDraftRevisionProposals",
+        response_model=DraftRevisionProposalList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_draft_revision_proposals(draft_id: str):
+        return {"items": exams.list_draft_revision_proposals(draft_id)}
+
+    @router.post(
+        "/api/exam-drafts/{draft_id}/revision-proposals",
+        operation_id="createDraftRevisionProposal",
+        status_code=202,
+        response_model=OperationAccepted,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    async def create_draft_revision_proposal(draft_id: str, payload: DraftRevisionProposalInput):
+        return exams.create_draft_revision_proposal(draft_id, payload.model_dump(exclude_none=True))
+
+    @router.post(
+        "/api/draft-revision-proposals/{proposal_id}/apply",
+        operation_id="applyDraftRevisionProposal",
+        response_model=ExamDraft,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def apply_draft_revision_proposal(proposal_id: str):
+        return exams.apply_draft_revision_proposal(proposal_id)
+
+    @router.post(
+        "/api/draft-revision-proposals/{proposal_id}/discard",
+        operation_id="discardDraftRevisionProposal",
+        status_code=204,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def discard_draft_revision_proposal(proposal_id: str):
+        exams.discard_draft_revision_proposal(proposal_id)
+        return Response(status_code=204)
 
     @router.get(
         "/api/subjects/{subject_id}/exams",

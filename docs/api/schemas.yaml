@@ -114,7 +114,7 @@ components:
       properties:
         type:
           type: string
-          enum: [model, source, source-version, chat-message, learning-artifact, exam-blueprint, exam-draft, question, exam, attempt, feedback, revision-proposal, export, evaluation-run, session, attachment, ai-document, ai-document-version, ai-document-proposal]
+          enum: [model, source, source-version, chat-message, learning-artifact, exam-blueprint, exam-draft, question, exam, attempt, feedback, revision-proposal, draft-revision-proposal, export, evaluation-run, session, attachment, ai-document, ai-document-version, ai-document-proposal]
         id: {$ref: '#/components/schemas/Identifier'}
 
     OperationKind:
@@ -1766,6 +1766,50 @@ components:
           type: array
           uniqueItems: true
           items: {$ref: '#/components/schemas/Identifier'}
+
+    DraftRevisionProposalInput:
+      type: object
+      additionalProperties: false
+      required: [instruction]
+      properties:
+        instruction: {type: string, minLength: 1, maxLength: 10000}
+        model_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+
+    DraftRevisionProposal:
+      type: object
+      additionalProperties: false
+      required: [id, draft_id, instruction, status, changes, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        draft_id: {$ref: '#/components/schemas/Identifier'}
+        instruction: {type: string}
+        scope: {$ref: '#/components/schemas/RevisionScope'}
+        status: {type: string, enum: [generating, ready, applied, discarded, failed]}
+        changes:
+          type: array
+          items: {$ref: '#/components/schemas/ExamChange'}
+        model:
+          anyOf:
+            - $ref: '#/components/schemas/ModelSnapshot'
+            - type: 'null'
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        created_at: {type: integer}
+        updated_at: {type: integer}
+
+    DraftRevisionProposalList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/DraftRevisionProposal'}
 
     ExamRevisionProposalInput:
       type: object

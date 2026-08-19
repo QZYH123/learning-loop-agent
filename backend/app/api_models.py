@@ -97,6 +97,7 @@ ResourceType = Literal[
     "attempt",
     "feedback",
     "revision-proposal",
+    "draft-revision-proposal",
     "export",
     "evaluation-run",
     "session",

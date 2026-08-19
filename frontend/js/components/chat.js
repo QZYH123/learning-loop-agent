@@ -12,6 +12,7 @@ import {
   statusLabel,
   styleLabel,
   truncate,
+  sanitizeErrorMessage,
 } from '../util.js';
 
 export function renderChatPane(state, handlers, options = {}) {
@@ -54,7 +55,10 @@ export function renderChatPane(state, handlers, options = {}) {
         <div class="pane-actions">
           ${
             options.variant === 'learn'
-              ? `<button type="button" class="icon-btn ${state.openMenu === 'sources' ? 'is-active' : ''}" data-action="toggle-menu" data-menu="sources" title="资料">${icons.folder(15)}</button>`
+              ? `<div class="dropdown">
+                  <button type="button" class="icon-btn ${state.openMenu === 'sources' ? 'is-active' : ''}" data-action="toggle-menu" data-menu="sources" title="资料" aria-expanded="${state.openMenu === 'sources'}">${icons.folder(15)}</button>
+                  ${state.openMenu === 'sources' ? sourcesDrawer(state) : ''}
+                </div>`
               : ''
           }
           <div class="dropdown">
@@ -84,7 +88,6 @@ export function renderChatPane(state, handlers, options = {}) {
           }
         </div>
       </div>
-      ${state.openMenu === 'sources' && options.variant === 'learn' ? sourcesDrawer(state) : ''}
       <div class="chat-main">
       <div class="chat-stream" id="chat-stream">
         ${
@@ -109,7 +112,10 @@ export function renderChatPane(state, handlers, options = {}) {
         <div class="composer-box">
           <textarea id="composer-input" rows="2" placeholder="${escapeHtml(placeholder)}" ${canCompose ? '' : 'disabled'}>${escapeHtml(state.composerText)}</textarea>
           <div class="composer-tools">
-            <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="grounding" title="依据：${groundingLabel(state.groundingMode)}">${icons.shield(15)}</button>
+            <div class="dropdown composer-grounding">
+              <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="grounding" title="依据：${groundingLabel(state.groundingMode)}" aria-expanded="${state.openMenu === 'grounding'}">${icons.shield(15)}</button>
+              ${state.openMenu === 'grounding' ? groundingMenu(state.groundingMode) : ''}
+            </div>
             <button type="button" class="icon-btn" data-action="pick-attach" title="附件" ${canCompose ? '' : 'disabled'}>${icons.paperclip(15)}</button>
             ${
               generating
@@ -118,7 +124,6 @@ export function renderChatPane(state, handlers, options = {}) {
             }
           </div>
         </div>
-        ${state.openMenu === 'grounding' ? groundingMenu(state.groundingMode) : ''}
         <input type="file" id="chat-attach-input" hidden multiple />
       </div>
       </div>
@@ -215,13 +220,21 @@ export function bindChatPane(root, handlers) {
     if (value.startsWith('/') && !value.includes(' ')) {
       const seen = new Set();
       const items = [];
+      const needs = handlers.onCommandNeeds?.() || {};
+      const hasExam = !!needs.exam;
+      const hasDraft = !!needs.draft;
+      const hasDoc = !!needs.aiDocument;
       for (const def of COMMANDS) {
         for (const name of [def.name, ...def.aliases]) {
           if (!name.startsWith(value) || seen.has(def.name)) continue;
           seen.add(def.name);
+          const disabled = (def.needs === 'examOrDraft' && !hasExam && !hasDraft)
+            || (def.needs === 'exam' && !hasExam)
+            || (def.needs === 'aiDocument' && !hasDoc);
           items.push({
+            disabled,
             attrs: ` data-cmd="${escapeHtml(name)}"`,
-            html: `<b>${escapeHtml(name)}</b><span>${escapeHtml(def.hint)}</span>`,
+            html: `<b>${escapeHtml(name)}</b><span>${escapeHtml(disabled ? `${def.hint}（当前不可用）` : def.hint)}</span>`,
           });
         }
       }
@@ -321,14 +334,19 @@ function renderMessage(msg) {
     ? { covered: '依据资料', 'not-covered': '未覆盖', 'general-knowledge': '常识', supplemental: '补充' }[msg.grounding_result]
     : '';
   const cites = (msg.citations || [])
-    .map((cite) => `<span class="cite" title="${escapeHtml(cite.excerpt || cite.location?.label || '')}">${escapeHtml(cite.source_name || '资料')}${cite.location?.label ? ` · ${escapeHtml(cite.location.label)}` : ''}</span>`)
+    .slice(0, 3)
+    .map((cite) => {
+      const location = shortLocation(cite.location?.label);
+      const label = location ? `${cite.source_name || '资料'} · ${location}` : (cite.source_name || '资料');
+      return `<span class="cite" title="${escapeHtml(cite.excerpt || cite.location?.label || label)}">${escapeHtml(label)}</span>`;
+    })
     .join('');
   const bubbleBody = isGenerating && !text && !plainText
     ? `${icons.rotateCw(14, 'spin')} 生成中`
     : `${text || escapeHtml(plainText)}${cites ? `<div class="cite-row">${cites}</div>` : ''}`;
   const retryable = role === 'assistant' && ['error', 'stopped'].includes(msg.status);
   const errorBlock = retryable
-    ? `<div class="msg-error">${escapeHtml(msg.error?.message || '生成失败')}</div>
+    ? `<div class="msg-error">${escapeHtml(sanitizeErrorMessage(msg.error?.message || '生成失败'))}</div>
        <button type="button" class="btn btn-ghost btn-sm" data-action="retry-message" data-id="${msg.id}">重试</button>`
     : '';
   return `
@@ -399,7 +417,7 @@ function modelMenu(state) {
 
 function groundingMenu(current) {
   return `
-    <div class="menu menu-right" style="bottom: 58px; top: auto; right: 54px;">
+    <div class="menu">
       ${GROUNDING_MODES.map(
         (item) => `
         <button type="button" class="menu-item ${item.id === current ? 'is-active' : ''}" data-action="set-grounding" data-id="${item.id}">
@@ -411,12 +429,25 @@ function groundingMenu(current) {
   `;
 }
 
+function shortLocation(label) {
+  const text = String(label || '').trim();
+  if (!text) return '';
+  const parts = text.split('/').map((part) => part.trim()).filter(Boolean);
+  return parts[parts.length - 1] || text;
+}
+
 function sourcesDrawer(state) {
   const session = state.sessions.find((item) => item.id === state.activeSessionId);
   const pinned = new Set(session?.source_version_ids || []);
   const ready = (state.sources || []).filter((src) => src.current_version?.id);
+  const seen = new Map();
+  ready.forEach((src) => {
+    const key = src.display_name || src.id;
+    seen.set(key, (seen.get(key) || 0) + 1);
+  });
+  const counts = new Map();
   return `
-    <div class="menu" style="position:absolute;top:48px;right:12px;z-index:20;">
+    <div class="menu menu-right">
       <div class="menu-title">会话资料</div>
       ${
         ready.length
@@ -424,8 +455,12 @@ function sourcesDrawer(state) {
               .map((src) => {
                 const versionId = src.current_version.id;
                 const on = pinned.has(versionId);
-                return `<button type="button" class="menu-item ${on ? 'is-active' : ''}" data-action="${on ? 'unpin-source' : 'pin-source'}" data-id="${versionId}">
-                  <span>${escapeHtml(src.display_name)}</span>${on ? icons.check(14) : ''}
+                const key = src.display_name || src.id;
+                const dup = (seen.get(key) || 0) > 1;
+                const n = dup ? (counts.set(key, (counts.get(key) || 0) + 1), counts.get(key)) : 0;
+                const extra = dup ? ` · v${src.current_version?.number || n}` : (src.current_version?.number > 1 ? ` · v${src.current_version.number}` : '');
+                return `<button type="button" class="menu-item ${on ? 'is-active' : ''}" data-action="${on ? 'unpin-source' : 'pin-source'}" data-id="${versionId}" title="${escapeHtml(src.display_name)}">
+                  <span>${escapeHtml(src.display_name)}${extra}</span>${on ? icons.check(14) : ''}
                 </button>`;
               })
               .join('')

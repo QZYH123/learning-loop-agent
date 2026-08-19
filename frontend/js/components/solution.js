@@ -60,8 +60,9 @@ function renderSources(evidence, reliability) {
   const citations = evidence?.citations || [];
   const chips = citations
     .map((item) => {
-      const label = [item.source_name, item.location?.label].filter(Boolean).join(' ');
-      return label ? `<span class="cite">${escapeHtml(label)}</span>` : '';
+      const loc = String(item.location?.label || '').split('/').pop()?.trim();
+      const label = [item.source_name, loc].filter(Boolean).join(' · ');
+      return label ? `<span class="cite" title="${escapeHtml(item.location?.label || label)}">${escapeHtml(label)}</span>` : '';
     })
     .filter(Boolean);
   if (!chips.length && BASIS_LABEL[evidence?.basis]) {

@@ -133,6 +133,8 @@ def test_client_raises_on_http_error():
         run(client.validate({"provider": "Fake", "model": "fake", "base_url": "http://x/v1", "api_key": ""}))
     assert exc.value.code == "MODEL_HTTP_ERROR"
     assert exc.value.status == 401
+    assert "API Key" in str(exc.value)
+    assert "bad key" not in str(exc.value)
 
 
 def test_client_raises_when_response_has_no_text():

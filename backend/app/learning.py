@@ -1463,9 +1463,9 @@ class LearningService:
     def _chat_style_instruction(chat_style: str) -> str:
         if chat_style == "socratic":
             return (
-                " 使用苏格拉底式交流：优先用问题帮助学习者自己推理，"
+                " 使用苏格拉底式交流：不要先给出完整答案，优先用问题帮助学习者自己推理，"
                 "鼓励先尝试并追问理由，发现误解时清楚纠正。"
-                "这是交流风格，不要输出阶段、提示层级或教学状态 JSON；用户明确要求直接解释时应直接回答。"
+                "这是交流风格，不要输出阶段、提示层级或教学状态 JSON；只有学习者明确要求直接解释或标准答案时才完整作答。"
             )
         if chat_style == "crash-course":
             return (

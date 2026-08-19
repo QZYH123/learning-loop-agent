@@ -9,6 +9,8 @@ import {
   renderBlocks,
   statusLabel,
   truncate,
+  sanitizeErrorMessage,
+  draftPublishState,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 import { formatKey, renderSolution } from './solution.js';
@@ -45,9 +47,10 @@ export function examRightHtml(state) {
   const draft = state.drafts.find((item) => item.id === state.activeDraftId) || null;
   const exam = state.exams.find((item) => item.id === state.activeExamId) || null;
   const proposal = pendingProposal(state.examProposals);
+  const draftProposal = pendingProposal(state.draftProposals);
   return `
         <div class="task">
-          ${renderHeader(tab, blueprint, draft, exam, proposal, collapsed)}
+          ${renderHeader(tab, blueprint, draft, exam, tab === 'draft' ? draftProposal : proposal, collapsed)}
           <div class="local-nav">
             <button type="button" class="seg ${tab === 'blueprint' ? 'is-active' : ''}" data-action="exam-tab" data-tab="blueprint">蓝图</button>
             <button type="button" class="seg ${tab === 'draft' ? 'is-active' : ''}" data-action="exam-tab" data-tab="draft">草稿</button>
@@ -100,8 +103,11 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed) {
         </div>
         <div class="pane-actions">
           ${
-            draft && (draft.status === 'editable' || draft.status === 'generating')
-              ? `<button type="button" class="btn btn-primary btn-sm" data-action="publish-draft" data-id="${draft.id}" ${draft.status !== 'editable' ? 'disabled' : ''}>发布试卷</button>`
+            proposal?.status === 'ready'
+              ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-draft-proposal" data-id="${proposal.id}">应用修改</button>
+                 <button type="button" class="icon-btn" data-action="discard-draft-proposal" data-id="${proposal.id}" title="放弃">${icons.x(15)}</button>`
+              : draft && (draft.status === 'editable' || draft.status === 'generating')
+              ? `<button type="button" class="btn btn-primary btn-sm" data-action="publish-draft" data-id="${draft.id}" ${draft.status !== 'editable' || !draftPublishState(draft).canPublish ? 'disabled' : ''} title="${draftPublishState(draft).canPublish ? '发布试卷' : '先重试失败或待复查题目'}">发布试卷</button>`
               : `<button type="button" class="btn btn-primary btn-sm" data-action="focus-composer">用对话组卷</button>`
           }
         </div>
@@ -132,7 +138,7 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed) {
 function renderBlueprint(state, blueprint) {
   const items = state.blueprints || [];
   if (!items.length) {
-    return `<div class="empty"><h3>还没有试卷</h3><button type="button" class="btn btn-primary" data-action="focus-composer">用对话组卷</button></div>`;
+    return `<div class="empty"><h3>还没有蓝图</h3><button type="button" class="btn btn-primary" data-action="focus-composer">用对话组卷</button></div>`;
   }
   return `
     <div class="resource-row">
@@ -160,12 +166,16 @@ function renderBlueprint(state, blueprint) {
                 <div class="plan">
                   ${(blueprint.question_plan || [])
                     .map(
-                      (row) => `
+                      (row, index) => `
                     <div class="plan-row">
                       <strong>${QUESTION_TYPES[row.type] || row.type}</strong>
                       <span>${DIFFICULTY[row.difficulty] || row.difficulty}</span>
-                      <span>${row.count} 题</span>
-                      <span>${row.score_each} 分</span>
+                      ${
+                        blueprint.status === 'draft'
+                          ? `<input class="input" type="number" min="1" value="${row.count}" data-action="plan-count" data-id="${blueprint.id}" data-index="${index}" title="题量" />
+                             <input class="input" type="number" min="1" step="0.5" value="${row.score_each}" data-action="plan-score" data-id="${blueprint.id}" data-index="${index}" title="每题分值" />`
+                          : `<span>${row.count} 题</span><span>${row.score_each} 分</span>`
+                      }
                     </div>
                   `,
                     )
@@ -205,6 +215,7 @@ function renderSyllabus(blueprint) {
 
 function renderDraft(state, draft) {
   const items = state.drafts || [];
+  const proposal = pendingProposal(state.draftProposals);
   if (!items.length) {
     return `<div class="empty"><h3>还没有草稿</h3><button type="button" class="btn btn-primary" data-action="focus-composer">用对话组卷</button></div>`;
   }
@@ -224,22 +235,36 @@ function renderDraft(state, draft) {
     ${
       !draft
         ? `<div class="empty"><h3>选择一份草稿</h3></div>`
-        : (draft.questions || [])
+        : `${
+            proposal?.status === 'ready'
+              ? `<section class="diff">
+            ${(proposal.changes || [])
+              .map(
+                (change) => `
+              <div class="diff-col diff-before"><h4>当前</h4><p>${escapeHtml(stringifyChange(change.before))}</p></div>
+              <div class="diff-col diff-after"><h4>修改预览${change.summary ? ` · ${escapeHtml(change.summary)}` : ''}</h4><p>${escapeHtml(stringifyChange(change.after))}</p></div>
+            `,
+              )
+              .join('')}
+          </section>`
+              : ''
+          }${(draft.questions || [])
             .map((slot) => {
               const q = slot.question;
+              const retryable = slot.status === 'failed' || slot.status === 'needs-review';
               return `
           <article class="q" data-question-id="${slot.id}">
             <div class="q-head">
               <span>${slot.ordinal}.</span>
               <span>${QUESTION_TYPES[slot.planned_type] || slot.planned_type}</span>
               <span class="status ${slot.status === 'complete' ? 'status-ok' : slot.status === 'failed' ? 'status-bad' : 'status-warn'}">${statusLabel('draft', slot.status)}</span>
-              ${slot.status === 'failed' ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试">${icons.rotateCw(14)}</button>` : ''}
+              ${retryable ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试">${icons.rotateCw(14)}</button>` : ''}
             </div>
-            ${q ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}${renderSolution(q)}` : `<p class="item-sub">${slot.error?.message || '生成中'}</p>`}
+            ${q ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}${renderSolution(q)}` : `<p class="item-sub">${escapeHtml(sanitizeErrorMessage(slot.error?.message || (slot.status === 'generating' || slot.status === 'queued' ? '生成中' : '待生成')))}</p>`}
           </article>
         `;
             })
-            .join('')
+            .join('')}`
     }
   `;
 }

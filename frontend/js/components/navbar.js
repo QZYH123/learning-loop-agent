@@ -78,7 +78,7 @@ function subjectMenu(state) {
   const items = (state.subjects || [])
     .map(
       (item) => `
-      <button type="button" class="menu-item ${item.id === state.activeSubjectId ? 'is-active' : ''}" data-action="switch-subject" data-id="${item.id}">
+      <button type="button" class="menu-item ${item.id === state.activeSubjectId ? 'is-active' : ''}" data-action="switch-subject" data-id="${item.id}" title="${escapeHtml(item.name)}">
         <span>${escapeHtml(item.name)}</span>
         ${item.id === state.activeSubjectId ? icons.check(14) : ''}
       </button>

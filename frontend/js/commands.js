@@ -9,8 +9,8 @@ export const COMMANDS = [
   {
     name: '/改卷',
     aliases: ['/editexam'],
-    hint: '修改当前试卷',
-    needs: 'exam',
+    hint: '修改当前草稿或试卷',
+    needs: 'examOrDraft',
     run: 'proposeExamEdit',
   },
   {

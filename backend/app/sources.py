@@ -200,6 +200,18 @@ class SourceLibrary:
     def create_source(self, subject_id: str, filename: str | None, display_name: str | None, content: bytes) -> dict:
         self._subject(subject_id)
         name, media_kind, mime_type = self._validate_upload(filename, display_name, content)
+        existing = next(
+            (
+                item
+                for item in self.list_sources(subject_id)
+                if item.get("display_name") == name
+                and item.get("media_kind") == media_kind
+                and not self._is_ai_document(item["id"])
+            ),
+            None,
+        )
+        if existing:
+            return self.create_version(existing["id"], filename, content)
         digest = hashlib.sha256(content).hexdigest()
         result = self.workspace_service.dispatch(
             {
