@@ -75,6 +75,13 @@ class ExamService:
                     "supplemental": "优先使用相关资料，资料外的补充内容需要与资料依据区分。",
                     "general-knowledge": "使用通用知识组卷，并明确该蓝图未依据用户资料。",
                 }[payload["grounding_mode"]]
+                missed_points = self._recent_missed_knowledge_points(subject_id)
+                missed_section = ""
+                if missed_points:
+                    missed_section = (
+                        "\n\n参考错点（仅当用户表达复习、巩固、再出一套等意图时才纳入考纲，否则忽略）："
+                        + "、".join(missed_points)
+                    )
                 prompt = (
                     "把组卷要求解析为 JSON，只返回："
                     '{"title":"...","syllabus":["..."],"question_plan":['
@@ -83,6 +90,7 @@ class ExamService:
                     "true-false、short-answer、argumentation、extended-response。\n"
                     f"{grounding_instruction}\n\n"
                     f"用户要求：{payload['prompt']}\n\n相关资料：\n{self.learning._anchors_text(anchors) or '无'}"
+                    f"{missed_section}"
                 )
                 response = await self.model_client.chat(profile, [{
                     "role": "user",
@@ -1350,10 +1358,12 @@ class ExamService:
             "supplemental": "优先依据资料片段；如需通用知识补充，必须与资料依据区分。",
             "general-knowledge": "使用通用知识生成，并将依据标为通用知识。",
         }[blueprint["grounding_mode"]]
+        syllabus_focus = "、".join(blueprint.get("syllabus") or []) or "无"
         prompt = (
             f"生成一道 {slot['planned_type']} 题，难度 {slot['planned_difficulty']}，分值 {slot['planned_score']}。"
             "只返回 JSON，字段为 type、stem、options（选择题）、answer、explanation、knowledge_points。"
             "answer.kind 按题型使用 choice、fill-blank、true-false 或 subjective。\n"
+            f"考纲重点：{syllabus_focus}\n"
             f"{grounding_instruction}\n\n"
             f"资料片段：\n{self.learning._anchors_text(anchors) or '无'}"
         )
@@ -1675,6 +1685,32 @@ class ExamService:
         if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
             return {**attempt, "feedback": []}
         return attempt
+
+    def _recent_missed_knowledge_points(self, subject_id: str) -> list[str]:
+        subject = self.learning._subject(subject_id)
+        attempts = subject.get("data", {}).get("attempts", [])
+        with_feedback = [item for item in attempts if item.get("feedback")]
+        if not with_feedback:
+            return []
+        attempt = max(with_feedback, key=lambda item: item.get("updated_at", 0))
+        document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
+        questions = {item["id"]: item for item in document.get("questions", [])}
+        collected: list[str] = []
+        seen: set[str] = set()
+        for feedback in attempt["feedback"]:
+            if feedback.get("correct") is not False and not feedback.get("missed_points"):
+                continue
+            question = questions.get(feedback.get("question_id"))
+            if not question:
+                continue
+            for point in question.get("knowledge_points") or []:
+                if not point or point in seen:
+                    continue
+                seen.add(point)
+                collected.append(point)
+                if len(collected) >= 10:
+                    return collected
+        return collected
 
     def _version_document(self, subject: dict, exam_id: str, version_id: str) -> dict:
         version = next(
