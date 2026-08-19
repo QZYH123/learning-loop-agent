@@ -243,8 +243,8 @@ class App {
       else if (action === 'complete-attempt') await this.completeAttempt(id);
       else if (action === 'continue-attempt') await this.continueAttempt(id);
       else if (action === 'grade-attempt') await this.gradeAttempt(id);
-      else if (action === 'pause-attempt') await this.run('暂停失败', () => api.pauseAttempt(id), async (attempt) => store.setState({ activeAttempt: attempt }));
-      else if (action === 'resume-attempt') await this.run('恢复失败', () => api.resumeAttempt(id), async (attempt) => store.setState({ activeAttempt: attempt }));
+      else if (action === 'pause-attempt') await this.run('暂停失败', () => api.pauseAttempt(id), () => this.refreshAttempt(id));
+      else if (action === 'resume-attempt') await this.run('恢复失败', () => api.resumeAttempt(id), () => this.refreshAttempt(id));
       else if (action === 'ask-feedback') await this.askFeedback(target.dataset.attemptId, id);
     } catch (err) {
       store.addToast(err.message, 'error');
@@ -991,19 +991,32 @@ class App {
     store.setState({ exams: store.state.exams.map((item) => (item.id === id ? exam : item)) });
   }
 
+  canViewReview(attempt) {
+    return attempt?.mode === 'practice' || attempt?.completion_status === 'completed';
+  }
+
+  async refreshAttempt(id) {
+    const attempt = await api.getAttempt(id);
+    const review = this.canViewReview(attempt)
+      ? await api.getAttemptReview(id).catch(() => null)
+      : null;
+    store.setState({ activeAttempt: attempt, activeAttemptId: attempt.id, review });
+    return attempt;
+  }
+
   async startAttempt(examId, mode) {
     const attempt = await api.createAttempt(examId, { mode, show_suggested_score: mode === 'practice' });
     store.rememberAttempt(examId, attempt.id);
-    store.setState({ activeAttempt: attempt, review: null, activeExamId: examId, mobilePane: { ...store.state.mobilePane, attempt: 'content' } });
+    store.setState({ activeExamId: examId, mobilePane: { ...store.state.mobilePane, attempt: 'content' } });
+    await this.refreshAttempt(attempt.id);
   }
 
   async restoreAttempt(examId) {
-    if (!examId) return store.setState({ activeAttempt: null, review: null });
+    if (!examId) return store.setState({ activeAttempt: null, activeAttemptId: null, review: null });
     const ids = store.state.attemptsByExam[examId] || [];
     for (const id of ids) {
       try {
-        const attempt = await api.getAttempt(id);
-        store.setState({ activeAttempt: attempt, activeAttemptId: attempt.id, review: null });
+        await this.refreshAttempt(id);
         return;
       } catch {
         /* stale */
@@ -1015,30 +1028,28 @@ class App {
   async saveAnswer(attemptId, questionId, answer) {
     try {
       await api.saveAttemptAnswer(attemptId, questionId, answer);
-      const attempt = await api.getAttempt(attemptId);
-      store.setState({ activeAttempt: attempt });
+      await this.refreshAttempt(attemptId);
     } catch (err) {
       store.addToast(err.message, 'error');
     }
   }
 
   async completeAttempt(id) {
-    const attempt = await api.completeAttempt(id);
-    store.setState({ activeAttempt: attempt });
+    await api.completeAttempt(id);
+    await this.refreshAttempt(id);
     store.addToast('已完成作答', 'success');
   }
 
   async continueAttempt(id) {
-    const attempt = await api.continueAttempt(id);
-    store.setState({ activeAttempt: attempt, review: null });
+    await api.continueAttempt(id);
+    await this.refreshAttempt(id);
   }
 
   async gradeAttempt(id) {
     const accepted = await api.submitAttemptGrading(id, { model_id: store.state.currentModelId });
     store.trackOperation(accepted.operation);
     await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
-    const [attempt, review] = await Promise.all([api.getAttempt(id), api.getAttemptReview(id).catch(() => null)]);
-    store.setState({ activeAttempt: attempt, review });
+    await this.refreshAttempt(id);
     store.addToast('批改完成', 'success');
   }
 
@@ -1046,8 +1057,7 @@ class App {
     const accepted = await api.requestQuestionFeedback(attemptId, questionId, { model_id: store.state.currentModelId });
     store.trackOperation(accepted.operation);
     await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
-    const attempt = await api.getAttempt(attemptId);
-    store.setState({ activeAttempt: attempt });
+    await this.refreshAttempt(attemptId);
   }
 
   async run(fail, task, after) {

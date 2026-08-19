@@ -10,6 +10,9 @@ import {
   statusLabel,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
+import { renderReview, renderSolution } from './solution.js';
+
+const SUBJECTIVE_TYPES = new Set(['short-answer', 'argumentation', 'extended-response']);
 
 export function renderAttempt(state, root, handlers) {
   const collapsed = !!state.sidebarCollapsed.attempt;
@@ -140,16 +143,17 @@ function renderBody(state, exam, attempt) {
 
   const locked = attempt.completion_status === 'completed';
   const hideFeedback = attempt.mode === 'exam' && attempt.completion_status !== 'completed';
+  const reviewed = Object.fromEntries((state.review?.items || []).map((item) => [item.question.id, item.question]));
   return `
     <form id="attempt-form">
       ${(attempt.paper?.questions || [])
-        .map((question) => renderQuestion(question, attempt, locked, hideFeedback))
+        .map((question) => renderQuestion(question, attempt, locked, hideFeedback, reviewed[question.id]))
         .join('')}
     </form>
   `;
 }
 
-function renderQuestion(question, attempt, locked, hideFeedback) {
+function renderQuestion(question, attempt, locked, hideFeedback, reviewedQuestion) {
   const saved = answerForQuestion(attempt, question.id);
   const feedback = hideFeedback ? null : feedbackForQuestion(attempt, question.id);
   return `
@@ -162,11 +166,12 @@ function renderQuestion(question, attempt, locked, hideFeedback) {
       ${renderBlocks(question.stem)}
       ${renderInput(question, saved, locked)}
       ${
-        attempt.mode === 'practice' && !locked
+        attempt.mode === 'practice' && !locked && SUBJECTIVE_TYPES.has(question.type)
           ? `<button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" data-action="ask-feedback" data-attempt-id="${attempt.id}" data-id="${question.id}">本题反馈</button>`
           : ''
       }
-      ${feedback ? renderFeedback(feedback) : ''}
+      ${reviewedQuestion ? renderSolution(reviewedQuestion, { showAnswer: true }) : ''}
+      ${feedback ? renderReview(feedback, { showSuggestedScore: !!attempt.show_suggested_score }) : ''}
     </article>
   `;
 }
@@ -206,13 +211,3 @@ function renderInput(question, saved, locked) {
   return `<textarea class="textarea" name="q-${question.id}" rows="${lines}" ${locked ? 'disabled' : ''}>${escapeHtml(answer?.text || '')}</textarea>`;
 }
 
-function renderFeedback(feedback) {
-  return `
-    <div class="feedback">
-      ${feedback.correct != null ? `<div>${feedback.correct ? '正确' : '不正确'}</div>` : ''}
-      ${feedback.suggested_score != null ? `<div>建议分 ${feedback.suggested_score}</div>` : ''}
-      ${(feedback.suggestions || []).map((item) => `<div>${escapeHtml(item)}</div>`).join('')}
-      ${feedback.reference_answer ? `<div>${renderBlocks(feedback.reference_answer)}</div>` : ''}
-    </div>
-  `;
-}

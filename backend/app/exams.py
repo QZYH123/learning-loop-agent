@@ -1511,7 +1511,7 @@ class ExamService:
             "matched_points": [],
             "missed_points": [],
             "reasoning_issues": [],
-            "suggestions": [] if correct else ["对照解析检查答案"],
+            "suggestions": [],
             "suggested_score": question["score"] if correct and attempt["show_suggested_score"] else 0 if attempt["show_suggested_score"] else None,
             "reference_answer": [],
             "evidence": question["evidence"],

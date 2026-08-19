@@ -340,6 +340,10 @@ code, pre { font-family: var(--font-mono); }
 .option:has(input:checked) { border-color: var(--focus); background: var(--blue-soft); }
 .option input { margin-top: 3px; }
 .answer-key { margin-top: 8px; font-size: 12px; color: var(--ink-2); background: var(--bg-muted); padding: 8px; border-radius: 6px; }
+.solution { margin-top: 8px; font-size: 13px; color: var(--ink-2); }
+.solution-section { margin-top: 8px; }
+.solution-label { font-size: 12px; color: var(--ink-3); margin-bottom: 2px; }
+.solution .cite-row { margin-top: 4px; }
 
 .plan { display: flex; flex-direction: column; gap: 8px; }
 .plan-row {
@@ -411,7 +415,13 @@ code, pre { font-family: var(--font-mono); }
 .ask-pop.is-on { display: block; }
 
 .fb { display: flex; flex-direction: column; gap: 6px; }
-.feedback { margin-top: 8px; padding: 10px; background: var(--emerald-soft); border-radius: 6px; font-size: 13px; }
+.feedback { margin-top: 8px; padding: 10px; background: var(--bg-muted); border-radius: 6px; font-size: 13px; }
+.feedback.is-ok { background: var(--emerald-soft); }
+.feedback.is-wrong { background: var(--crimson-soft); }
+.feedback.is-warn { background: var(--amber-soft); }
+.feedback-verdict { font-weight: 700; }
+.feedback-section { margin-top: 8px; }
+.feedback-section:first-child { margin-top: 0; }
 .inline-rename { height: 26px; padding: 0 6px; font-size: 13px; }
 
 @media (max-width: 768px) {

@@ -11,6 +11,7 @@ import {
   truncate,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
+import { formatKey, renderSolution } from './solution.js';
 
 export function renderExam(state, root, handlers) {
   const collapsed = !!state.sidebarCollapsed.exam;
@@ -199,7 +200,7 @@ function renderDraft(state, draft) {
               <span class="status ${slot.status === 'complete' ? 'status-ok' : slot.status === 'failed' ? 'status-bad' : 'status-warn'}">${statusLabel('draft', slot.status)}</span>
               ${slot.status === 'failed' ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试">${icons.rotateCw(14)}</button>` : ''}
             </div>
-            ${q ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}` : `<p class="item-sub">${slot.error?.message || '生成中'}</p>`}
+            ${q ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}${renderSolution(q)}` : `<p class="item-sub">${slot.error?.message || '生成中'}</p>`}
           </article>
         `;
             })
@@ -249,6 +250,7 @@ function renderExamDoc(state, exam, proposal) {
             ${renderBlocks(q.stem)}
             ${renderOptions(q)}
             ${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}
+            ${renderSolution(q)}
           </article>
         `,
               )
@@ -262,15 +264,6 @@ function renderOptions(question) {
   return question.options
     .map((opt) => `<div class="option-view"><span>${escapeHtml(opt.id)}</span><div>${renderBlocks(opt.content)}</div></div>`)
     .join('');
-}
-
-function formatKey(answer) {
-  if (!answer) return '';
-  if (answer.kind === 'choice') return `答案 ${ (answer.option_ids || []).join('、') }`;
-  if (answer.kind === 'true-false') return `答案 ${answer.value ? '对' : '错'}`;
-  if (answer.kind === 'fill-blank') return `答案 ${(answer.blanks || []).map((item) => (item.acceptable_answers || []).join('/')).join('；')}`;
-  if (answer.reference_answer) return blocksToText(answer.reference_answer);
-  return '';
 }
 
 function stringifyChange(value) {

@@ -292,3 +292,63 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
         })
         assert invalid_selection.status_code == 409
         assert invalid_selection.json()["error"]["code"] == "CHAT_SELECTION_INVALID"
+
+
+def publish_ready_exam(client, blueprint_id):
+    client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"total_score": 20})
+    assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").json()["status"] == "confirmed"
+    generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate")
+    draft_id = generated.json()["resource"]["id"]
+    assert wait_for_operation(client, generated.json()["operation"]["id"])["status"] == "succeeded"
+    draft = client.get(f"/api/exam-drafts/{draft_id}").json()
+    failed_id = next(item["id"] for item in draft["questions"] if item["status"] == "needs-review")
+    retried = client.post(f"/api/exam-drafts/{draft_id}/questions/{failed_id}/retry")
+    assert wait_for_operation(client, retried.json()["operation"]["id"])["status"] == "succeeded"
+    published = client.post(f"/api/exam-drafts/{draft_id}/publish", json={})
+    assert published.status_code == 201
+    return published.json()
+
+
+def test_practice_objective_review_and_exam_review_gate(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        _, _, _, blueprint_id = build_exam(client)
+        exam = publish_ready_exam(client, blueprint_id)
+        choice = next(question for question in exam["document"]["questions"] if question["type"] == "single-choice")
+
+        practice = client.post(f"/api/exams/{exam['id']}/attempts", json={"mode": "practice"}).json()
+        wrong = client.put(f"/api/attempts/{practice['id']}/answers/{choice['id']}", json={
+            "answer": {"kind": "choice", "option_ids": ["B"]},
+        })
+        assert wrong.status_code == 200
+        wrong_feedback = next(
+            item for item in client.get(f"/api/attempts/{practice['id']}").json()["feedback"]
+            if item["question_id"] == choice["id"]
+        )
+        assert wrong_feedback["correct"] is False
+        assert wrong_feedback["suggestions"] == []
+
+        review = client.get(f"/api/attempts/{practice['id']}/review")
+        assert review.status_code == 200
+        reviewed = next(item for item in review.json()["items"] if item["question"]["id"] == choice["id"])
+        assert reviewed["question"]["explanation"]
+        assert reviewed["question"]["knowledge_points"]
+
+        right = client.put(f"/api/attempts/{practice['id']}/answers/{choice['id']}", json={
+            "answer": {"kind": "choice", "option_ids": ["A"]},
+        })
+        assert right.status_code == 200
+        right_feedback = next(
+            item for item in client.get(f"/api/attempts/{practice['id']}").json()["feedback"]
+            if item["question_id"] == choice["id"]
+        )
+        assert right_feedback["correct"] is True
+        assert right_feedback["suggestions"] == []
+
+        exam_attempt = client.post(f"/api/exams/{exam['id']}/attempts", json={"mode": "exam"}).json()
+        client.put(f"/api/attempts/{exam_attempt['id']}/answers/{choice['id']}", json={
+            "answer": {"kind": "choice", "option_ids": ["B"]},
+        })
+        blocked = client.get(f"/api/attempts/{exam_attempt['id']}/review")
+        assert blocked.status_code == 409
