@@ -268,9 +268,18 @@ code, pre { font-family: var(--font-mono); }
 .msg-system .bubble { background: var(--indigo-soft); border-color: transparent; }
 .cite-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .cite {
+  display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; padding: 2px 6px; border-radius: 99px;
   background: var(--blue-soft); color: var(--blue); border: 0;
 }
+.syllabus-row { margin: 0 0 10px; }
+.syllabus-row .cite-row { margin-top: 4px; }
+.cite-remove {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; padding: 0; border: 0; border-radius: 99px;
+  background: transparent; color: inherit; cursor: pointer;
+}
+.cite-remove:hover { background: var(--bg-card); }
 .model-chip { font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--bg-muted); }
 
 .composer { border-top: 1px solid var(--border); background: var(--bg-card); padding: 10px; }

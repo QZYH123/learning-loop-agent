@@ -148,6 +148,7 @@ function renderBlueprint(state, blueprint) {
             ? `<div class="fail"><h3>解析失败</h3><button type="button" class="btn btn-primary" data-action="focus-composer">重新组卷</button></div>`
             : `<div>
                 <p class="item-sub" style="margin-bottom:10px">${escapeHtml(truncate(blueprint.prompt || '', 160))}</p>
+                ${renderSyllabus(blueprint)}
                 <div class="plan">
                   ${(blueprint.question_plan || [])
                     .map(
@@ -165,6 +166,32 @@ function renderBlueprint(state, blueprint) {
                 <p class="item-sub" style="margin-top:10px">总分 ${blueprint.total_score}${blueprint.duration_minutes ? ` · ${blueprint.duration_minutes} 分钟` : ''}</p>
               </div>`
     }
+  `;
+}
+
+function renderSyllabus(blueprint) {
+  const points = (blueprint.syllabus || []).filter(Boolean);
+  if (!points.length) return '';
+  const draft = blueprint.status === 'draft';
+  return `
+    <div class="syllabus-row">
+      <span class="solution-label">考点</span>
+      <div class="cite-row">
+        ${points
+          .map(
+            (point, index) => `
+          <span class="cite${draft ? ' is-editable' : ''}">
+            ${escapeHtml(point)}
+            ${
+              draft
+                ? `<button type="button" class="cite-remove" data-action="remove-blueprint-point" data-id="${blueprint.id}" data-index="${index}" title="删除">${icons.x(10)}</button>`
+                : ''
+            }
+          </span>`,
+          )
+          .join('')}
+      </div>
+    </div>
   `;
 }
 

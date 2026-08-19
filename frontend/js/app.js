@@ -226,6 +226,7 @@ class App {
       else if (action === 'discard-doc-proposal') await this.discardDocProposal(id);
       else if (action === 'exam-tab') store.setState({ examTab: target.dataset.tab });
       else if (action === 'select-blueprint') await this.selectBlueprint(id);
+      else if (action === 'remove-blueprint-point') await this.removeBlueprintPoint(id, target.dataset.index);
       else if (action === 'confirm-blueprint') await this.confirmBlueprint(id);
       else if (action === 'generate-draft') await this.generateDraft(id);
       else if (action === 'select-draft') await this.selectDraft(id);
@@ -867,6 +868,21 @@ class App {
     store.setState({
       activeBlueprintId: id,
       blueprints: store.state.blueprints.map((item) => (item.id === id ? blueprint : item)),
+    });
+  }
+
+  async removeBlueprintPoint(id, index) {
+    const current = store.state.blueprints.find((item) => item.id === id);
+    if (!current || current.status !== 'draft') return;
+    const syllabus = (current.syllabus || []).filter((_, itemIndex) => itemIndex !== Number(index));
+    await api.updateBlueprint(id, { syllabus });
+    const [list, detail] = await Promise.all([
+      api.listBlueprints(store.state.activeSubjectId),
+      api.getBlueprint(id),
+    ]);
+    store.setState({
+      activeBlueprintId: id,
+      blueprints: (list.items || []).map((item) => (item.id === id ? detail : item)),
     });
   }
 
