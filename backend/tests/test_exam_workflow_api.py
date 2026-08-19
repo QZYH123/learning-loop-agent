@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 
@@ -292,3 +293,138 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
         })
         assert invalid_selection.status_code == 409
         assert invalid_selection.json()["error"]["code"] == "CHAT_SELECTION_INVALID"
+
+
+def _user_contents(fake, marker):
+    contents = []
+    for call in fake.chat_calls:
+        content = call["messages"][-1]["content"]
+        if isinstance(content, str) and marker in content:
+            contents.append(content)
+    return contents
+
+
+def publish_exam_from_blueprint(client, blueprint_id):
+    assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").status_code == 200
+    generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate").json()
+    assert wait_for_operation(client, generated["operation"]["id"])["status"] == "succeeded"
+    draft_id = generated["resource"]["id"]
+    draft = client.get(f"/api/exam-drafts/{draft_id}").json()
+    for slot in draft["questions"]:
+        if slot["status"] == "needs-review":
+            retried = client.post(f"/api/exam-drafts/{draft_id}/questions/{slot['id']}/retry").json()
+            assert wait_for_operation(client, retried["operation"]["id"])["status"] == "succeeded"
+    published = client.post(f"/api/exam-drafts/{draft_id}/publish", json={})
+    assert published.status_code == 201
+    return published.json()
+
+
+def test_parse_blueprint_omits_missed_points_without_attempts(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        build_exam(client)
+        contents = _user_contents(fake, "把组卷要求解析为 JSON")
+        assert contents
+        assert "参考错点" not in contents[0]
+
+
+def test_parse_blueprint_includes_deduped_missed_points(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id, _, version_id, blueprint_id = build_exam(client)
+        exam = publish_exam_from_blueprint(client, blueprint_id)
+        document = copy.deepcopy(exam["document"])
+        choice = next(question for question in document["questions"] if question["type"] == "single-choice")
+        fill = next(question for question in document["questions"] if question["type"] == "fill-blank")
+        true_false = next(question for question in document["questions"] if question["type"] == "true-false")
+        choice["knowledge_points"] = [
+            "Limits",
+            "Continuity",
+            "Limits",
+            "Derivative",
+            "Integral",
+            "Series",
+            "Sequence",
+            "Topology",
+            "Measure",
+            "Algebra",
+        ]
+        fill["knowledge_points"] = ["Continuity", "ShouldStayDeduped", "OverCap"]
+        true_false["knowledge_points"] = ["ShouldNotAppear"]
+        replaced = client.put(f"/api/exams/{exam['id']}", json={
+            "base_version_id": exam["current_version_id"],
+            "document": document,
+        })
+        assert replaced.status_code == 200
+
+        practice = client.post(f"/api/exams/{exam['id']}/attempts", json={"mode": "practice"}).json()
+        client.put(f"/api/attempts/{practice['id']}/answers/{choice['id']}", json={
+            "answer": {"kind": "choice", "option_ids": ["B"]},
+        })
+        client.put(f"/api/attempts/{practice['id']}/answers/{fill['id']}", json={
+            "answer": {"kind": "fill-blank", "blanks": [{"blank_id": "blank-1", "value": "wrong"}]},
+        })
+        client.put(f"/api/attempts/{practice['id']}/answers/{true_false['id']}", json={
+            "answer": {"kind": "true-false", "value": True},
+        })
+
+        parsed = client.post(f"/api/subjects/{subject_id}/exam-blueprints", json={
+            "prompt": "再出一套 Limits，重点考我错的地方",
+            "grounding_mode": "strict",
+            "source_version_ids": [version_id],
+        })
+        assert wait_for_operation(client, parsed.json()["operation"]["id"])["status"] == "succeeded"
+        content = _user_contents(fake, "把组卷要求解析为 JSON")[-1]
+        expected = [
+            "Limits",
+            "Continuity",
+            "Derivative",
+            "Integral",
+            "Series",
+            "Sequence",
+            "Topology",
+            "Measure",
+            "Algebra",
+            "ShouldStayDeduped",
+        ]
+        assert "参考错点（仅当用户表达复习、巩固、再出一套等意图时才纳入考纲，否则忽略）：" + "、".join(expected) in content
+        assert "OverCap" not in content
+        assert "ShouldNotAppear" not in content
+
+
+def test_patch_syllabus_is_persisted(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        _, _, _, blueprint_id = build_exam(client)
+        patched = client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"syllabus": ["极限", "连续性"]})
+        assert patched.status_code == 200
+        assert patched.json()["syllabus"] == ["极限", "连续性"]
+        assert client.get(f"/api/exam-blueprints/{blueprint_id}").json()["syllabus"] == ["极限", "连续性"]
+
+
+def test_generate_question_prompt_includes_syllabus_or_none(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id, _, version_id, blueprint_id = build_exam(client)
+        publish_exam_from_blueprint(client, blueprint_id)
+        generate_contents = _user_contents(fake, "生成一道")
+        assert generate_contents
+        assert all("考纲重点：Limits" in content for content in generate_contents)
+
+        parsed = client.post(f"/api/subjects/{subject_id}/exam-blueprints", json={
+            "prompt": "Create a Limits exam",
+            "grounding_mode": "strict",
+            "source_version_ids": [version_id],
+        })
+        new_blueprint_id = parsed.json()["resource"]["id"]
+        assert wait_for_operation(client, parsed.json()["operation"]["id"])["status"] == "succeeded"
+        client.patch(f"/api/exam-blueprints/{new_blueprint_id}", json={"syllabus": []})
+        before = len(_user_contents(fake, "生成一道"))
+        publish_exam_from_blueprint(client, new_blueprint_id)
+        empty_contents = _user_contents(fake, "生成一道")[before:]
+        assert empty_contents
+        assert all("考纲重点：无" in content for content in empty_contents)
