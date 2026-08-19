@@ -129,13 +129,40 @@ class ExamFakeModel(ImmediateFakeModelClient):
             }
         elif "结构化差异预览" in content:
             document = json.loads(content.split("试卷：", 1)[1].split("\n\n指令：", 1)[0])
-            result = {"changes": [{
-                "path": "/title",
-                "operation": "replace",
-                "summary": "调整标题",
-                "before": document["title"],
-                "after": "极限复习卷",
-            }]}
+            scope = {}
+            if "修改范围：" in content:
+                try:
+                    scope = json.loads(content.split("修改范围：", 1)[1].split("\n", 1)[0])
+                except json.JSONDecodeError:
+                    scope = {}
+            if scope.get("kind") == "questions" and scope.get("question_ids"):
+                question_id = scope["question_ids"][0]
+                index, question = next(
+                    (idx, item)
+                    for idx, item in enumerate(document["questions"])
+                    if item["id"] == question_id
+                )
+                stem = question["stem"]
+                after = copy.deepcopy(stem) if isinstance(stem, list) and stem else []
+                if after and isinstance(after[0], dict) and after[0].get("type") == "markdown":
+                    after[0]["text"] = "改写后的题干"
+                else:
+                    after = [{"id": "stem-revised", "type": "markdown", "text": "改写后的题干"}]
+                result = {"changes": [{
+                    "path": f"/questions/{index}/stem",
+                    "operation": "replace",
+                    "summary": "按指令改题",
+                    "before": stem,
+                    "after": after,
+                }]}
+            else:
+                result = {"changes": [{
+                    "path": "/title",
+                    "operation": "replace",
+                    "summary": "调整标题",
+                    "before": document["title"],
+                    "after": "极限复习卷",
+                }]}
         else:
             return {"text": "选区解释", "provider": profile["provider"], "model": profile["model"]}
         return {"text": json.dumps(result), "provider": profile["provider"], "model": profile["model"]}
@@ -466,6 +493,56 @@ def test_patch_syllabus_is_persisted(tmp_path):
         assert patched.status_code == 200
         assert patched.json()["syllabus"] == ["极限", "连续性"]
         assert client.get(f"/api/exam-blueprints/{blueprint_id}").json()["syllabus"] == ["极限", "连续性"]
+
+
+def test_draft_revision_can_target_one_question(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        _, model_id, _, blueprint_id = build_exam(client)
+        client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"total_score": 20})
+        assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").status_code == 200
+        generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate").json()
+        assert wait_for_operation(client, generated["operation"]["id"])["status"] == "succeeded"
+        draft_id = generated["resource"]["id"]
+        draft = client.get(f"/api/exam-drafts/{draft_id}").json()
+        for slot in draft["questions"]:
+            if slot["status"] == "needs-review":
+                retried = client.post(f"/api/exam-drafts/{draft_id}/questions/{slot['id']}/retry").json()
+                assert wait_for_operation(client, retried["operation"]["id"])["status"] == "succeeded"
+        draft = client.get(f"/api/exam-drafts/{draft_id}").json()
+        ready = [item for item in draft["questions"] if item.get("question")]
+        assert len(ready) >= 2
+        target, other = ready[0], ready[1]
+        other_stem = copy.deepcopy(other["question"]["stem"])
+
+        missing = client.post(f"/api/exam-drafts/{draft_id}/revision-proposals", json={
+            "instruction": "把这题改简单一点",
+            "scope": {"kind": "questions", "question_ids": ["missing-question"], "block_ids": []},
+            "model_id": model_id,
+        })
+        assert missing.status_code == 422
+
+        proposed = client.post(f"/api/exam-drafts/{draft_id}/revision-proposals", json={
+            "instruction": "把这题改简单一点",
+            "scope": {"kind": "questions", "question_ids": [target["id"]], "block_ids": []},
+            "model_id": model_id,
+        })
+        assert proposed.status_code == 202
+        assert wait_for_operation(client, proposed.json()["operation"]["id"])["status"] == "succeeded"
+        proposal = next(
+            item
+            for item in client.get(f"/api/exam-drafts/{draft_id}/revision-proposals").json()["items"]
+            if item["status"] == "ready"
+        )
+        assert proposal["scope"] == {"kind": "questions", "question_ids": [target["id"]], "block_ids": []}
+
+        applied = client.post(f"/api/draft-revision-proposals/{proposal['id']}/apply")
+        assert applied.status_code == 200
+        updated = next(item for item in applied.json()["questions"] if item["id"] == target["id"])
+        untouched = next(item for item in applied.json()["questions"] if item["id"] == other["id"])
+        assert "改写后的题干" in json.dumps(updated["question"]["stem"], ensure_ascii=False)
+        assert untouched["question"]["stem"] == other_stem
 
 
 def test_generate_question_prompt_includes_syllabus_or_none(tmp_path):

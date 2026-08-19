@@ -484,6 +484,7 @@ class ExamRevisionProposalInput(ContractModel):
 
 class DraftRevisionProposalInput(ContractModel):
     instruction: str = Field(min_length=1, max_length=10000)
+    scope: RevisionScope | None = None
     model_id: str | None = None
 
 

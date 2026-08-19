@@ -503,6 +503,8 @@ class ExamService:
             "instructions": draft.get("instructions") or [],
             "questions": questions,
         }
+        scope = payload.get("scope") or {"kind": "whole-exam", "question_ids": [], "block_ids": []}
+        self._validate_revision_scope(document, scope)
         profile = self._selected_model(subject["id"], payload.get("model_id"))
         timestamp = self._now()
         proposal_id = self._ids("draft-revision-proposal")
@@ -510,7 +512,7 @@ class ExamService:
             "id": proposal_id,
             "draft_id": draft_id,
             "instruction": payload["instruction"],
-            "scope": {"kind": "whole-exam", "question_ids": [], "block_ids": []},
+            "scope": scope,
             "status": "generating",
             "changes": [],
             "model": self.learning._model_snapshot(profile),
@@ -529,7 +531,8 @@ class ExamService:
                         "根据修改指令生成结构化差异预览，只返回 JSON："
                         '{"changes":[{"path":"/title","operation":"replace","summary":"...","before":"...","after":"..."}]}。'
                         "path 使用 JSON Pointer；move 操作的 before 填源路径，path 填目标路径。不要直接应用修改。\n\n"
-                        f"修改范围：整份草稿\n试卷：{json.dumps(document, ensure_ascii=False)}\n\n指令：{payload['instruction']}"
+                        f"修改范围：{json.dumps(scope, ensure_ascii=False)}\n"
+                        f"试卷：{json.dumps(document, ensure_ascii=False)}\n\n指令：{payload['instruction']}"
                     ),
                 }])
                 raw_changes = json.loads(response["text"])["changes"]
