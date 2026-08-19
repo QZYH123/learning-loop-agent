@@ -18,6 +18,10 @@ coverage/
 
 # OS / editor files
 .DS_Store
+
+# Local tool artifacts
+.mindfs/
+.playwright-mcp/
 Thumbs.db
 *.swp
 
