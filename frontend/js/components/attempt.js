@@ -14,39 +14,50 @@ import { renderReview, renderSolution } from './solution.js';
 
 const SUBJECTIVE_TYPES = new Set(['short-answer', 'argumentation', 'extended-response']);
 
-export function renderAttempt(state, root, handlers) {
+export function attemptShellHtml(state) {
   const collapsed = !!state.sidebarCollapsed.attempt;
-  const exam = state.exams.find((item) => item.id === state.activeExamId) || null;
-  const attempt = state.activeAttempt;
-
-  root.innerHTML = `
+  return `
     <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.attempt}" data-testid="attempt-workspace">
       <div class="mobile-switch">
         <button type="button" class="seg ${state.mobilePane.attempt === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
         <button type="button" class="seg ${state.mobilePane.attempt === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
       </div>
-      <aside class="pane pane-ai">
-        ${
-          collapsed
-            ? ''
-            : renderChatPane(state, handlers, {
-                variant: 'task',
-                placeholder: '要解释哪一题？',
-                emptyTitle: '开始新对话',
-              })
-        }
-      </aside>
-      <main class="pane pane-content">
+      <aside class="pane pane-ai"></aside>
+      <main class="pane pane-content"></main>
+    </div>
+  `;
+}
+
+export function attemptLeftHtml(state, handlers) {
+  const collapsed = !!state.sidebarCollapsed.attempt;
+  return collapsed
+    ? ''
+    : renderChatPane(state, handlers, {
+        variant: 'task',
+        placeholder: '要解释哪一题？',
+        emptyTitle: '开始新对话',
+      });
+}
+
+export function attemptRightHtml(state) {
+  const collapsed = !!state.sidebarCollapsed.attempt;
+  const exam = state.exams.find((item) => item.id === state.activeExamId) || null;
+  const attempt = state.activeAttempt;
+  return `
         <div class="task">
           ${renderHeader(exam, attempt, collapsed)}
           <div class="task-body" id="task-scroll" data-select-root="attempt">
             ${renderBody(state, exam, attempt)}
           </div>
         </div>
-      </main>
-    </div>
   `;
+}
+
+export function bindAttemptLeft(root, handlers) {
   bindChatPane(root, handlers);
+}
+
+export function bindAttemptRight(root, handlers, attempt) {
   const form = root.querySelector('#attempt-form');
   if (form && attempt && attempt.completion_status !== 'completed') {
     form.onchange = () => {
@@ -210,4 +221,3 @@ function renderInput(question, saved, locked) {
   const lines = Math.max(3, question.answer_area?.lines || 6);
   return `<textarea class="textarea" name="q-${question.id}" rows="${lines}" ${locked ? 'disabled' : ''}>${escapeHtml(answer?.text || '')}</textarea>`;
 }
-

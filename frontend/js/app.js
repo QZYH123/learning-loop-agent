@@ -1,18 +1,40 @@
 import { api } from './api.js';
 import { store } from './store.js';
-import { renderNavbar } from './components/navbar.js';
-import { renderLearn } from './components/learn.js';
-import { renderSources } from './components/sources.js';
-import { renderExam } from './components/exam.js';
-import { renderAttempt } from './components/attempt.js';
+import { navbarHtml, renderNavbar } from './components/navbar.js';
+import {
+  bindLearnLeft,
+  bindLearnRight,
+  learnLeftHtml,
+  learnRightHtml,
+  learnShellHtml,
+} from './components/learn.js';
+import {
+  bindSourcesLeft,
+  bindSourcesRight,
+  sourcesLeftHtml,
+  sourcesRightHtml,
+  sourcesShellHtml,
+} from './components/sources.js';
+import {
+  bindExamLeft,
+  examLeftHtml,
+  examRightHtml,
+  examShellHtml,
+} from './components/exam.js';
+import {
+  attemptLeftHtml,
+  attemptRightHtml,
+  attemptShellHtml,
+  bindAttemptLeft,
+  bindAttemptRight,
+} from './components/attempt.js';
 import { renderToasts } from './components/toast.js';
 import { renderModals } from './components/modal.js';
 import { defaultForm, formFromModel, renderModels } from './components/models.js';
+import { matchCommand } from './commands.js';
 import {
+  blocksToText,
   currentAiVersion,
-  looksLikeCreateDoc,
-  looksLikeEdit,
-  looksLikeGenerate,
   officialSelection,
   readySourceVersionIds,
   sessionVisible,
@@ -22,11 +44,14 @@ import {
 class App {
   constructor() {
     this.root = document.getElementById('app');
-    this.ui = { composerFocus: false, range: [0, 0], chatScroll: 0, contentScroll: 0, searchFocus: false, searchRange: [0, 0] };
+    this.ui = { composerFocus: false, range: [0, 0], chatScroll: 0, chatStick: true, contentScroll: 0, searchFocus: false, searchRange: [0, 0] };
     this.selectionPop = null;
     this.draftPoll = null;
     this.sourcePoll = null;
+    this.generatingPoll = null;
+    this.generatingWatchSessionId = null;
     this.sending = false;
+    this.regions = { workspace: null, shell: '', left: '', right: '', nav: '' };
   }
 
   async init() {
@@ -66,8 +91,13 @@ class App {
     const search = document.getElementById('session-search');
     this.ui.searchFocus = search && document.activeElement === search;
     if (search) this.ui.searchRange = [search.selectionStart, search.selectionEnd];
-    this.ui.chatScroll = document.getElementById('chat-stream')?.scrollTop || 0;
-    this.ui.contentScroll = document.getElementById('task-scroll')?.scrollTop || 0;
+    const chat = document.getElementById('chat-stream');
+    if (chat) {
+      this.ui.chatScroll = chat.scrollTop;
+      this.ui.chatStick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 48;
+    }
+    const content = document.getElementById('task-scroll');
+    if (content) this.ui.contentScroll = content.scrollTop;
   }
 
   restoreUi() {
@@ -86,7 +116,7 @@ class App {
     }
     const chat = document.getElementById('chat-stream');
     const content = document.getElementById('task-scroll');
-    if (chat) chat.scrollTop = this.ui.chatScroll;
+    if (chat) chat.scrollTop = this.ui.chatStick ? chat.scrollHeight : this.ui.chatScroll;
     if (content) content.scrollTop = this.ui.contentScroll;
   }
 
@@ -115,6 +145,8 @@ class App {
       onSwitchSubject: (id) => this.switchSubject(id),
       onDeleteSubject: () => this.deleteSubject(),
       onComposerInput: (value) => store.patch({ composerText: value }),
+      onGetMentionSources: () => readyMentionSources(store.state.sources),
+      onMentionSource: (source) => this.mentionSource(source),
       onSearchSessions: (value) => store.setState({ sessionSearch: value }),
       onSend: () => this.submitComposer(),
       onStopChat: () => this.stopChat(),
@@ -134,33 +166,136 @@ class App {
     };
   }
 
+  resetWorkspaceRegions() {
+    this.regions.workspace = null;
+    this.regions.shell = '';
+    this.regions.left = '';
+    this.regions.right = '';
+  }
+
+  workspaceView(workspace) {
+    if (workspace === 'learn') {
+      return {
+        shellHtml: learnShellHtml,
+        leftHtml: learnLeftHtml,
+        rightHtml: learnRightHtml,
+        bindLeft: bindLearnLeft,
+        bindRight: bindLearnRight,
+        leftSel: '.pane-sessions',
+        rightSel: '.pane-chat',
+      };
+    }
+    if (workspace === 'sources') {
+      return {
+        shellHtml: sourcesShellHtml,
+        leftHtml: sourcesLeftHtml,
+        rightHtml: sourcesRightHtml,
+        bindLeft: bindSourcesLeft,
+        bindRight: bindSourcesRight,
+        leftSel: '.pane-ai',
+        rightSel: '.pane-content',
+      };
+    }
+    if (workspace === 'exam') {
+      return {
+        shellHtml: examShellHtml,
+        leftHtml: examLeftHtml,
+        rightHtml: examRightHtml,
+        bindLeft: bindExamLeft,
+        bindRight: null,
+        leftSel: '.pane-ai',
+        rightSel: '.pane-content',
+      };
+    }
+    return {
+      shellHtml: attemptShellHtml,
+      leftHtml: attemptLeftHtml,
+      rightHtml: attemptRightHtml,
+      bindLeft: bindAttemptLeft,
+      bindRight: (root, handlers, state) => bindAttemptRight(root, handlers, state.activeAttempt),
+      leftSel: '.pane-ai',
+      rightSel: '.pane-content',
+    };
+  }
+
+  applyWorkspaceShell(ws, state) {
+    if (!ws) return;
+    const collapsed = !!state.sidebarCollapsed[state.workspace];
+    const mobile = state.mobilePane[state.workspace];
+    ws.classList.toggle('is-collapsed', collapsed);
+    ws.setAttribute('data-mobile', mobile);
+    ws.querySelectorAll('.mobile-switch [data-action="mobile-pane"]').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.pane === mobile);
+    });
+  }
+
+  renderWorkspace(state, workspaceRoot, handlers) {
+    const view = this.workspaceView(state.workspace);
+    const collapsed = !!state.sidebarCollapsed[state.workspace];
+    const mobile = state.mobilePane[state.workspace];
+    const shellKey = `${collapsed ? '1' : '0'}|${mobile}`;
+    const leftHtml = view.leftHtml(state, handlers);
+    const rightHtml = view.rightHtml(state, handlers);
+    const switched = this.regions.workspace !== state.workspace;
+
+    if (switched) {
+      this.regions.workspace = state.workspace;
+      this.regions.shell = '';
+      this.regions.left = '';
+      this.regions.right = '';
+      workspaceRoot.innerHTML = view.shellHtml(state);
+    }
+
+    const ws = workspaceRoot.querySelector('.ws');
+    if (this.regions.shell !== shellKey) {
+      if (!switched) this.applyWorkspaceShell(ws, state);
+      this.regions.shell = shellKey;
+    }
+
+    const leftEl = workspaceRoot.querySelector(view.leftSel);
+    const rightEl = workspaceRoot.querySelector(view.rightSel);
+    if (leftEl && this.regions.left !== leftHtml) {
+      leftEl.innerHTML = leftHtml;
+      this.regions.left = leftHtml;
+      view.bindLeft?.(leftEl, handlers, state);
+    }
+    if (rightEl && this.regions.right !== rightHtml) {
+      rightEl.innerHTML = rightHtml;
+      this.regions.right = rightHtml;
+      view.bindRight?.(rightEl, handlers, state);
+    }
+  }
+
   render() {
     this.captureUi();
     const state = store.getState();
     const handlers = this.handlers();
-    renderNavbar(state, document.getElementById('navbar-root'), handlers);
+    const navRoot = document.getElementById('navbar-root');
+    const navHtml = navbarHtml(state);
+    if (this.regions.nav !== navHtml) {
+      renderNavbar(state, navRoot, handlers);
+      this.regions.nav = navHtml;
+    }
     const workspaceRoot = document.getElementById('workspace-root');
     if (!state.bootstrapped) {
+      this.resetWorkspaceRegions();
       workspaceRoot.innerHTML = `<div class="boot">${spin()}<h3>加载中</h3></div>`;
     } else if (state.loadError) {
+      this.resetWorkspaceRegions();
       workspaceRoot.innerHTML = `<div class="fail"><h3>加载失败</h3><p>${state.loadError}</p><button type="button" class="btn btn-primary" id="retry-boot">重试</button></div>`;
       workspaceRoot.querySelector('#retry-boot').onclick = () => this.bootstrap();
     } else if (!state.activeSubjectId) {
+      this.resetWorkspaceRegions();
       workspaceRoot.innerHTML = `<div class="empty"><h3>开始新对话</h3><button type="button" class="btn btn-primary" data-action="open-subject">新建科目</button></div>`;
-    } else if (state.workspace === 'learn') {
-      renderLearn(state, workspaceRoot, handlers);
-    } else if (state.workspace === 'sources') {
-      renderSources(state, workspaceRoot, handlers);
-    } else if (state.workspace === 'exam') {
-      renderExam(state, workspaceRoot, handlers);
     } else {
-      renderAttempt(state, workspaceRoot, handlers);
+      this.renderWorkspace(state, workspaceRoot, handlers);
     }
     renderModals(state, document.getElementById('modal-root'), handlers);
     renderModels(state, document.getElementById('models-root'), handlers);
     renderToasts(state, document.getElementById('toast-root'), handlers);
     this.restoreUi();
     this.bindRename();
+    this.watchGeneratingMessages();
   }
 
   bindRename() {
@@ -211,6 +346,7 @@ class App {
       else if (action === 'unpin-source') await this.unpinSource(id);
       else if (action === 'send') await this.submitComposer();
       else if (action === 'stop-chat') await this.stopChat();
+      else if (action === 'retry-message') await this.retryMessage(id);
       else if (action === 'clear-selection') store.setState({ selection: null });
       else if (action === 'remove-att') {
         const next = store.state.attachments.filter((_, index) => index !== Number(target.dataset.index));
@@ -374,22 +510,44 @@ class App {
     await this.restoreAttempt(store.state.activeExamId);
     this.watchProcessingSources();
     this.watchDraft();
+    this.watchGeneratingMessages();
   }
 
   async refreshSession() {
     if (!store.state.activeSessionId) return;
     const session = await api.getSession(store.state.activeSessionId);
-    store.setState({
-      sessions: store.state.sessions.map((item) => (item.id === session.id ? session : item)),
-    });
-    this.scrollChatToEnd();
+    const current = store.state.sessions.find((item) => item.id === session.id);
+    if (JSON.stringify(current) !== JSON.stringify(session)) {
+      store.setState({
+        sessions: store.state.sessions.map((item) => (item.id === session.id ? session : item)),
+      });
+    }
+    this.watchGeneratingMessages();
   }
 
-  scrollChatToEnd() {
-    queueMicrotask(() => {
-      const chat = document.getElementById('chat-stream');
-      if (chat) chat.scrollTop = chat.scrollHeight;
-    });
+  async finalizeSessionAfterMessage() {
+    if (!store.state.activeSubjectId) return;
+    const listed = await api.listSessions(store.state.activeSubjectId);
+    store.setState({ sessions: listed.items || [] });
+    await this.refreshSession();
+  }
+
+  async pollSessionMessageOperation(operationId) {
+    try {
+      const done = await api.pollOperation(operationId, {
+        onProgress: (op) => {
+          store.trackOperation(op);
+          store.patch({ chatOp: op });
+        },
+      });
+      store.trackOperation(done);
+      store.setState({ chatOp: null });
+      return done;
+    } catch (err) {
+      store.setState({ chatOp: null });
+      if (err.code !== 'OPERATION_TIMEOUT') store.addToast(err.message, 'error');
+      throw err;
+    }
   }
 
   async createSubject(name) {
@@ -435,6 +593,7 @@ class App {
   }
 
   async selectSession(sessionId) {
+    this.ui.chatStick = true;
     await api.activateSession(sessionId).catch(() => {});
     const session = await api.getSession(sessionId);
     store.setState({
@@ -443,6 +602,7 @@ class App {
       openMenu: null,
       mobilePane: { ...store.state.mobilePane, learn: 'chat' },
     });
+    this.watchGeneratingMessages();
   }
 
   async renameSession(sessionId, title) {
@@ -474,8 +634,41 @@ class App {
 
   async pinSource(versionId) {
     if (!store.state.activeSessionId) return store.addToast('先发送一条消息', 'error');
-    await api.addSessionSource(store.state.activeSessionId, versionId);
+    await this.pinSessionSourceIdempotent(store.state.activeSessionId, versionId);
+  }
+
+  async pinSessionSourceIdempotent(sessionId, versionId) {
+    const session = store.state.sessions.find((item) => item.id === sessionId);
+    if ((session?.source_version_ids || []).includes(versionId)) return;
+    try {
+      await api.addSessionSource(sessionId, versionId);
+    } catch (err) {
+      if (err.code === 'SESSION_SOURCE_CONFLICT') return;
+      throw err;
+    }
     await this.refreshSession();
+  }
+
+  async mentionSource(source) {
+    const versionId = source?.current_version?.id;
+    if (!versionId) return;
+    if (!store.state.activeSessionId) {
+      const pending = store.state.pendingPins || [];
+      if (!pending.includes(versionId)) {
+        store.setState({ pendingPins: [...pending, versionId] });
+      }
+      return;
+    }
+    await this.pinSessionSourceIdempotent(store.state.activeSessionId, versionId);
+  }
+
+  async flushPendingPins(sessionId) {
+    const pending = [...(store.state.pendingPins || [])];
+    if (!pending.length) return;
+    store.setState({ pendingPins: [] });
+    for (const versionId of pending) {
+      await this.pinSessionSourceIdempotent(sessionId, versionId);
+    }
   }
 
   async unpinSource(versionId) {
@@ -516,14 +709,21 @@ class App {
 
   async ensureSession(content) {
     const current = store.activeSession();
-    if (current && sessionVisible(current)) return current.id;
-    if (store.state.activeSessionId && current) return store.state.activeSessionId;
-    const session = await this.createNamedSession(content);
-    store.setState({
-      activeSessionId: session.id,
-      sessions: [...store.state.sessions.filter((item) => item.id !== session.id), session],
-    });
-    return session.id;
+    let sessionId;
+    if (current && sessionVisible(current)) {
+      sessionId = current.id;
+    } else if (store.state.activeSessionId && current) {
+      sessionId = store.state.activeSessionId;
+    } else {
+      const session = await this.createNamedSession(content);
+      store.setState({
+        activeSessionId: session.id,
+        sessions: [...store.state.sessions.filter((item) => item.id !== session.id), session],
+      });
+      sessionId = session.id;
+    }
+    await this.flushPendingPins(sessionId);
+    return sessionId;
   }
 
   syncComposerFromDom() {
@@ -536,6 +736,24 @@ class App {
     const busy = store.state.chatOp && ['queued', 'running', 'canceling'].includes(store.state.chatOp.status);
     if (busy) return;
     this.syncComposerFromDom();
+    const content = store.state.composerText.trim();
+    if (!content) return;
+
+    const command = matchCommand(content);
+    if (command) {
+      this.sending = true;
+      store.patch({ composerText: '' });
+      store.setState({ attachments: [], selection: null, openMenu: null });
+      try {
+        await this.runCommand(command.def, command.args, content);
+      } catch (err) {
+        store.addToast(err.message, 'error');
+      } finally {
+        this.sending = false;
+      }
+      return;
+    }
+
     this.sending = true;
     try {
       await this.send();
@@ -544,6 +762,88 @@ class App {
     } finally {
       this.sending = false;
     }
+  }
+
+  async runCommand(def, args, rawCommand) {
+    if (!store.activeModel()) return store.addToast('请先配置模型', 'error');
+    const commandText = rawCommand || `${def.name} ${args}`.trim();
+    const sid = await this.ensureSession(commandText);
+    await api.appendSessionNote(sid, { role: 'user', content: commandText });
+    await this.refreshSession();
+    const labels = {
+      parseBlueprint: '正在组卷',
+      createAiDocument: '正在生成文档',
+      proposeExamEdit: '正在生成修改预览',
+      proposeDocEdit: '正在生成修改预览',
+    };
+    store.setState({ commandBusy: { sessionId: sid, label: labels[def.run] || '正在执行' } });
+    try {
+      let resultText = '';
+      switch (def.run) {
+        case 'parseBlueprint':
+          store.setState({
+            workspace: 'exam',
+            examTab: 'blueprint',
+            mobilePane: { ...store.state.mobilePane, exam: 'content' },
+          });
+          {
+            const title = await this.parseBlueprint(args);
+            resultText = `已生成蓝图「${title || '未命名'}」，请在组卷区确认题型与总分`;
+          }
+          break;
+        case 'proposeExamEdit':
+          if (!store.activeExam()) throw new Error('请先选择一份试卷');
+          await this.proposeExamEdit(args);
+          resultText = '修改预览已就绪，请应用或放弃';
+          break;
+        case 'createAiDocument':
+          store.setState({
+            workspace: 'sources',
+            sourceKind: 'docs',
+            mobilePane: { ...store.state.mobilePane, sources: 'content' },
+          });
+          {
+            const title = await this.createAiDocument(this.documentInstructionWithContext(args));
+            resultText = `已生成文档「${title || '学习笔记'}」，可在资料区查看`;
+          }
+          break;
+        case 'proposeDocEdit':
+          if (!store.activeAiDocument()) throw new Error('请先选择一份 AI 文档');
+          await this.proposeDocEdit(args);
+          resultText = '修改预览已就绪，请应用或放弃';
+          break;
+        default:
+          break;
+      }
+      if (resultText) {
+        await api.appendSessionNote(sid, { role: 'system', content: resultText });
+        await this.refreshSession();
+      }
+    } catch (err) {
+      const failed = `${def.name}失败：${err.message || '未知错误'}`;
+      try {
+        await api.appendSessionNote(sid, { role: 'system', content: failed });
+        await this.refreshSession();
+      } catch {
+        /* keep the original command error */
+      }
+      throw err;
+    } finally {
+      store.setState({ commandBusy: null });
+    }
+  }
+
+  documentInstructionWithContext(args) {
+    const session = store.activeSession();
+    const messages = session?.messages || [];
+    if (!messages.length) return args;
+    const lines = messages.slice(-6).map((msg) => {
+      const role = msg.role === 'user' ? '用户' : 'AI';
+      return `${role}：${blocksToText(msg.content)}`;
+    });
+    let context = lines.join('\n');
+    if (context.length > 2000) context = context.slice(0, 2000);
+    return `${args}\n\n（当前对话上下文，供整理参考）\n${context}`;
   }
 
   async send() {
@@ -582,34 +882,55 @@ class App {
     }
     store.setState({ chatOp: accepted.operation });
     store.trackOperation(accepted.operation);
+    this.ui.chatStick = true;
+    await this.finalizeSessionAfterMessage();
     try {
-      const done = await api.pollOperation(accepted.operation.id, { onProgress: (op) => { store.trackOperation(op); store.patch({ chatOp: op }); } });
-      store.trackOperation(done);
-      store.setState({ chatOp: null });
-    } catch (err) {
-      store.setState({ chatOp: null });
-      store.addToast(err.message, 'error');
+      await this.pollSessionMessageOperation(accepted.operation.id);
+    } catch {
+      /* timeout handled by generating watch */
     }
-    const listed = await api.listSessions(store.state.activeSubjectId);
-    store.setState({ sessions: listed.items || [] });
-    await this.refreshSession();
+    await this.finalizeSessionAfterMessage();
 
-    if (workspace === 'exam' && (looksLikeGenerate(content) || (!store.state.blueprints.length && content.length > 4))) {
+    if (workspace === 'exam' && !store.state.blueprints.length && content.length > 4) {
       await this.parseBlueprint(content);
-    } else if (workspace === 'exam' && looksLikeEdit(content) && store.activeExam()) {
-      await this.proposeExamEdit(content);
-    } else if (workspace === 'sources' && looksLikeEdit(content) && store.activeAiDocument()) {
-      await this.proposeDocEdit(content);
-    } else if (workspace === 'sources' && looksLikeCreateDoc(content)) {
-      await this.createAiDocument(content);
     }
   }
 
   async stopChat() {
-    if (!store.state.chatOp?.id) return;
-    await api.cancelOperation(store.state.chatOp.id);
+    let operationId = store.state.chatOp?.id;
+    if (!operationId) {
+      const session = store.activeSession();
+      const messageList = session?.messages || [];
+      const last = messageList[messageList.length - 1];
+      if (last?.role === 'assistant' && ['queued', 'generating'].includes(last.status)) {
+        const active = store.state.operations.find(
+          (item) => item.resource?.type === 'chat-message'
+            && item.resource?.id === last.id
+            && !['succeeded', 'failed', 'canceled'].includes(item.status),
+        );
+        operationId = active?.id;
+      }
+    }
+    if (!operationId) return;
+    await api.cancelOperation(operationId);
     store.setState({ chatOp: null });
     await this.refreshSession();
+  }
+
+  async retryMessage(messageId) {
+    if (!store.state.activeSessionId || !messageId) return;
+    const accepted = await api.retrySessionMessage(store.state.activeSessionId, messageId, {
+      model_id: store.state.currentModelId,
+    });
+    store.setState({ chatOp: accepted.operation });
+    store.trackOperation(accepted.operation);
+    await this.finalizeSessionAfterMessage();
+    try {
+      await this.pollSessionMessageOperation(accepted.operation.id);
+    } catch {
+      /* timeout handled by generating watch */
+    }
+    await this.finalizeSessionAfterMessage();
   }
 
   async parseBlueprint(prompt) {
@@ -628,6 +949,8 @@ class App {
     store.setState({ blueprints: data.items || [], activeBlueprintId: id || null });
     if (id) store.setState({ activeBlueprintId: id, blueprints: data.items || [] });
     store.addToast('蓝图已生成', 'success');
+    const blueprint = (data.items || []).find((item) => item.id === id);
+    return blueprint?.title || '';
   }
 
   async proposeExamEdit(instruction) {
@@ -669,7 +992,6 @@ class App {
   async createAiDocument(instruction) {
     if (!store.activeModel()) return store.addToast('请先配置模型', 'error');
     const accepted = await api.createAiDocument(store.state.activeSubjectId, {
-      title: instruction.slice(0, 24) || '学习笔记',
       instruction,
       source_version_ids: readySourceVersionIds(store.state.sources),
       grounding_mode: store.state.groundingMode,
@@ -683,10 +1005,13 @@ class App {
     store.setState({ aiDocuments: data.items || [], activeAiDocumentId: id, sourceKind: 'docs', workspace: 'sources' });
     if (id) await this.loadAiDocDetail(id);
     store.addToast('文档已生成', 'success');
+    const doc = (store.state.aiDocuments || []).find((item) => item.id === id);
+    return doc?.title || '';
   }
 
   async saveModel(form) {
     if (!form.provider || !form.model || !form.base_url) return store.addToast('请填写服务商、模型和地址', 'error');
+    const editingId = store.state.editingModelId;
     store.setState({ modelBusy: 'save', discoverError: null, modelForm: form });
     try {
       const payload = {
@@ -697,16 +1022,18 @@ class App {
         capabilities: { text: true, vision: !!form.vision },
       };
       if (form.api_key) payload.api_key = form.api_key;
-      if (store.state.editingModelId) {
-        await api.updateModel(store.state.editingModelId, payload);
+      if (editingId) {
+        await api.updateModel(editingId, payload);
         store.addToast('已保存', 'success');
       } else {
         await api.createModel({ ...payload, api_key: form.api_key || undefined });
         store.addToast('模型已添加', 'success');
       }
       const models = (await api.listModels()).items || [];
+      const savedModelId = editingId || models.find((item) => item.provider === form.provider && item.model === form.model)?.id;
       store.setState({ models, modelForm: defaultForm(), editingModelId: null, modelBusy: null });
       if (!store.state.currentModelId && models[0]) await this.selectModel(models[0].id);
+      if (savedModelId) void this.verifyModel(savedModelId);
     } catch (err) {
       store.setState({ modelBusy: null });
       store.addToast(err.message, 'error');
@@ -922,6 +1249,14 @@ class App {
     this.draftPoll = window.setInterval(async () => {
       try {
         const latest = await api.getDraft(draft.id);
+        const current = store.state.drafts.find((item) => item.id === latest.id);
+        if (JSON.stringify(current) === JSON.stringify(latest)) {
+          if (latest.status !== 'generating') {
+            window.clearInterval(this.draftPoll);
+            this.draftPoll = null;
+          }
+          return;
+        }
         store.setState({ drafts: store.state.drafts.map((item) => (item.id === latest.id ? latest : item)) });
         if (latest.status !== 'generating') {
           window.clearInterval(this.draftPoll);
@@ -934,12 +1269,73 @@ class App {
     }, 1500);
   }
 
+  watchGeneratingMessages() {
+    const session = store.activeSession();
+    const messageList = session?.messages || [];
+    const last = messageList[messageList.length - 1];
+    const shouldWatch = !!session
+      && store.state.workspace === 'learn'
+      && last?.role === 'assistant'
+      && ['queued', 'generating'].includes(last.status);
+
+    if (!shouldWatch) {
+      if (this.generatingPoll) {
+        window.clearInterval(this.generatingPoll);
+        this.generatingPoll = null;
+        this.generatingWatchSessionId = null;
+      }
+      return;
+    }
+
+    if (this.generatingPoll && this.generatingWatchSessionId === session.id) return;
+
+    if (this.generatingPoll) {
+      window.clearInterval(this.generatingPoll);
+      this.generatingPoll = null;
+    }
+    this.generatingWatchSessionId = session.id;
+    this.generatingPoll = window.setInterval(async () => {
+      try {
+        const latest = await api.getSession(session.id);
+        const current = store.state.sessions.find((item) => item.id === latest.id);
+        const latestLast = (latest.messages || [])[latest.messages.length - 1];
+        const stillGenerating = latestLast?.role === 'assistant'
+          && ['queued', 'generating'].includes(latestLast.status);
+        if (JSON.stringify(current) !== JSON.stringify(latest)) {
+          store.setState({
+            sessions: store.state.sessions.map((item) => (item.id === latest.id ? latest : item)),
+          });
+        }
+        if (!stillGenerating) {
+          window.clearInterval(this.generatingPoll);
+          this.generatingPoll = null;
+          this.generatingWatchSessionId = null;
+          if (store.state.activeSubjectId) {
+            const listed = await api.listSessions(store.state.activeSubjectId);
+            store.setState({ sessions: listed.items || [] });
+          }
+        }
+      } catch {
+        window.clearInterval(this.generatingPoll);
+        this.generatingPoll = null;
+        this.generatingWatchSessionId = null;
+      }
+    }, 3000);
+  }
+
   watchProcessingSources() {
     if (this.sourcePoll) window.clearInterval(this.sourcePoll);
     if (!(store.state.sources || []).some((item) => item.status === 'processing')) return;
     this.sourcePoll = window.setInterval(async () => {
       try {
         const data = await api.listSources(store.state.activeSubjectId);
+        if (JSON.stringify(store.state.sources) === JSON.stringify(data.items || [])) {
+          if (!(data.items || []).some((item) => item.status === 'processing')) {
+            window.clearInterval(this.sourcePoll);
+            this.sourcePoll = null;
+          }
+          return;
+        }
         store.setState({ sources: data.items || [] });
         if (store.state.activeSourceId) await this.loadSourceDetail(store.state.activeSourceId);
         if (!(data.items || []).some((item) => item.status === 'processing')) {
@@ -1084,6 +1480,10 @@ class App {
       store.addToast(err.message || fail, 'error');
     }
   }
+}
+
+function readyMentionSources(sources) {
+  return (sources || []).filter((src) => src.current_version?.id && (src.status === 'ready' || src.current_version.status === 'ready'));
 }
 
 function spin() {

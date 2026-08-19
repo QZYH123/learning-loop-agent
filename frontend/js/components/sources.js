@@ -9,31 +9,38 @@ import {
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 
-export function renderSources(state, root, handlers) {
+export function sourcesShellHtml(state) {
   const collapsed = !!state.sidebarCollapsed.sources;
-  const kind = state.sourceKind || 'files';
-  const source = state.sources.find((item) => item.id === state.activeSourceId) || null;
-  const doc = state.aiDocuments.find((item) => item.id === state.activeAiDocumentId) || null;
-  const proposal = pendingProposal(state.aiDocumentProposals);
-
-  root.innerHTML = `
+  return `
     <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.sources}" data-testid="sources-workspace">
       <div class="mobile-switch">
         <button type="button" class="seg ${state.mobilePane.sources === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
         <button type="button" class="seg ${state.mobilePane.sources === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
       </div>
-      <aside class="pane pane-ai">
-        ${
-          collapsed
-            ? ''
-            : renderChatPane(state, handlers, {
-                variant: 'task',
-                placeholder: '要整理或修改哪份资料？',
-                emptyTitle: '开始新对话',
-              })
-        }
-      </aside>
-      <main class="pane pane-content">
+      <aside class="pane pane-ai"></aside>
+      <main class="pane pane-content"></main>
+    </div>
+  `;
+}
+
+export function sourcesLeftHtml(state, handlers) {
+  const collapsed = !!state.sidebarCollapsed.sources;
+  return collapsed
+    ? ''
+    : renderChatPane(state, handlers, {
+        variant: 'task',
+        placeholder: '要整理或修改哪份资料？输入 / 用命令',
+        emptyTitle: '开始新对话',
+      });
+}
+
+export function sourcesRightHtml(state) {
+  const collapsed = !!state.sidebarCollapsed.sources;
+  const kind = state.sourceKind || 'files';
+  const source = state.sources.find((item) => item.id === state.activeSourceId) || null;
+  const doc = state.aiDocuments.find((item) => item.id === state.activeAiDocumentId) || null;
+  const proposal = pendingProposal(state.aiDocumentProposals);
+  return `
         <div class="task">
           ${renderHeader(kind, source, doc, proposal, collapsed)}
           <div class="local-nav">
@@ -45,10 +52,14 @@ export function renderSources(state, root, handlers) {
           </div>
         </div>
         <input type="file" id="source-file-input" hidden multiple accept=".pdf,.docx,.pptx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" />
-      </main>
-    </div>
   `;
+}
+
+export function bindSourcesLeft(root, handlers) {
   bindChatPane(root, handlers);
+}
+
+export function bindSourcesRight(root, handlers) {
   root.querySelector('#source-file-input')?.addEventListener('change', (event) => {
     handlers.onUploadSources([...event.target.files]);
     event.target.value = '';

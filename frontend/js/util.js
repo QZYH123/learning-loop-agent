@@ -1,3 +1,126 @@
+import { marked } from '../vendor/marked.esm.js';
+import DOMPurify from '../vendor/purify.esm.js';
+import katex from '../vendor/katex/katex.mjs';
+
+marked.setOptions({ gfm: true, breaks: true });
+
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noreferrer');
+  }
+});
+
+const MATH_PLACEHOLDER = '\x00MATH';
+
+function extractMath(source) {
+  const placeholders = [];
+  let result = '';
+  let i = 0;
+
+  while (i < source.length) {
+    if (source.startsWith('```', i)) {
+      const end = source.indexOf('```', i + 3);
+      if (end !== -1) {
+        result += source.slice(i, end + 3);
+        i = end + 3;
+        continue;
+      }
+    }
+
+    if (source[i] === '`' && source[i + 1] !== '`') {
+      let j = i + 1;
+      while (j < source.length && source[j] !== '`') j += 1;
+      if (j < source.length) {
+        result += source.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+    }
+
+    if (source.startsWith('$$', i)) {
+      const end = source.indexOf('$$', i + 2);
+      if (end !== -1) {
+        placeholders.push({ latex: source.slice(i + 2, end), displayMode: true });
+        result += `${MATH_PLACEHOLDER}${placeholders.length - 1}\x00`;
+        i = end + 2;
+        continue;
+      }
+    }
+
+    if (source.startsWith('\\[', i)) {
+      const end = source.indexOf('\\]', i + 2);
+      if (end !== -1) {
+        placeholders.push({ latex: source.slice(i + 2, end), displayMode: true });
+        result += `${MATH_PLACEHOLDER}${placeholders.length - 1}\x00`;
+        i = end + 2;
+        continue;
+      }
+    }
+
+    if (source.startsWith('\\(', i)) {
+      const end = source.indexOf('\\)', i + 2);
+      if (end !== -1) {
+        placeholders.push({ latex: source.slice(i + 2, end), displayMode: false });
+        result += `${MATH_PLACEHOLDER}${placeholders.length - 1}\x00`;
+        i = end + 2;
+        continue;
+      }
+    }
+
+    if (source[i] === '$' && source[i + 1] !== '$') {
+      const prev = i > 0 ? source[i - 1] : '';
+      const next = source[i + 1] || '';
+      if (!/\d/.test(prev) && !/\d/.test(next)) {
+        let j = i + 1;
+        let closed = false;
+        while (j < source.length) {
+          if (source[j] === '$' && source[j - 1] !== '\\') {
+            const after = source[j + 1] || '';
+            if (!/\d/.test(after)) {
+              placeholders.push({ latex: source.slice(i + 1, j), displayMode: false });
+              result += `${MATH_PLACEHOLDER}${placeholders.length - 1}\x00`;
+              i = j + 1;
+              closed = true;
+              break;
+            }
+          }
+          j += 1;
+        }
+        if (closed) continue;
+      }
+    }
+
+    result += source[i];
+    i += 1;
+  }
+
+  return { text: result, placeholders };
+}
+
+function restoreMath(html, placeholders) {
+  return html.replace(/\x00MATH(\d+)\x00/g, (_, id) => {
+    const item = placeholders[Number(id)];
+    if (!item) return '';
+    try {
+      return katex.renderToString(item.latex.trim(), {
+        displayMode: item.displayMode,
+        throwOnError: false,
+      });
+    } catch {
+      const body = escapeHtml(item.latex);
+      return item.displayMode ? `<pre class="latex-fallback">${body}</pre>` : `<code>${body}</code>`;
+    }
+  });
+}
+
+function sanitizeHtml(html) {
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true, mathMl: true, svg: true },
+    ADD_ATTR: ['style', 'class', 'target', 'rel'],
+  });
+}
+
 export function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -46,46 +169,13 @@ export function blocksToText(blocks) {
     .join('\n');
 }
 
-export function renderInlineMarkdown(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/(^|[^\*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  html = html.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-  return html;
-}
-
 export function renderMarkdown(text) {
   const source = String(text || '').replace(/\r\n/g, '\n');
   if (!source.trim()) return '';
-  const parts = source.split(/```([\s\S]*?)```/);
-  return parts
-    .map((part, index) => {
-      if (index % 2 === 1) {
-        const newline = part.indexOf('\n');
-        const code = newline === -1 ? part : part.slice(newline + 1);
-        return `<pre><code>${escapeHtml(code.replace(/\n$/, ''))}</code></pre>`;
-      }
-      return part
-        .split(/\n{2,}/)
-        .map((chunk) => {
-          const lines = chunk.split('\n');
-          if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
-            const items = lines
-              .map((line) => `<li>${renderInlineMarkdown(line.replace(/^\s*[-*]\s+/, ''))}</li>`)
-              .join('');
-            return `<ul>${items}</ul>`;
-          }
-          const heading = chunk.match(/^(#{1,3})\s+(.+)$/);
-          if (heading && lines.length === 1) {
-            const tag = `h${heading[1].length + 2}`;
-            return `<${tag}>${renderInlineMarkdown(heading[2])}</${tag}>`;
-          }
-          return `<p>${renderInlineMarkdown(chunk).replaceAll('\n', '<br />')}</p>`;
-        })
-        .join('');
-    })
-    .join('');
+  const { text: masked, placeholders } = extractMath(source);
+  const parsed = marked.parse(masked);
+  const withMath = restoreMath(parsed, placeholders);
+  return sanitizeHtml(withMath);
 }
 
 export function renderBlocks(blocks, { examMode = false } = {}) {
@@ -98,7 +188,14 @@ export function renderBlocks(blocks, { examMode = false } = {}) {
         return `<div class="prose" data-block-id="${escapeHtml(block.id || '')}">${renderMarkdown(block.text || '')}</div>`;
       }
       if (block.type === 'latex') {
-        return `<pre class="latex-block" data-block-id="${escapeHtml(block.id || '')}">${escapeHtml(block.latex || '')}</pre>`;
+        const blockId = escapeHtml(block.id || '');
+        const latex = block.latex || '';
+        try {
+          const rendered = katex.renderToString(latex, { displayMode: true, throwOnError: true });
+          return `<div class="latex-block" data-block-id="${blockId}">${rendered}</div>`;
+        } catch {
+          return `<pre class="latex-block" data-block-id="${blockId}">${escapeHtml(latex)}</pre>`;
+        }
       }
       if (block.type === 'table') {
         const head = (block.columns || [])
@@ -196,7 +293,8 @@ export function statusLabel(kind, value) {
     message: { queued: '排队中', generating: '生成中', complete: '', stopped: '已停止', error: '失败' },
     validation: { unknown: '未验证', checking: '验证中', ok: '可用', error: '失败' },
   };
-  return maps[kind]?.[value] || value || '';
+  const label = maps[kind]?.[value];
+  return label !== undefined ? label : value || '';
 }
 
 export function groundingLabel(value) {
@@ -205,18 +303,6 @@ export function groundingLabel(value) {
 
 export function styleLabel(value) {
   return CHAT_STYLES.find((item) => item.id === value)?.label || '普通';
-}
-
-export function looksLikeGenerate(text) {
-  return /出一套|组一卷|组卷|出题|生成试卷|蓝图|来一套|做一套|出一份|帮我出|出张卷/.test(text);
-}
-
-export function looksLikeEdit(text) {
-  return /改成|修改|换成|删掉|删除第|把.+改|调整|重写|补充|润色|把第/.test(text);
-}
-
-export function looksLikeCreateDoc(text) {
-  return /整理|生成文档|写一份|做成笔记|摘要|提纲|复习材料/.test(text);
 }
 
 export function readySourceVersionIds(sources) {

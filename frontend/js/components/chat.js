@@ -1,4 +1,5 @@
 import { icons } from '../icons.js';
+import { COMMANDS } from '../commands.js';
 import {
   CHAT_STYLES,
   GROUNDING_MODES,
@@ -17,7 +18,11 @@ export function renderChatPane(state, handlers, options = {}) {
   const session = state.sessions.find((item) => item.id === state.activeSessionId) || null;
   const model = state.models.find((item) => item.id === state.currentModelId) || state.models[0] || null;
   const messages = session?.messages || [];
-  const generating = state.chatOp && ['queued', 'running', 'canceling'].includes(state.chatOp.status);
+  const lastMessage = messages[messages.length - 1];
+  const lastAssistantGenerating = lastMessage?.role === 'assistant'
+    && ['queued', 'generating'].includes(lastMessage?.status);
+  const generating = (state.chatOp && ['queued', 'running', 'canceling'].includes(state.chatOp.status))
+    || lastAssistantGenerating;
   const placeholder = options.placeholder || '想学点什么？';
   const style = session?.chat_style || state.draftStyle || 'default';
   const canCompose = !!model && !!state.activeSubjectId;
@@ -87,7 +92,7 @@ export function renderChatPane(state, handlers, options = {}) {
             ? emptyChat(options)
             : messages.map((msg) => renderMessage(msg)).join('')
         }
-        ${generating ? `<div class="msg msg-assistant"><div class="bubble">${icons.rotateCw(14, 'spin')} 生成中</div></div>` : ''}
+        ${commandBusyRow(state, session)}
       </div>
       <div class="composer">
         ${state.selection ? `<div class="sel-chip">${icons.bookmark(13)}<span title="${escapeHtml(state.selection.selected_text)}">${escapeHtml(truncate(state.selection.selected_text, 42))}</span><button type="button" class="ghost-icon" data-action="clear-selection" title="去掉选区">${icons.x(12)}</button></div>` : ''}
@@ -123,19 +128,183 @@ export function renderChatPane(state, handlers, options = {}) {
 
 export function bindChatPane(root, handlers) {
   const textarea = root.querySelector('#composer-input');
-  if (textarea) {
-    textarea.oninput = (event) => handlers.onComposerInput(event.target.value);
-    textarea.onkeydown = (event) => {
-      if (event.key !== 'Enter' || event.shiftKey) return;
-      if (event.isComposing || event.keyCode === 229) return;
-      event.preventDefault();
-      handlers.onSend();
-    };
-  }
+  const composer = root.querySelector('.composer');
+  if (!textarea || !composer) return;
+
+  let menuEl = null;
+
+  const hideMenu = () => {
+    if (!menuEl) return;
+    menuEl.remove();
+    menuEl = null;
+  };
+
+  const selectableItems = () => (menuEl ? [...menuEl.querySelectorAll('.cmd-item:not(:disabled)')] : []);
+
+  const setActive = (index) => {
+    if (!menuEl) return;
+    const buttons = [...menuEl.querySelectorAll('.cmd-item')];
+    const selectable = selectableItems();
+    buttons.forEach((btn) => btn.classList.remove('is-active'));
+    if (!selectable.length) {
+      if (buttons[0]) buttons[0].classList.add('is-active');
+      return;
+    }
+    const next = ((index % selectable.length) + selectable.length) % selectable.length;
+    selectable[next].classList.add('is-active');
+  };
+
+  const activeIndex = () => {
+    const selectable = selectableItems();
+    const current = selectable.findIndex((btn) => btn.classList.contains('is-active'));
+    return current < 0 ? 0 : current;
+  };
+
+  const applyMention = (source) => {
+    const token = lastMentionToken(textarea.value);
+    if (!token) return;
+    const start = textarea.value.lastIndexOf(token);
+    const next = `${textarea.value.slice(0, start)}@${source.display_name} `;
+    textarea.value = next;
+    handlers.onComposerInput(next);
+    textarea.focus();
+    handlers.onMentionSource?.(source);
+    hideMenu();
+  };
+
+  const showMenu = (items) => {
+    hideMenu();
+    if (!items.length) return;
+    menuEl = document.createElement('div');
+    menuEl.className = 'cmd-menu';
+    menuEl.innerHTML = items
+      .map((item, index) => {
+        const active = index === 0 ? ' is-active' : '';
+        const disabled = item.disabled ? ' disabled' : '';
+        return `<button type="button" class="cmd-item${active}"${disabled}${item.attrs || ''}>${item.html}</button>`;
+      })
+      .join('');
+    menuEl.addEventListener('click', (event) => {
+      const btn = event.target.closest('.cmd-item');
+      if (!btn || btn.disabled) return;
+      const cmd = btn.getAttribute('data-cmd');
+      const sourceId = btn.getAttribute('data-source-id');
+      if (cmd) {
+        textarea.value = `${cmd} `;
+        handlers.onComposerInput(textarea.value);
+        textarea.focus();
+        hideMenu();
+        return;
+      }
+      if (sourceId) {
+        const source = (handlers.onGetMentionSources?.() || []).find((item) => item.id === sourceId);
+        if (source) applyMention(source);
+      }
+    });
+    menuEl.addEventListener('mouseover', (event) => {
+      const btn = event.target.closest('.cmd-item');
+      if (!btn || btn.disabled || !menuEl.contains(btn)) return;
+      const selectable = selectableItems();
+      setActive(selectable.indexOf(btn));
+    });
+    const box = composer.querySelector('.composer-box');
+    composer.insertBefore(menuEl, box);
+  };
+
+  const updateMenu = (value) => {
+    if (value.startsWith('/') && !value.includes(' ')) {
+      const seen = new Set();
+      const items = [];
+      for (const def of COMMANDS) {
+        for (const name of [def.name, ...def.aliases]) {
+          if (!name.startsWith(value) || seen.has(def.name)) continue;
+          seen.add(def.name);
+          items.push({
+            attrs: ` data-cmd="${escapeHtml(name)}"`,
+            html: `<b>${escapeHtml(name)}</b><span>${escapeHtml(def.hint)}</span>`,
+          });
+        }
+      }
+      showMenu(items);
+      return;
+    }
+    const token = lastMentionToken(value);
+    if (!token) {
+      hideMenu();
+      return;
+    }
+    const query = token.slice(1);
+    const sources = (handlers.onGetMentionSources?.() || []).filter((src) =>
+      String(src.display_name || '').toLowerCase().startsWith(query.toLowerCase()),
+    );
+    if (!sources.length) {
+      showMenu([{ disabled: true, html: '<span>无可用资料</span>' }]);
+      return;
+    }
+    showMenu(
+      sources.map((src) => ({
+        attrs: ` data-source-id="${escapeHtml(src.id)}"`,
+        html: `<b>@${escapeHtml(src.display_name)}</b>`,
+      })),
+    );
+  };
+
+  textarea.oninput = (event) => {
+    handlers.onComposerInput(event.target.value);
+    updateMenu(event.target.value);
+  };
+  textarea.onkeydown = (event) => {
+    if (menuEl) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        hideMenu();
+        return;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setActive(activeIndex() + 1);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActive(activeIndex() - 1);
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        if (event.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        selectableItems()[activeIndex()]?.click();
+        return;
+      }
+    }
+    if (event.key === 'Escape') {
+      hideMenu();
+      return;
+    }
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    handlers.onSend();
+  };
   root.querySelector('#chat-attach-input')?.addEventListener('change', (event) => {
     handlers.onAddAttachments([...event.target.files]);
     event.target.value = '';
   });
+}
+
+function lastMentionToken(value) {
+  const match = String(value || '').match(/(?:^|\s)(@[^\s]*)$/);
+  return match ? match[1] : null;
+}
+
+function commandBusyRow(state, session) {
+  const busy = state.commandBusy;
+  if (!busy || !session || busy.sessionId !== session.id) return '';
+  return `
+    <article class="msg msg-system">
+      <div class="bubble">${icons.rotateCw(14, 'spin')} ${escapeHtml(busy.label || '正在执行')}</div>
+    </article>
+  `;
 }
 
 function emptyChat(options) {
@@ -144,7 +313,9 @@ function emptyChat(options) {
 
 function renderMessage(msg) {
   const role = msg.role === 'user' ? 'user' : msg.role === 'assistant' ? 'assistant' : 'system';
+  const isGenerating = role === 'assistant' && ['queued', 'generating'].includes(msg.status);
   const text = renderBlocks(msg.content);
+  const plainText = blocksToText(msg.content);
   const status = statusLabel('message', msg.status);
   const grounding = msg.grounding_result
     ? { covered: '依据资料', 'not-covered': '未覆盖', 'general-knowledge': '常识', supplemental: '补充' }[msg.grounding_result]
@@ -152,6 +323,14 @@ function renderMessage(msg) {
   const cites = (msg.citations || [])
     .map((cite) => `<span class="cite" title="${escapeHtml(cite.excerpt || cite.location?.label || '')}">${escapeHtml(cite.source_name || '资料')}${cite.location?.label ? ` · ${escapeHtml(cite.location.label)}` : ''}</span>`)
     .join('');
+  const bubbleBody = isGenerating && !text && !plainText
+    ? `${icons.rotateCw(14, 'spin')} 生成中`
+    : `${text || escapeHtml(plainText)}${cites ? `<div class="cite-row">${cites}</div>` : ''}`;
+  const retryable = role === 'assistant' && ['error', 'stopped'].includes(msg.status);
+  const errorBlock = retryable
+    ? `<div class="msg-error">${escapeHtml(msg.error?.message || '生成失败')}</div>
+       <button type="button" class="btn btn-ghost btn-sm" data-action="retry-message" data-id="${msg.id}">重试</button>`
+    : '';
   return `
     <article class="msg msg-${role}">
       <div class="msg-meta">
@@ -161,7 +340,8 @@ function renderMessage(msg) {
         ${status ? `<span>${status}</span>` : ''}
         <span>${formatTime(msg.created_at)}</span>
       </div>
-      <div class="bubble">${text || escapeHtml(blocksToText(msg.content))}${cites ? `<div class="cite-row">${cites}</div>` : ''}</div>
+      <div class="bubble">${bubbleBody}</div>
+      ${errorBlock}
     </article>
   `;
 }

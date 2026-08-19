@@ -13,32 +13,39 @@ import {
 import { bindChatPane, renderChatPane } from './chat.js';
 import { formatKey, renderSolution } from './solution.js';
 
-export function renderExam(state, root, handlers) {
+export function examShellHtml(state) {
+  const collapsed = !!state.sidebarCollapsed.exam;
+  return `
+    <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.exam}" data-testid="exam-workspace">
+      <div class="mobile-switch">
+        <button type="button" class="seg ${state.mobilePane.exam === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
+        <button type="button" class="seg ${state.mobilePane.exam === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
+      </div>
+      <aside class="pane pane-ai"></aside>
+      <main class="pane pane-content"></main>
+    </div>
+  `;
+}
+
+export function examLeftHtml(state, handlers) {
+  const collapsed = !!state.sidebarCollapsed.exam;
+  return collapsed
+    ? ''
+    : renderChatPane(state, handlers, {
+        variant: 'task',
+        placeholder: '想出一套什么卷？输入 / 用命令',
+        emptyTitle: '开始新对话',
+      });
+}
+
+export function examRightHtml(state) {
   const collapsed = !!state.sidebarCollapsed.exam;
   const tab = state.examTab || 'blueprint';
   const blueprint = state.blueprints.find((item) => item.id === state.activeBlueprintId) || null;
   const draft = state.drafts.find((item) => item.id === state.activeDraftId) || null;
   const exam = state.exams.find((item) => item.id === state.activeExamId) || null;
   const proposal = pendingProposal(state.examProposals);
-
-  root.innerHTML = `
-    <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.exam}" data-testid="exam-workspace">
-      <div class="mobile-switch">
-        <button type="button" class="seg ${state.mobilePane.exam === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
-        <button type="button" class="seg ${state.mobilePane.exam === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
-      </div>
-      <aside class="pane pane-ai">
-        ${
-          collapsed
-            ? ''
-            : renderChatPane(state, handlers, {
-                variant: 'task',
-                placeholder: '想出一套什么卷？',
-                emptyTitle: '开始新对话',
-              })
-        }
-      </aside>
-      <main class="pane pane-content">
+  return `
         <div class="task">
           ${renderHeader(tab, blueprint, draft, exam, proposal, collapsed)}
           <div class="local-nav">
@@ -50,9 +57,10 @@ export function renderExam(state, root, handlers) {
             ${tab === 'blueprint' ? renderBlueprint(state, blueprint) : tab === 'draft' ? renderDraft(state, draft) : renderExamDoc(state, exam, proposal)}
           </div>
         </div>
-      </main>
-    </div>
   `;
+}
+
+export function bindExamLeft(root, handlers) {
   bindChatPane(root, handlers);
 }
 

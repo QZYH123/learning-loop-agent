@@ -87,7 +87,7 @@ export function renderModels(state, root, handlers) {
 
   const formEl = root.querySelector('#model-form');
   const overlay = root.querySelector('.overlay');
-  formEl.addEventListener('change', () => {
+  const syncForm = () => {
     const next = readForm(formEl);
     const prev = form;
     if (next.api_format !== prev.api_format) {
@@ -103,7 +103,9 @@ export function renderModels(state, root, handlers) {
       }
     }
     handlers.onModelFormChange(next);
-  });
+  };
+  formEl.addEventListener('change', syncForm);
+  formEl.addEventListener('input', syncForm);
 
   let closeArmed = false;
   overlay.addEventListener('pointerdown', (event) => {

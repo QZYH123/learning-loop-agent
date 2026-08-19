@@ -1,13 +1,13 @@
 import { icons } from '../icons.js';
 import { escapeHtml } from '../util.js';
 
-export function renderNavbar(state, root, handlers) {
+export function navbarHtml(state) {
   const subject = state.subjects.find((item) => item.id === state.activeSubjectId) || null;
   const model = state.models.find((item) => item.id === state.currentModelId) || state.models[0] || null;
   const busy = (state.operations || []).length;
   const menu = state.openMenu;
 
-  root.innerHTML = `
+  return `
     <header class="nav" data-testid="app-navbar">
       <div class="nav-side">
         <button type="button" class="brand" data-action="go-learn" title="学习">
@@ -44,6 +44,10 @@ export function renderNavbar(state, root, handlers) {
       </div>
     </header>
   `;
+}
+
+export function renderNavbar(state, root, handlers) {
+  root.innerHTML = navbarHtml(state);
 
   root.onclick = (event) => {
     const btn = event.target.closest('[data-action]');

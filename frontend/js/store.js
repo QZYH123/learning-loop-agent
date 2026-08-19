@@ -55,6 +55,8 @@ export class Store {
       activeAttempt: null,
       review: null,
       composerText: '',
+      commandBusy: null,
+      pendingPins: [],
       attachments: [],
       groundingMode: 'general-knowledge',
       selection: null,
@@ -176,9 +178,16 @@ export class Store {
 
   trackOperation(op) {
     if (!op?.id) return;
-    const rest = this.state.operations.filter((item) => item.id !== op.id);
+    const existing = this.state.operations.find((item) => item.id === op.id);
     const terminal = ['succeeded', 'failed', 'canceled'].includes(op.status);
-    this.setState({ operations: terminal ? rest : [...rest, op] });
+    if (terminal) {
+      if (!existing) return;
+      this.setState({ operations: this.state.operations.filter((item) => item.id !== op.id) });
+      return;
+    }
+    if (existing && existing.status === op.status) return;
+    const rest = this.state.operations.filter((item) => item.id !== op.id);
+    this.setState({ operations: [...rest, op] });
   }
 }
 

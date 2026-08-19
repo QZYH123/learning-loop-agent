@@ -1,0 +1,61 @@
+# 前端设计语言
+
+本文是视觉与交互风格的事实源，供任何接手样式工作的人/agent 冷启动。布局与文案规范见 `docs/frontend-workspaces.md`，两者互补。样式全部在 `frontend/styles.css`，无构建系统。
+
+## 隐喻：书桌 × 纸面
+
+- 外层是深一档的暖色「桌面」（`--bg-app`，带极淡纸纹 `--grain`），左右两栏是浮在桌面上的圆角「纸面」（`.pane`，`--radius-lg: 12px` + `--shadow-panel`）。
+- 双栏两种纸色分主次：AI 对话栏用略深的「便签纸」（`--bg-ai`），内容区用更亮的「正文纸」（`--bg-canvas`）。
+- 面板级大圆角（12px+），控件级小圆角（`--radius: 6px`）；chip 和搜索框用胶囊形。
+
+## 色彩：按职责分配，不单色全局刷
+
+| 变量 | 色 | 职责 |
+| --- | --- | --- |
+| `--blue` 黛蓝 #3f549b | 主交互 | 主按钮、焦点、选中态、题号、用户侧强调 |
+| `--emerald` 松绿 #3d7a54 | 正确 / 可用 | 反馈正确、状态 ok、作答区身份色 |
+| `--crimson` 绛红 #a8453a | 错误 / 失败 | 反馈错误、danger 按钮、toast 错误 |
+| `--amber` 赭石 #b45309 | 警告 / 待核查 | needs-review、警示 chip、学习区身份色 |
+| `--brown` 茶棕 #7c6a43 | 安静的次要信息 | 出处引用（.cite）、解析小标题、资料区身份色 |
+
+- 每个工作区一个身份色，贯穿三处呼应：顶部 tab 药丸、内容纸顶端 3px 色脊、内容纸标题前的色点（学习=赭石、资料=茶棕、组卷=黛蓝、作答=松绿）。
+- 语义软底色（`--*-soft`）配同色文字/左边条，用于反馈块、状态 pill、diff。
+- 暗色主题（chalkboard）逐变量映射：底色是暖炭色系，语义色全部提亮；主按钮和用户气泡在暗色下用深色文字。
+
+## 字体
+
+- 正文 UI：Plus Jakarta Sans + PingFang/雅黑（`--font`）。
+- 衬线（`--font-serif`，Georgia/宋体）只用在三处：题号、空状态标题、学习区空白首屏大标题——书卷气点缀，不扩散。
+- 品牌名用手写体 Patrick Hand（`--font-brand`）。
+- 分数、题号等数字用 `font-variant-numeric: tabular-nums`。
+
+## 对话区
+
+- AI 回复平铺无气泡（像文档正文）；用户消息墨色小气泡右对齐（`--bubble-user`，暗色主题反转为纸色墨字）。
+- 输入区是一体化卡片（`.composer-box`）：文字在上、工具行贴底，发送键实心蓝，聚焦时整卡光晕。
+- 失败消息：`.msg-error` 红软底 + 左边条 + 重试按钮，长错误串必须 `word-break`。
+- 命令菜单/@ 菜单（`.cmd-menu`/`.cmd-item`）：卡片浮层，active 项左蓝条 + hover 底色。
+
+## 题卡（卷面）
+
+- 题目是正文纸的延续，不套大卡片；题与题之间发丝分隔线。
+- 衬线大题号（黛蓝）；选项是细边框行，选中 = 蓝软底 + 半透明蓝边。
+- 答案行 `.answer-key`：muted 底 + 左细条；解析 `.solution`：上方虚线分隔，小标题茶棕色；反馈 `.feedback`：语义软底 + 左边条。
+
+## 动效与交互
+
+- 时长 0.12–0.2s ease，只做透明度/位移/缩放；尊重 prefers-reduced-motion。
+- 消息浮现（rise）、菜单弹出（pop）、toast 滑入（slide-in）。
+- 聊天流 sticky-bottom：贴底跟随、上翻不打扰、发消息强制回底（app.js captureUi/restoreUi 的 chatStick）。
+- 空状态：垂直居中 + 虚线稿纸涂鸦（`.empty::before`，纯 CSS），一句标题 + 一个动作。
+
+## 约束与坑
+
+- 渲染是「区域记忆化」：HTML 串没变的区域不重建 DOM——改样式随意，但改组件 HTML 结构时注意绑定在区域重建时才重挂。
+- `.task-body` 是 flex 列，直接子元素必须 `flex-shrink: 0`，否则内容一长顶部卡片行会被压扁（踩过）。
+- Markdown 经 marked + DOMPurify（白名单含 svg/mathMl，KaTeX 需要）渲染，`.prose` 排版已覆盖 GFM 全集；改白名单前想清楚 XSS 面。
+- 不出现内部词（frontend-workspaces.md 的文案规范）；不加教程句、营销句。
+
+## 变更日志
+
+- 2026-08-19 初版：书桌×纸面体系落地（styles.css 全量重写两轮 + 细节修补）。

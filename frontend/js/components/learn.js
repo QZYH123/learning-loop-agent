@@ -2,20 +2,26 @@ import { icons } from '../icons.js';
 import { escapeHtml, formatTime, sessionVisible, styleLabel } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 
-export function renderLearn(state, root, handlers) {
+export function learnShellHtml(state) {
   const collapsed = !!state.sidebarCollapsed.learn;
-  const query = (state.sessionSearch || '').trim().toLowerCase();
-  const sessions = (state.sessions || []).filter(
-    (item) => sessionVisible(item) && (item.title || '').toLowerCase().includes(query),
-  );
-
-  root.innerHTML = `
+  return `
     <div class="ws ws-learn ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.learn}" data-testid="learning-workspace">
       <div class="mobile-switch">
         <button type="button" class="seg ${state.mobilePane.learn === 'sessions' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="sessions">会话</button>
         <button type="button" class="seg ${state.mobilePane.learn === 'chat' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="chat">对话</button>
       </div>
-      <aside class="pane pane-sessions">
+      <aside class="pane pane-sessions"></aside>
+      <main class="pane pane-chat"></main>
+    </div>
+  `;
+}
+
+export function learnLeftHtml(state) {
+  const query = (state.sessionSearch || '').trim().toLowerCase();
+  const sessions = (state.sessions || []).filter(
+    (item) => sessionVisible(item) && (item.title || '').toLowerCase().includes(query),
+  );
+  return `
         <div class="pane-head">
           <div class="pane-title">${icons.messageSquare(15)}<span>会话</span></div>
           <div class="pane-actions">
@@ -34,16 +40,20 @@ export function renderLearn(state, root, handlers) {
               : sessions.map((item) => sessionItem(item, state)).join('')
           }
         </div>
-      </aside>
-      <main class="pane pane-chat">
-        ${renderChatPane(state, handlers, { variant: 'learn', placeholder: '想学点什么？', emptyTitle: '开始新对话', testId: 'learn-chat' })}
-      </main>
-    </div>
   `;
+}
 
-  bindChatPane(root, handlers);
+export function learnRightHtml(state, handlers) {
+  return renderChatPane(state, handlers, { variant: 'learn', placeholder: '想学点什么？', emptyTitle: '开始新对话', testId: 'learn-chat' });
+}
+
+export function bindLearnLeft(root, handlers) {
   const search = root.querySelector('#session-search');
   if (search) search.oninput = (event) => handlers.onSearchSessions(event.target.value);
+}
+
+export function bindLearnRight(root, handlers) {
+  bindChatPane(root, handlers);
 }
 
 function sessionItem(item, state) {

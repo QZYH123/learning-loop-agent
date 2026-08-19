@@ -126,8 +126,10 @@ export const api = {
   cancelOperation(operationId) {
     return json('POST', `/api/operations/${encodeURIComponent(operationId)}/cancel`);
   },
-  async pollOperation(operationId, { intervalMs = 400, maxAttempts = 180, onProgress } = {}) {
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  async pollOperation(operationId, { deadlineMs = 15 * 60 * 1000, onProgress } = {}) {
+    const deadline = Date.now() + deadlineMs;
+    let intervalMs = 400;
+    while (Date.now() < deadline) {
       const op = await this.getOperation(operationId);
       onProgress?.(op);
       if (op.status === 'succeeded') return op;
@@ -135,6 +137,7 @@ export const api = {
         throw new ApiError(op.error?.message || `任务${op.status === 'canceled' ? '已取消' : '失败'}`, op.error?.code || 'OPERATION_FAILED', 400, op.error);
       }
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      intervalMs = Math.min(Math.round(intervalMs * 1.5), 2500);
     }
     throw new ApiError('任务超时', 'OPERATION_TIMEOUT', 408);
   },
@@ -159,6 +162,12 @@ export const api = {
   },
   createSessionMessage(sessionId, payload) {
     return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages`, payload);
+  },
+  appendSessionNote(sessionId, payload) {
+    return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/notes`, payload);
+  },
+  retrySessionMessage(sessionId, messageId, payload = {}) {
+    return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/retry`, payload);
   },
   listSessionSources(sessionId) {
     return request(`/api/sessions/${encodeURIComponent(sessionId)}/sources`);
