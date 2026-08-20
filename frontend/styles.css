@@ -85,6 +85,8 @@
 
 /* ---------- 基础 ---------- */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { color-scheme: light; }
+[data-theme="chalkboard"] { color-scheme: dark; }
 html, body { height: 100%; overflow: hidden; }
 body {
   font-family: var(--font);
@@ -129,15 +131,17 @@ code, pre { font-family: var(--font-mono); }
 .nav {
   height: 54px;
   min-height: 54px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   padding: 0 16px;
   background: transparent;
   gap: 10px;
   user-select: none;
 }
 .nav-side { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nav-start { justify-self: start; }
+.nav-end { justify-self: stretch; justify-content: flex-end; }
 .brand {
   display: flex; align-items: center; gap: 7px;
   border: 0; background: transparent; color: var(--ink); padding: 4px 8px; border-radius: var(--radius);
@@ -150,6 +154,7 @@ code, pre { font-family: var(--font-mono); }
 /* 工作区 tab：四色药丸 */
 .tabs {
   display: flex; gap: 2px; padding: 3px;
+  justify-self: center;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 99px;
   box-shadow: var(--shadow);
 }
@@ -176,7 +181,7 @@ code, pre { font-family: var(--font-mono); }
 .icon-btn:disabled, .chip-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .icon-btn.is-active { border-color: var(--focus); color: var(--blue); background: var(--blue-soft); }
 .chip-btn.is-warn { border-color: var(--amber); color: var(--amber); }
-.chip-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.chip-label { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
 .busy { display: flex; align-items: center; gap: 6px; color: var(--blue); font-size: 11px; font-weight: 600; }
 
 /* ---------- 按钮 ---------- */
@@ -205,9 +210,19 @@ code, pre { font-family: var(--font-mono); }
   border-radius: var(--radius); padding: 7px 10px; outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.input:focus, .select:focus, .textarea:focus {
+.input:focus, .select:focus, .textarea:focus, .select-trigger:focus {
   border-color: var(--focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus), transparent 87%);
+}
+.select-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  text-align: left; cursor: pointer; color: var(--ink);
+}
+.select-trigger .select-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-dropdown { width: 100%; }
+.field-dropdown .menu {
+  width: 100%; min-width: 0; max-width: none; z-index: 60;
+  animation: none;
 }
 .textarea { resize: none; min-height: 72px; line-height: 1.45; }
 .field { display: flex; flex-direction: column; gap: 5px; }
@@ -269,6 +284,8 @@ code, pre { font-family: var(--font-mono); }
 .pane-title { display: flex; align-items: center; gap: 6px; font-weight: 750; min-width: 0; }
 .pane-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.chip-btn .chip-label { min-width: 4em; }
+.menu-style .menu-item span { min-width: 4em; }
 .head-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
 .status {
@@ -548,6 +565,24 @@ code, pre { font-family: var(--font-mono); }
 }
 .mini:hover { border-color: var(--border-strong); }
 .mini.is-active { border-color: color-mix(in srgb, var(--focus), transparent 40%); background: var(--blue-soft); }
+.mini-wrap {
+  position: relative;
+  flex: 0 1 180px;
+  min-width: 140px;
+  max-width: 220px;
+}
+.mini-wrap .mini { width: 100%; min-width: 0; max-width: none; flex: none; }
+.mini-wrap.is-active:not(.is-renaming) .mini { padding-right: 28px; }
+.mini-rename { position: absolute; top: 4px; right: 4px; z-index: 1; }
+.mini .inline-rename { width: 100%; height: 24px; font-size: 13px; padding: 0 6px; }
+.attempt-timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink-2);
+  min-width: 3.6em;
+  text-align: right;
+}
 
 /* ---------- 菜单 / 弹窗 / 提示 ---------- */
 .dropdown { position: relative; }

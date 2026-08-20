@@ -1372,6 +1372,7 @@ components:
           anyOf:
             - $ref: '#/components/schemas/Identifier'
             - type: 'null'
+        use_defaults: {type: boolean, default: false}
 
     ExamBlueprintPatch:
       type: object
@@ -1718,6 +1719,13 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Exam'}
 
+    ExamPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+
     ExamDocumentReplaceInput:
       type: object
       additionalProperties: false
@@ -2051,7 +2059,7 @@ components:
     Attempt:
       type: object
       additionalProperties: false
-      required: [id, exam_id, exam_version_id, mode, status, completion_status, grading_status, show_suggested_score, paper, answers, feedback, created_at, updated_at]
+      required: [id, exam_id, exam_version_id, mode, status, completion_status, grading_status, show_suggested_score, paper, answers, feedback, elapsed_ms, timing_started_at, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Identifier'}
         exam_id: {$ref: '#/components/schemas/Identifier'}
@@ -2074,6 +2082,15 @@ components:
           type: array
           description: 考试模式标记完成前必须为空。
           items: {$ref: '#/components/schemas/QuestionFeedback'}
+        elapsed_ms:
+          type: integer
+          minimum: 0
+          description: 已累计的作答用时，不含当前暂停区间。
+        timing_started_at:
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: 当前计时段开始时间；暂停或完成后为 null。
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
         submitted_at:
@@ -2107,6 +2124,8 @@ components:
           total_score: 0
         answers: []
         feedback: []
+        elapsed_ms: 0
+        timing_started_at: 1735689600000
         created_at: 1735689600000
         updated_at: 1735689600000
         submitted_at: null

@@ -24,6 +24,7 @@ from .exam_models import (
     ExamDraftPatch,
     ExamDocumentReplaceInput,
     ExamList,
+    ExamPatch,
     ExamRevisionProposal,
     ExamRevisionProposalInput,
     ExamRevisionProposalList,
@@ -250,6 +251,18 @@ def create_exam_router(exams) -> APIRouter:
     )
     def replace_exam(exam_id: str, payload: ExamDocumentReplaceInput):
         return exams.replace_exam_document(exam_id, payload.model_dump(exclude_none=True))
+
+    @router.patch(
+        "/api/exams/{exam_id}",
+        operation_id="updateExam",
+        response_model=Exam,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    def update_exam(exam_id: str, payload: ExamPatch):
+        patch = payload.model_dump(exclude_unset=True)
+        if not patch:
+            raise LearningError(422, "VALIDATION_FAILED", "至少提供一项试卷修改")
+        return exams.update_exam(exam_id, patch)
 
     @router.delete(
         "/api/exams/{exam_id}",

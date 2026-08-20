@@ -57,6 +57,52 @@ class ExamFakeModel(ImmediateFakeModelClient):
                 "provider": profile["provider"],
                 "model": profile["model"],
             }
+        if "一次生成整张试卷" in content:
+            try:
+                plan = json.loads(content.split("槽位：", 1)[1].split("\n", 1)[0])
+            except (json.JSONDecodeError, IndexError, TypeError):
+                plan = []
+            questions = []
+            for item in plan:
+                qtype = item.get("type")
+                if qtype == "fill-blank":
+                    continue
+                if qtype == "single-choice":
+                    questions.append({
+                        "id": item["id"],
+                        "type": "single-choice",
+                        "stem": f"A limit primarily describes what? ({item['ordinal']})",
+                        "options": [
+                            {"id": "A", "content": "Nearby behavior"},
+                            {"id": "B", "content": "Only the point value"},
+                        ],
+                        "answer": {"kind": "choice", "option_ids": ["A"]},
+                        "explanation": "Limits describe nearby behavior.",
+                        "knowledge_points": ["Limits", f"point-{item['ordinal']}"],
+                    })
+                elif qtype == "true-false":
+                    questions.append({
+                        "id": item["id"],
+                        "type": "true-false",
+                        "stem": "A limit can exist even when the point value differs.",
+                        "answer": {"kind": "true-false", "value": True},
+                        "explanation": "A limit concerns nearby values.",
+                        "knowledge_points": ["Limits"],
+                    })
+                elif qtype == "short-answer":
+                    questions.append({
+                        "id": item["id"],
+                        "type": "short-answer",
+                        "stem": "Explain what a limit describes.",
+                        "answer": {
+                            "kind": "subjective",
+                            "reference_answer": "It describes nearby behavior.",
+                            "scoring_points": [{"id": "point-1", "description": "Mentions nearby behavior", "score": 5}],
+                        },
+                        "explanation": "Focus on values near the point.",
+                        "knowledge_points": ["Limits"],
+                    })
+            return {"text": json.dumps({"questions": questions}), "provider": profile["provider"], "model": profile["model"]}
         if "把组卷要求解析为 JSON" in content:
             result = {
                 "title": "极限综合练习",
@@ -252,7 +298,7 @@ def build_exam(client):
 
 def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
     fake = ExamFakeModel()
-    client, _ = make_client(tmp_path, model_client=fake)
+    client, app = make_client(tmp_path, model_client=fake)
     with client:
         subject_id, model_id, version_id, blueprint_id = build_exam(client)
         blueprint = client.get(f"/api/exam-blueprints/{blueprint_id}").json()
@@ -263,7 +309,11 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
         blocked = client.post(f"/api/exam-blueprints/{blueprint_id}/confirm")
         assert blocked.status_code == 409
         client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"total_score": 20})
-        assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").json()["status"] == "confirmed"
+        confirmed = client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").json()
+        assert confirmed["status"] == "confirmed"
+        renamed_blueprint = client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"title": "极限小测"}).json()
+        assert renamed_blueprint["status"] == "confirmed"
+        assert renamed_blueprint["title"] == "极限小测"
 
         generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate")
         draft_id = generated.json()["resource"]["id"]
@@ -281,10 +331,16 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
         assert published.status_code == 201
         exam = published.json()
         exam_id = exam["id"]
-        original_document = exam["document"]
+        renamed_exam = client.patch(f"/api/exams/{exam_id}", json={"title": "极限试卷"}).json()
+        assert renamed_exam["document"]["title"] == "极限试卷"
+        assert renamed_exam["can_undo"] is False
+        assert renamed_exam["current_version_id"] == exam["current_version_id"]
+        original_document = renamed_exam["document"]
 
         attempt = client.post(f"/api/exams/{exam_id}/attempts", json={"mode": "exam"}).json()
         attempt_id = attempt["id"]
+        assert attempt["elapsed_ms"] == 0
+        assert attempt["timing_started_at"] == attempt["created_at"]
         assert all("answer" not in question and "explanation" not in question and "evidence" not in question for question in attempt["paper"]["questions"])
         choice = next(question for question in exam["document"]["questions"] if question["type"] == "single-choice")
         saved = client.put(f"/api/attempts/{attempt_id}/answers/{choice['id']}", json={
@@ -293,8 +349,19 @@ def test_blueprint_draft_exam_attempt_and_selection_workflow(tmp_path):
         assert saved.status_code == 200
         assert client.get(f"/api/attempts/{attempt_id}").json()["feedback"] == []
         assert client.get(f"/api/attempts/{attempt_id}/review").status_code == 409
-        assert client.post(f"/api/attempts/{attempt_id}/pause").json()["status"] == "paused"
-        assert client.post(f"/api/attempts/{attempt_id}/resume").json()["status"] == "in-progress"
+        clock = {"now": attempt["timing_started_at"]}
+        app.state.exam_service._now = lambda: clock["now"]
+        clock["now"] += 5000
+        paused = client.post(f"/api/attempts/{attempt_id}/pause").json()
+        assert paused["status"] == "paused"
+        assert paused["timing_started_at"] is None
+        assert paused["elapsed_ms"] == 5000
+        clock["now"] += 8000
+        resumed = client.post(f"/api/attempts/{attempt_id}/resume").json()
+        assert resumed["status"] == "in-progress"
+        assert resumed["elapsed_ms"] == 5000
+        assert resumed["timing_started_at"] == clock["now"]
+        app.state.exam_service._now = lambda: int(__import__("time").time() * 1000)
         submitted = client.post(f"/api/attempts/{attempt_id}/submit")
         wait_for_operation(client, submitted.json()["operation"]["id"])
         review = client.get(f"/api/attempts/{attempt_id}/review")
@@ -710,3 +777,92 @@ def test_second_draft_revision_blocked_while_generating(tmp_path):
         assert second.json()["error"]["code"] == "OPERATION_IN_PROGRESS"
         fake.release.set()
         assert wait_for_operation(client, first.json()["operation"]["id"])["status"] == "succeeded"
+
+
+def test_parse_blueprint_use_defaults_skips_model(tmp_path):
+    fake = ImmediateFakeModelClient()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id, _ = create_subject_and_model(client)
+        posted = client.post(f"/api/subjects/{subject_id}/exam-blueprints", json={
+            "prompt": "出一套练习卷",
+            "grounding_mode": "general-knowledge",
+            "use_defaults": True,
+        })
+        assert posted.status_code == 202
+        assert wait_for_operation(client, posted.json()["operation"]["id"])["status"] == "succeeded"
+        assert fake.chat_calls == []
+        blueprint = client.get(f"/api/exam-blueprints/{posted.json()['resource']['id']}").json()
+        assert blueprint["status"] == "draft"
+        assert blueprint["question_plan"]
+        assert blueprint["total_score"] == 100
+        assert any(issue["code"] == "BLUEPRINT_USED_DEFAULTS" for issue in blueprint["issues"])
+
+
+def test_parse_blueprint_falls_back_to_defaults_when_model_json_invalid(tmp_path):
+    fake = ImmediateFakeModelClient(answer="这不是有效蓝图")
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id, model_id = create_subject_and_model(client)
+        client.post(f"/api/subjects/{subject_id}/chat/model", json={"model_id": model_id})
+        posted = client.post(f"/api/subjects/{subject_id}/exam-blueprints", json={
+            "prompt": "生成一套比较简单的计网试卷",
+            "grounding_mode": "general-knowledge",
+            "model_id": model_id,
+        })
+        assert posted.status_code == 202
+        assert wait_for_operation(client, posted.json()["operation"]["id"])["status"] == "succeeded"
+        blueprint = client.get(f"/api/exam-blueprints/{posted.json()['resource']['id']}").json()
+        assert blueprint["status"] == "draft"
+        assert len(blueprint["question_plan"]) >= 1
+        assert any(issue["code"] == "BLUEPRINT_USED_DEFAULTS" for issue in blueprint["issues"])
+
+
+def test_generate_exam_bundle_keeps_choice_stems_distinct(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        _, _, _, blueprint_id = build_exam(client)
+        client.patch(f"/api/exam-blueprints/{blueprint_id}", json={
+            "question_plan": [
+                {"type": "single-choice", "count": 2, "difficulty": "easy", "score_each": 10},
+            ],
+            "total_score": 20,
+        })
+        assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").status_code == 200
+        generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate").json()
+        assert wait_for_operation(client, generated["operation"]["id"])["status"] == "succeeded"
+        bundle_prompts = _user_contents(fake, "一次生成整张试卷")
+        assert bundle_prompts
+        assert "不得重复" in bundle_prompts[0]
+        draft = client.get(f"/api/exam-drafts/{generated['resource']['id']}").json()
+        stems = [
+            item["question"]["stem"][0]["text"]
+            for item in draft["questions"]
+            if item.get("question")
+        ]
+        assert len(stems) == 2
+        assert stems[0] != stems[1]
+
+
+def test_fill_in_question_sees_later_bundle_stems(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        _, _, _, blueprint_id = build_exam(client)
+        client.patch(f"/api/exam-blueprints/{blueprint_id}", json={
+            "question_plan": [
+                {"type": "single-choice", "count": 1, "difficulty": "easy", "score_each": 5},
+                {"type": "fill-blank", "count": 1, "difficulty": "easy", "score_each": 5},
+                {"type": "true-false", "count": 1, "difficulty": "easy", "score_each": 5},
+            ],
+            "total_score": 15,
+        })
+        assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").status_code == 200
+        generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate").json()
+        assert wait_for_operation(client, generated["operation"]["id"])["status"] == "succeeded"
+        fill_prompts = _user_contents(fake, "生成一道 fill-blank")
+        assert fill_prompts
+        prompt = fill_prompts[0]
+        assert "A limit primarily describes what? (1)" in prompt
+        assert "A limit can exist even when the point value differs." in prompt

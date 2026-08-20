@@ -228,8 +228,8 @@ export function titleFromMessage(text, max = 24) {
 }
 
 export const CHAT_STYLES = [
-  { id: 'default', label: '普通' },
-  { id: 'socratic', label: '苏格拉底' },
+  { id: 'default', label: '普通问答' },
+  { id: 'socratic', label: '追问引导' },
   { id: 'crash-course', label: '章节速成' },
 ];
 
@@ -302,7 +302,7 @@ export function groundingLabel(value) {
 }
 
 export function styleLabel(value) {
-  return CHAT_STYLES.find((item) => item.id === value)?.label || '普通';
+  return CHAT_STYLES.find((item) => item.id === value)?.label || '普通问答';
 }
 
 export function readySourceVersionIds(sources) {

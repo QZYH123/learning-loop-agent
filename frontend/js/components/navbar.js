@@ -9,7 +9,7 @@ export function navbarHtml(state) {
 
   return `
     <header class="nav" data-testid="app-navbar">
-      <div class="nav-side">
+      <div class="nav-side nav-start">
         <button type="button" class="brand" data-action="go-learn" title="学习">
           <span class="brand-mark">${icons.feather(18)}</span>
           <span class="brand-name">Learning Loop</span>
@@ -32,7 +32,7 @@ export function navbarHtml(state) {
         ${tab('attempt', '作答', icons.target(16), state.workspace === 'attempt')}
       </nav>
 
-      <div class="nav-side">
+      <div class="nav-side nav-end">
         <button type="button" class="chip-btn ${model ? '' : 'is-warn'}" data-action="open-models" title="模型服务">
           ${icons.cpu(15)}
           <span class="chip-label">${escapeHtml(model?.model || '配置模型')}</span>

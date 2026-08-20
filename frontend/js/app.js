@@ -42,6 +42,7 @@ import {
   draftPublishState,
   sanitizeErrorMessage,
 } from './util.js';
+import { formatElapsed } from './attempt-timer.js';
 
 class App {
   constructor() {
@@ -57,6 +58,7 @@ class App {
     this.applyingProposal = false;
     this.retryingQuestions = new Set();
     this.regions = { workspace: null, shell: '', left: '', right: '', nav: '' };
+    this.attemptTimer = null;
   }
 
   async init() {
@@ -103,6 +105,14 @@ class App {
     }
     const content = document.getElementById('task-scroll');
     if (content) this.ui.contentScroll = content.scrollTop;
+    const rename = document.querySelector('[data-rename-session], [data-rename-resource]');
+    this.ui.renameFocus = rename && document.activeElement === rename;
+    if (rename) {
+      this.ui.renameRange = [rename.selectionStart, rename.selectionEnd];
+      this.ui.renameValue = rename.value;
+    } else {
+      this.ui.renameValue = null;
+    }
     const revise = document.getElementById('question-revise-input');
     this.ui.reviseFocus = revise && document.activeElement === revise;
     if (revise) this.ui.reviseRange = [revise.selectionStart, revise.selectionEnd];
@@ -134,6 +144,14 @@ class App {
     }
     if (chat) chat.scrollTop = this.ui.chatStick ? chat.scrollHeight : this.ui.chatScroll;
     if (content) content.scrollTop = this.ui.contentScroll;
+    const rename = document.querySelector('[data-rename-session], [data-rename-resource]');
+    if (rename) {
+      if (this.ui.renameValue != null) rename.value = this.ui.renameValue;
+      if (this.ui.renameFocus) {
+        rename.focus();
+        rename.setSelectionRange(this.ui.renameRange[0], this.ui.renameRange[1]);
+      }
+    }
   }
 
   handlers() {
@@ -317,23 +335,64 @@ class App {
     renderToasts(state, document.getElementById('toast-root'), handlers);
     this.restoreUi();
     this.bindRename();
+    this.startAttemptTimer();
     this.watchGeneratingMessages();
   }
 
   bindRename() {
-    const input = document.querySelector('[data-rename-session]');
+    const input = document.querySelector('[data-rename-session], [data-rename-resource]');
     if (!input) return;
-    input.focus();
+    if (document.activeElement !== input) {
+      input.focus();
+      input.select();
+    }
+    const commit = async () => {
+      if (input.dataset.renameResource) {
+        await this.renameResource(input.dataset.renameResource, input.dataset.id, input.value.trim());
+        return;
+      }
+      if (store.state.renamingSessionId) await this.renameSession(store.state.renamingSessionId, input.value.trim());
+    };
     input.onkeydown = async (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        await this.renameSession(store.state.renamingSessionId, input.value.trim());
+        await commit();
       }
-      if (event.key === 'Escape') store.setState({ renamingSessionId: null });
+      if (event.key === 'Escape') {
+        store.setState({ renamingSessionId: null, renamingBlueprintId: null, renamingExamId: null });
+      }
     };
     input.onblur = async () => {
-      if (store.state.renamingSessionId) await this.renameSession(store.state.renamingSessionId, input.value.trim());
+      if (store.state.renamingSessionId || store.state.renamingBlueprintId || store.state.renamingExamId) {
+        await commit();
+      }
     };
+  }
+
+  startAttemptTimer() {
+    if (this.attemptTimer) {
+      window.clearInterval(this.attemptTimer);
+      this.attemptTimer = null;
+    }
+    const tick = () => {
+      const el = document.querySelector('[data-attempt-timer]');
+      if (!el) {
+        if (this.attemptTimer) {
+          window.clearInterval(this.attemptTimer);
+          this.attemptTimer = null;
+        }
+        return;
+      }
+      const elapsed = Number(el.dataset.elapsedMs) || 0;
+      const started = el.dataset.timingStartedAt ? Number(el.dataset.timingStartedAt) : 0;
+      const running = el.dataset.running === '1';
+      const ms = running && started ? elapsed + Math.max(0, Date.now() - started) : elapsed;
+      el.textContent = formatElapsed(ms);
+    };
+    tick();
+    if (document.querySelector('[data-attempt-timer][data-running="1"]')) {
+      this.attemptTimer = window.setInterval(tick, 1000);
+    }
   }
 
   async onClick(event) {
@@ -384,6 +443,14 @@ class App {
       else if (action === 'discard-doc-proposal') await this.discardDocProposal(id);
       else if (action === 'exam-tab') store.setState({ examTab: target.dataset.tab });
       else if (action === 'select-blueprint') await this.selectBlueprint(id);
+      else if (action === 'rename-blueprint') {
+        event.stopPropagation();
+        store.setState({ renamingBlueprintId: id, renamingExamId: null, renamingSessionId: null, openMenu: null });
+      } else if (action === 'rename-exam') {
+        event.stopPropagation();
+        store.setState({ renamingExamId: id, renamingBlueprintId: null, renamingSessionId: null, openMenu: null });
+      }
+      else if (action === 'create-blueprint') await this.createDefaultBlueprint();
       else if (action === 'remove-blueprint-point') await this.removeBlueprintPoint(id, target.dataset.index);
       else if (action === 'confirm-blueprint') await this.confirmBlueprint(id);
       else if (action === 'generate-draft') await this.generateDraft(id);
@@ -737,6 +804,26 @@ class App {
     store.setState({ sessions: store.state.sessions.map((item) => (item.id === sessionId ? updated : item)) });
   }
 
+  async renameResource(kind, id, title) {
+    if (kind === 'blueprint') {
+      store.setState({ renamingBlueprintId: null });
+      if (!id || !title) return;
+      const updated = await api.updateBlueprint(id, { title });
+      store.setState({
+        blueprints: store.state.blueprints.map((item) => (item.id === id ? updated : item)),
+      });
+      return;
+    }
+    if (kind === 'exam') {
+      store.setState({ renamingExamId: null });
+      if (!id || !title) return;
+      const updated = await api.updateExam(id, { title });
+      store.setState({
+        exams: store.state.exams.map((item) => (item.id === id ? { ...item, ...updated } : item)),
+      });
+    }
+  }
+
   async deleteSession(sessionId) {
     store.setState({ confirmSessionId: sessionId });
     this.askConfirm({
@@ -875,6 +962,10 @@ class App {
     if (!content) return;
 
     const command = matchCommand(content);
+    if (command?.missingArgs) {
+      store.addToast(command.def.argHint || `在 ${command.def.name} 后面写上具体要求`, 'error');
+      return;
+    }
     if (command) {
       this.sending = true;
       store.patch({ composerText: '' });
@@ -900,7 +991,9 @@ class App {
   }
 
   async runCommand(def, args, rawCommand) {
-    if (!store.activeModel()) return store.addToast('请先配置模型', 'error');
+    if (!store.activeModel() && !(def.run === 'parseBlueprint' && !args)) {
+      return store.addToast('请先配置模型', 'error');
+    }
     if (def.run === 'proposeExamEdit' && !store.activeExam() && !store.activeDraft()) {
       return store.addToast('请先选择一份草稿或试卷', 'error');
     }
@@ -928,8 +1021,12 @@ class App {
             mobilePane: { ...store.state.mobilePane, exam: 'content' },
           });
           {
-            const title = await this.parseBlueprint(args);
-            resultText = `已生成蓝图「${title || '未命名'}」，请在组卷区确认题型与总分`;
+            const blueprint = await this.parseBlueprint(args || this.defaultExamPrompt(), { useDefaults: !args });
+            const title = blueprint?.title || '';
+            const usedDefaults = (blueprint?.issues || []).some((issue) => issue.code === 'BLUEPRINT_USED_DEFAULTS');
+            resultText = usedDefaults || !args
+              ? `已生成蓝图「${title || '练习卷'}」。题型题量可在组卷区直接改，确认后再组题`
+              : `已生成蓝图「${title || '未命名'}」，请在组卷区确认题型与总分`;
           }
           break;
         case 'proposeExamEdit':
@@ -1074,12 +1171,23 @@ class App {
     await this.finalizeSessionAfterMessage();
   }
 
-  async parseBlueprint(prompt) {
+  defaultExamPrompt() {
+    const name = store.activeSubject()?.name;
+    return name ? `出一套${name}练习卷` : '出一套练习卷';
+  }
+
+  async createDefaultBlueprint() {
+    store.setState({ examTab: 'blueprint', workspace: 'exam', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
+    await this.parseBlueprint(this.defaultExamPrompt(), { useDefaults: true });
+  }
+
+  async parseBlueprint(prompt, options = {}) {
     const accepted = await api.parseBlueprint(store.state.activeSubjectId, {
-      prompt,
+      prompt: prompt || this.defaultExamPrompt(),
       grounding_mode: store.state.groundingMode,
       source_version_ids: readySourceVersionIds(store.state.sources),
       model_id: store.state.currentModelId,
+      use_defaults: !!options.useDefaults,
     });
     store.trackOperation(accepted.operation);
     store.setState({ examTab: 'blueprint', workspace: 'exam', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
@@ -1088,10 +1196,10 @@ class App {
     const data = await api.listBlueprints(store.state.activeSubjectId);
     const id = accepted.resource?.id || data.items?.[0]?.id;
     store.setState({ blueprints: data.items || [], activeBlueprintId: id || null });
-    if (id) store.setState({ activeBlueprintId: id, blueprints: data.items || [] });
-    store.addToast('蓝图已生成', 'success');
-    const blueprint = (data.items || []).find((item) => item.id === id);
-    return blueprint?.title || '';
+    const blueprint = (data.items || []).find((item) => item.id === id) || null;
+    const usedDefaults = (blueprint?.issues || []).some((issue) => issue.code === 'BLUEPRINT_USED_DEFAULTS');
+    store.addToast(usedDefaults ? '已用默认题型生成蓝图，可改题量和分值' : '蓝图已生成', 'success');
+    return blueprint;
   }
 
   async proposeDraftEdit(instruction, scope) {
@@ -1422,6 +1530,7 @@ class App {
     store.setState({
       activeBlueprintId: id,
       blueprints: store.state.blueprints.map((item) => (item.id === id ? blueprint : item)),
+      renamingBlueprintId: null,
     });
   }
 
@@ -1641,7 +1750,7 @@ class App {
   }
 
   async selectExam(id) {
-    store.setState({ activeExamId: id });
+    store.setState({ activeExamId: id, renamingExamId: null });
     await this.loadExamDetail(id);
     if (store.state.workspace === 'attempt') await this.restoreAttempt(id);
   }

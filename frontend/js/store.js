@@ -91,6 +91,8 @@ export class Store {
       confirmOk: '确认',
       confirmAction: null,
       renamingSessionId: null,
+      renamingBlueprintId: null,
+      renamingExamId: null,
       modelForm: null,
       discoveredModels: [],
       discoverError: null,

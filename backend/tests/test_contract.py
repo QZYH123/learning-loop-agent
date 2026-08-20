@@ -224,7 +224,7 @@ def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
             assert actual[model_name]["properties"][field_name]["uniqueItems"] is True
 
     assert "null" not in str(actual["SessionInput"]["properties"]["title"])
-    assert {"completion_status", "grading_status"} <= set(actual["Attempt"]["required"])
+    assert {"completion_status", "grading_status", "elapsed_ms", "timing_started_at"} <= set(actual["Attempt"]["required"])
     assert {"before", "after"} <= set(actual["AiDocumentChange"]["required"])
     assert {
         "source_version_ids",

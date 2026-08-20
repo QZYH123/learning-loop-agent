@@ -293,6 +293,9 @@ export const api = {
   getExam(examId) {
     return request(`/api/exams/${encodeURIComponent(examId)}`);
   },
+  updateExam(examId, patch) {
+    return json('PATCH', `/api/exams/${encodeURIComponent(examId)}`, patch);
+  },
   listExamVersions(examId) {
     return request(`/api/exams/${encodeURIComponent(examId)}/versions`);
   },

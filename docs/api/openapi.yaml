@@ -674,7 +674,7 @@ paths:
       operationId: updateExamBlueprint
       tags: [Blueprints]
       summary: 修改组卷蓝图
-      description: 修改已确认蓝图会把状态恢复为 draft，必须重新确认。
+      description: 仅修改标题时保持当前状态；修改题型、分值或资料范围会把已确认蓝图恢复为 draft，必须重新确认。
       x-tickets: ['08']
       requestBody:
         required: true
@@ -976,6 +976,26 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
+    patch:
+      operationId: updateExam
+      tags: [Exams]
+      summary: 重命名试卷
+      description: 仅修改当前试卷标题，不创建新版本，也不进入撤销栈。
+      x-tickets: ['13']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ./schemas.yaml#/components/schemas/ExamPatch}
+      responses:
+        '200':
+          description: 已修改标题
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/Exam}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
     delete:
       operationId: deleteExam
       tags: [Exams]
@@ -1244,6 +1264,7 @@ paths:
       operationId: pauseAttempt
       tags: [Attempts]
       summary: 暂停作答
+      description: 暂停作答并冻结已用时间。
       x-tickets: ['10']
       responses:
         '200':
@@ -1261,6 +1282,7 @@ paths:
       operationId: resumeAttempt
       tags: [Attempts]
       summary: 恢复作答
+      description: 继续作答并恢复计时。
       x-tickets: ['10']
       responses:
         '200':

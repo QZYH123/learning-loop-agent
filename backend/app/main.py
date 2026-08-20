@@ -89,6 +89,15 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
         await operations.shutdown()
 
     app = FastAPI(title="Learning Loop Agent", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def disable_frontend_cache(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/js/") or path.startswith("/styles") or path.endswith(".css"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     app.state.workspace_service = workspace
     app.state.model_client = client
     app.state.operations = operations

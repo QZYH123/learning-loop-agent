@@ -9,7 +9,9 @@ import {
   renderBlocks,
   statusLabel,
 } from '../util.js';
+import { attemptElapsedMs, attemptTimerRunning, formatElapsed } from '../attempt-timer.js';
 import { bindChatPane, renderChatPane } from './chat.js';
+import { renderMiniCard } from './exam.js';
 import { renderReview, renderSolution } from './solution.js';
 
 const SUBJECTIVE_TYPES = new Set(['short-answer', 'argumentation', 'extended-response']);
@@ -94,8 +96,9 @@ function renderHeader(exam, attempt, collapsed) {
       </div>
       <div class="pane-actions">
         ${primary}
+        ${attemptTimerHtml(attempt)}
         ${
-          attempt?.status === 'in-progress'
+          attempt?.status === 'in-progress' && attempt?.completion_status !== 'completed'
             ? `<button type="button" class="icon-btn" data-action="pause-attempt" data-id="${attempt.id}" title="暂停">${icons.pause(15)}</button>`
             : attempt?.status === 'paused'
               ? `<button type="button" class="icon-btn" data-action="resume-attempt" data-id="${attempt.id}" title="继续">${icons.play(15)}</button>`
@@ -103,6 +106,12 @@ function renderHeader(exam, attempt, collapsed) {
         }
       </div>
     </div>`;
+}
+
+function attemptTimerHtml(attempt) {
+  if (!attempt) return '';
+  const running = attemptTimerRunning(attempt);
+  return `<span class="attempt-timer" data-attempt-timer data-elapsed-ms="${Number(attempt.elapsed_ms) || 0}" data-timing-started-at="${attempt.timing_started_at || ''}" data-running="${running ? '1' : '0'}" title="作答用时">${formatElapsed(attemptElapsedMs(attempt))}</span>`;
 }
 
 function attemptPrimary(attempt) {
@@ -128,13 +137,16 @@ function renderBody(state, exam, attempt) {
     return `
       <div class="resource-row">
         ${exams
-          .map(
-            (item) => `
-          <button type="button" class="mini ${item.id === state.activeExamId ? 'is-active' : ''}" data-action="select-exam" data-id="${item.id}">
-            <div class="item-title">${escapeHtml(item.document?.title || '试卷')}</div>
-            <div class="item-sub">${item.total_score} 分</div>
-          </button>
-        `,
+          .map((item) =>
+            renderMiniCard({
+              active: item.id === state.activeExamId,
+              renaming: state.renamingExamId === item.id,
+              action: 'select-exam',
+              id: item.id,
+              title: item.document?.title || '试卷',
+              sub: `${item.total_score} 分`,
+              renameKind: 'exam',
+            }),
           )
           .join('')}
       </div>

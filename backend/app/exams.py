@@ -43,30 +43,35 @@ class ExamService:
         self.learning._subject(subject_id)
         source_ids = payload.get("source_version_ids", [])
         self.learning._validate_source_scope(subject_id, source_ids, payload["grounding_mode"])
-        profile = self._selected_model(subject_id, payload.get("model_id"))
         timestamp = self._now()
         blueprint_id = self._ids("blueprint")
+        seed = self._default_blueprint_fields(subject_id, payload)
         blueprint = {
             "id": blueprint_id,
             "subject_id": subject_id,
             "prompt": payload["prompt"],
-            "title": "正在解析组卷要求",
+            "title": seed["title"] if payload.get("use_defaults") else "正在解析组卷要求",
             "status": "parsing",
-            "syllabus": [],
+            "syllabus": seed["syllabus"] if payload.get("use_defaults") else [],
             "source_version_ids": source_ids,
             "grounding_mode": payload["grounding_mode"],
-            "question_plan": [],
-            "total_score": 1.0,
-            "duration_minutes": None,
+            "question_plan": seed["question_plan"] if payload.get("use_defaults") else [],
+            "total_score": seed["total_score"] if payload.get("use_defaults") else 1.0,
+            "duration_minutes": seed["duration_minutes"] if payload.get("use_defaults") else None,
             "issues": [],
             "confirmed_at": None,
             "created_at": timestamp,
             "updated_at": timestamp,
         }
         self._append(subject_id, "exam_blueprints", blueprint)
+        resource = {"type": "exam-blueprint", "id": blueprint_id}
 
         async def worker():
+            if payload.get("use_defaults"):
+                self._commit_blueprint_draft(subject_id, blueprint, seed)
+                return resource
             try:
+                profile = self._selected_model(subject_id, payload.get("model_id"))
                 anchors = [] if payload["grounding_mode"] == "general-knowledge" else self.sources.retrieve(payload["prompt"], source_ids, limit=12)
                 if payload["grounding_mode"] == "strict" and not anchors:
                     self._record_structure_stage(self._now(), time.perf_counter(), "failed")
@@ -88,7 +93,8 @@ class ExamService:
                     '{"title":"...","syllabus":["..."],"question_plan":['
                     '{"type":"single-choice","count":1,"difficulty":"medium","score_each":5}],'
                     '"total_score":5,"duration_minutes":30}。题型可用 single-choice、multiple-choice、fill-blank、'
-                    "true-false、short-answer、argumentation、extended-response。\n"
+                    "true-false、short-answer、argumentation、extended-response。"
+                    "用户没写明题型、题量或分值时，用一份适合练习的默认套卷补全，不要省略 question_plan。\n"
                     f"{grounding_instruction}\n\n"
                     f"用户要求：{payload['prompt']}\n\n相关资料：\n{self.learning._anchors_text(anchors) or '无'}"
                     f"{missed_section}"
@@ -100,47 +106,49 @@ class ExamService:
                 validation_started_at = self._now()
                 validation_started = time.perf_counter()
                 try:
-                    parsed = json.loads(response["text"])
-                    plan = [self._normalize_plan(item) for item in parsed["question_plan"]]
-                    if not plan:
-                        raise ValueError("question_plan is required")
-                    total_score = float(parsed["total_score"])
-                    if total_score <= 0:
-                        raise ValueError("total_score must be positive")
-                    issues = self._blueprint_issues(plan, total_score)
-                except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    parsed = self._coerce_blueprint_parse(response["text"], seed)
+                except (ValueError, KeyError, TypeError, json.JSONDecodeError, ValidationError):
                     self._record_structure_stage(validation_started_at, validation_started, "failed")
-                    raise
-                self._record_structure_stage(validation_started_at, validation_started, "succeeded")
-                updated = {
-                    **blueprint,
-                    "title": parsed["title"],
-                    "status": "draft",
-                    "syllabus": parsed.get("syllabus", []),
-                    "question_plan": plan,
-                    "total_score": total_score,
-                    "duration_minutes": parsed.get("duration_minutes"),
-                    "issues": issues,
-                    "updated_at": self._now(),
-                }
-                self._replace(
-                    subject_id,
-                    "exam_blueprints",
-                    blueprint_id,
-                    ExamBlueprint.model_validate(updated).model_dump(),
-                )
-                return {"type": "exam-blueprint", "id": blueprint_id}
+                    parsed = {
+                        **seed,
+                        "issues": list(seed.get("issues") or []) + [self._default_blueprint_issue()],
+                    }
+                else:
+                    self._record_structure_stage(validation_started_at, validation_started, "succeeded")
+                self._commit_blueprint_draft(subject_id, blueprint, parsed)
+                return resource
             except asyncio.CancelledError:
                 self._fail_blueprint(subject_id, blueprint, "组卷蓝图解析已取消")
                 raise
             except OperationFailure:
                 self._fail_blueprint(subject_id, blueprint, "选定资料未覆盖组卷要求")
                 raise
-            except (LearningError, ValidationError, ModelClientError, SourceLibraryError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-                self._fail_blueprint(subject_id, blueprint, "模型未返回有效的组卷蓝图")
-                raise OperationFailure("MODEL_INVALID_RESPONSE", "模型未返回有效的组卷蓝图") from exc
+            except LearningError as exc:
+                if exc.code == "CHAT_MODEL_NOT_SELECTED":
+                    self._fail_blueprint(subject_id, blueprint, "请先选择模型服务，或点「新建蓝图」用默认题型")
+                    raise
+                self._commit_blueprint_draft(subject_id, blueprint, {
+                    **seed,
+                    "issues": [{
+                        "code": "BLUEPRINT_USED_DEFAULTS",
+                        "severity": "warning",
+                        "path": "question_plan",
+                        "message": "题型题量使用了默认套卷，可在确认前修改",
+                    }],
+                })
+                return resource
+            except (ModelClientError, SourceLibraryError, ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                self._commit_blueprint_draft(subject_id, blueprint, {
+                    **seed,
+                    "issues": [{
+                        "code": "BLUEPRINT_USED_DEFAULTS",
+                        "severity": "warning",
+                        "path": "question_plan",
+                        "message": "题型题量使用了默认套卷，可在确认前修改",
+                    }],
+                })
+                return resource
 
-        resource = {"type": "exam-blueprint", "id": blueprint_id}
         operation = self.operations.start("blueprint-parsing", worker, subject_id=subject_id, resource=resource)
         return {"operation": operation, "resource": resource}
 
@@ -148,6 +156,16 @@ class ExamService:
         subject, blueprint = self.learning._find_owned("exam_blueprints", blueprint_id)
         if blueprint["status"] == "parsing":
             raise LearningError(409, "OPERATION_IN_PROGRESS", "组卷蓝图仍在解析，暂不能编辑")
+        if "title" in patch:
+            title = str(patch.get("title") or "").strip()
+            if not title:
+                raise LearningError(422, "VALIDATION_FAILED", "蓝图标题不能为空")
+            patch = {**patch, "title": title}
+        if set(patch) <= {"title"}:
+            updated = {**blueprint, "title": patch["title"], "updated_at": self._now()}
+            validated = ExamBlueprint.model_validate(updated).model_dump()
+            self._replace(subject["id"], "exam_blueprints", blueprint_id, validated)
+            return validated
         source_ids = patch.get("source_version_ids", blueprint["source_version_ids"])
         grounding_mode = patch.get("grounding_mode", blueprint["grounding_mode"])
         self.learning._validate_source_scope(subject["id"], source_ids, grounding_mode)
@@ -232,10 +250,24 @@ class ExamService:
         async def worker():
             try:
                 completed = 0
+                bundle = await self._generate_exam_bundle(profile, blueprint, slots)
+                known_briefs = {
+                    slot_id: self._question_brief(question, next(
+                        (item["ordinal"] for item in slots if item["id"] == slot_id),
+                        None,
+                    ))
+                    for slot_id, question in bundle.items()
+                }
                 for slot in slots:
                     self._update_slot(subject["id"], draft_id, slot["id"], {"status": "generating", "updated_at": self._now()})
                     try:
-                        question = await self._generate_question(profile, blueprint, slot)
+                        packed = bundle.get(slot["id"])
+                        question = packed or await self._generate_question(
+                            profile,
+                            blueprint,
+                            slot,
+                            avoid=[brief for item_id, brief in known_briefs.items() if item_id != slot["id"]],
+                        )
                         status = "complete" if question["reliability"] == "reliable" else "needs-review"
                         self._update_slot(subject["id"], draft_id, slot["id"], {
                             "status": status,
@@ -279,6 +311,8 @@ class ExamService:
                             },
                             "updated_at": self._now(),
                         })
+                    else:
+                        known_briefs[slot["id"]] = self._question_brief(question, slot["ordinal"])
                     completed += 1
                     self.operations.update_progress(operation_holder["id"], completed, len(slots), f"已生成 {completed}/{len(slots)} 题")
                 current = self.learning._find_owned("exam_drafts", draft_id)[1]
@@ -376,6 +410,11 @@ class ExamService:
         blueprint = self.get_blueprint(draft["blueprint_id"])
         profile = self._selected_model(subject["id"], None)
         repair_hint = (slot.get("error") or {}).get("message")
+        avoid = [
+            self._question_brief(item["question"], item.get("ordinal"))
+            for item in draft["questions"]
+            if item["id"] != question_id and item.get("question")
+        ]
         self._update_slot(subject["id"], draft_id, question_id, {"status": "queued", "error": None, "updated_at": self._now()})
 
         async def worker():
@@ -389,7 +428,13 @@ class ExamService:
                 counters={"retries": 1},
             )
             try:
-                question = await self._generate_question(profile, blueprint, slot, repair_hint=repair_hint)
+                question = await self._generate_question(
+                    profile,
+                    blueprint,
+                    slot,
+                    repair_hint=repair_hint,
+                    avoid=avoid,
+                )
             except asyncio.CancelledError:
                 self._update_slot(subject["id"], draft_id, question_id, {**slot, "updated_at": self._now()})
                 raise
@@ -644,6 +689,39 @@ class ExamService:
     def get_exam(self, exam_id: str) -> dict:
         return self.learning._find_owned("exams", exam_id)[1]
 
+    def update_exam(self, exam_id: str, patch: dict) -> dict:
+        subject, exam = self.learning._find_owned("exams", exam_id)
+        title = str(patch.get("title") or "").strip()
+        if not title:
+            raise LearningError(422, "VALIDATION_FAILED", "试卷标题不能为空")
+        if title == (exam.get("document") or {}).get("title"):
+            return exam
+        timestamp = self._now()
+
+        def update(data):
+            current = next((item for item in data.get("exams", []) if item["id"] == exam_id), None)
+            if current is None:
+                raise LearningError(404, "RESOURCE_NOT_FOUND", "试卷不存在")
+            document = {**copy.deepcopy(current["document"]), "title": title}
+            updated_exam = {**current, "document": document, "updated_at": timestamp}
+            version_id = current["current_version_id"]
+            versions = []
+            for item in data.get("exam_versions", []):
+                if item["id"] == version_id:
+                    version_document = copy.deepcopy(item.get("document") or document)
+                    version_document["title"] = title
+                    versions.append({**item, "document": version_document})
+                else:
+                    versions.append(item)
+            return {
+                **data,
+                "exams": [updated_exam if item["id"] == exam_id else item for item in data.get("exams", [])],
+                "exam_versions": versions,
+            }
+
+        self.learning._mutate(subject["id"], update)
+        return self.get_exam(exam_id)
+
     def replace_exam_document(self, exam_id: str, payload: dict) -> dict:
         document = self._validate_exam_document(payload["document"])
         return self._commit_exam_document(
@@ -744,6 +822,8 @@ class ExamService:
             "paper": paper,
             "answers": [],
             "feedback": [],
+            "elapsed_ms": 0,
+            "timing_started_at": timestamp,
             "created_at": timestamp,
             "updated_at": timestamp,
             "submitted_at": None,
@@ -751,7 +831,7 @@ class ExamService:
             "grading_error": None,
         }
         self._append(subject["id"], "attempts", attempt)
-        return attempt
+        return self._attempt_view(attempt)
 
     def get_attempt(self, attempt_id: str) -> dict:
         return self._attempt_view(self.learning._find_owned("attempts", attempt_id)[1])
@@ -851,7 +931,13 @@ class ExamService:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt["status"] != "in-progress":
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不能暂停")
-        updated = {**attempt, "status": "paused", "updated_at": self._now()}
+        timestamp = self._now()
+        updated = {
+            **attempt,
+            **self._apply_timing(attempt, running=False, timestamp=timestamp),
+            "status": "paused",
+            "updated_at": timestamp,
+        }
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return self._attempt_view(updated)
 
@@ -859,17 +945,26 @@ class ExamService:
         subject, attempt = self.learning._find_owned("attempts", attempt_id)
         if attempt.get("grading_status") in {"queued", "grading"}:
             raise LearningError(409, "OPERATION_IN_PROGRESS", "批改进行中，暂时不能继续作答")
+        timestamp = self._now()
+        timing = self._apply_timing(attempt, running=True, timestamp=timestamp)
         if attempt.get("completion_status") == "completed":
-            updated = {**attempt, "completion_status": "in-progress", "completed_at": None, "status": "in-progress", "updated_at": self._now()}
+            updated = {
+                **attempt,
+                **timing,
+                "completion_status": "in-progress",
+                "completed_at": None,
+                "status": "in-progress",
+                "updated_at": timestamp,
+            }
             self._replace(subject["id"], "attempts", attempt_id, updated)
             return self._attempt_view(updated)
         if attempt["status"] == "submitted" and attempt.get("grading_status") in {"completed", "failed", "stale"}:
-            updated = {**attempt, "status": "in-progress", "updated_at": self._now()}
+            updated = {**attempt, **timing, "status": "in-progress", "updated_at": timestamp}
             self._replace(subject["id"], "attempts", attempt_id, updated)
             return self._attempt_view(updated)
         if attempt["status"] != "paused":
             raise LearningError(409, "ATTEMPT_STATE_CONFLICT", "当前作答不在暂停状态")
-        updated = {**attempt, "status": "in-progress", "updated_at": self._now()}
+        updated = {**attempt, **timing, "status": "in-progress", "updated_at": timestamp}
         self._replace(subject["id"], "attempts", attempt_id, updated)
         return self._attempt_view(updated)
 
@@ -882,6 +977,7 @@ class ExamService:
         timestamp = self._now()
         updated = {
             **attempt,
+            **self._apply_timing(attempt, running=False, timestamp=timestamp),
             "completion_status": "completed",
             "completed_at": timestamp,
             "unanswered_question_ids": self._unanswered_question_ids(attempt),
@@ -901,7 +997,16 @@ class ExamService:
             for question in self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])["questions"]
         ):
             raise LearningError(409, "OPERATION_IN_PROGRESS", "请等待当前题目反馈完成后再提交")
-        grading = {**attempt, "status": "grading", "grading_status": "grading", "grading_error": None, "feedback": [], "updated_at": self._now()}
+        timestamp = self._now()
+        grading = {
+            **attempt,
+            **self._apply_timing(attempt, running=False, timestamp=timestamp),
+            "status": "grading",
+            "grading_status": "grading",
+            "grading_error": None,
+            "feedback": [],
+            "updated_at": timestamp,
+        }
         self._replace(subject["id"], "attempts", attempt_id, grading)
         resource = {"type": "attempt", "id": attempt_id}
 
@@ -1502,8 +1607,115 @@ class ExamService:
 
     # Question and grading helpers ---------------------------------------
 
-    async def _generate_question(self, profile: dict, blueprint: dict, slot: dict, *, repair_hint: str | None = None) -> dict:
-        query = " ".join([*blueprint.get("syllabus", []), slot["planned_type"]])
+    async def _generate_exam_bundle(self, profile: dict, blueprint: dict, slots: list[dict]) -> dict[str, dict]:
+        query = " ".join(blueprint.get("syllabus") or []) or (slots[0]["planned_type"] if slots else "")
+        anchors = [] if blueprint["grounding_mode"] == "general-knowledge" else self.sources.retrieve(query, blueprint["source_version_ids"], limit=12)
+        if blueprint["grounding_mode"] == "strict" and not anchors:
+            return {}
+        citations = [self.sources.create_citation(anchor) for anchor in anchors]
+        slot_plan = [
+            {
+                "id": slot["id"],
+                "ordinal": slot["ordinal"],
+                "type": slot["planned_type"],
+                "difficulty": slot["planned_difficulty"],
+                "score": slot["planned_score"],
+            }
+            for slot in slots
+        ]
+        grounding_instruction = {
+            "strict": "题干、答案和解析只能依据资料片段。",
+            "supplemental": "优先依据资料片段；如需通用知识补充，必须与资料依据区分。",
+            "general-knowledge": "使用通用知识生成，并将依据标为通用知识。",
+        }[blueprint["grounding_mode"]]
+        syllabus_focus = "、".join(blueprint.get("syllabus") or []) or "无"
+        prompt = (
+            "一次生成整张试卷的全部题目，只返回 JSON："
+            '{"questions":[{"id":"槽位id","type":"...","stem":"...","options":[{"id":"A","content":"..."}],'
+            '"answer":{},"explanation":"...","knowledge_points":["..."]}]}。'
+            "questions 的 id、type、顺序必须与槽位一致。各题考查点、题干和选项不得重复。\n"
+            f"槽位：{json.dumps(slot_plan, ensure_ascii=False)}\n"
+            f"考纲重点：{syllabus_focus}\n"
+            f"{grounding_instruction}\n\n"
+            f"资料片段：\n{self.learning._anchors_text(anchors) or '无'}"
+        )
+        try:
+            response = await self.model_client.chat(profile, [{
+                "role": "user",
+                "content": self.learning._grounded_content(prompt, anchors, profile),
+            }])
+            parsed = self._parse_model_json(response["text"])
+            raw_questions = parsed.get("questions") if isinstance(parsed, dict) else parsed
+            if not isinstance(raw_questions, list):
+                return {}
+            slots_by_id = {slot["id"]: slot for slot in slots}
+            packed = {}
+            for item in raw_questions:
+                if not isinstance(item, dict):
+                    continue
+                slot = slots_by_id.get(item.get("id"))
+                if slot is None:
+                    try:
+                        ordinal = int(item.get("ordinal"))
+                    except (TypeError, ValueError):
+                        ordinal = None
+                    slot = next((row for row in slots if row["ordinal"] == ordinal), None)
+                if slot is None or slot["id"] in packed:
+                    continue
+                try:
+                    question = self._normalize_generated_question(item, slot, citations, blueprint["grounding_mode"])
+                    question = self._validate_question_resources(
+                        blueprint["subject_id"],
+                        question,
+                        allowed_version_ids=set(blueprint["source_version_ids"]) if blueprint["grounding_mode"] != "general-knowledge" else set(),
+                    )
+                except (LearningError, ValidationError, ValueError, KeyError, TypeError):
+                    continue
+                packed[slot["id"]] = question
+            return packed
+        except (ModelClientError, SourceLibraryError, ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return {}
+
+    def _question_brief(self, question: dict, ordinal=None) -> dict:
+        stem = ""
+        for block in question.get("stem") or []:
+            if isinstance(block, dict) and block.get("text"):
+                stem = block["text"]
+                break
+            if isinstance(block, str) and block.strip():
+                stem = block
+                break
+        return {
+            "ordinal": ordinal,
+            "type": question.get("type"),
+            "stem": stem[:160],
+            "knowledge_points": question.get("knowledge_points") or [],
+        }
+
+    def _brief_conflicts(self, question: dict, briefs: list[dict]) -> bool:
+        current = self._question_brief(question)
+        return any(self._stems_too_similar(current.get("stem"), brief.get("stem")) for brief in briefs)
+
+    @staticmethod
+    def _stems_too_similar(left: str | None, right: str | None) -> bool:
+        compact = lambda text: re.sub(r"\s+", "", str(text or "").lower())
+        first, second = compact(left), compact(right)
+        if not first or not second:
+            return False
+        if first == second or first in second or second in first:
+            return True
+        return len(first) >= 12 and len(second) >= 12 and first[:12] == second[:12]
+
+    async def _generate_question(
+        self,
+        profile: dict,
+        blueprint: dict,
+        slot: dict,
+        *,
+        repair_hint: str | None = None,
+        avoid: list[dict] | None = None,
+    ) -> dict:
+        query = " ".join(item for item in [*blueprint.get("syllabus", []), slot["planned_type"]] if item)
         anchors = [] if blueprint["grounding_mode"] == "general-knowledge" else self.sources.retrieve(query, blueprint["source_version_ids"], limit=5)
         if blueprint["grounding_mode"] == "strict" and not anchors:
             self._record_structure_stage(self._now(), time.perf_counter(), "failed")
@@ -1516,13 +1728,31 @@ class ExamService:
         }[blueprint["grounding_mode"]]
         syllabus_focus = "、".join(blueprint.get("syllabus") or []) or "无"
         repair = f"上一轮失败：{repair_hint}。请按示例补全缺失字段后重新输出。\n" if repair_hint else ""
+        avoid_section = ""
+        if avoid:
+            avoid_section = (
+                "不要重复这些已有题目的题干、选项或考点：\n"
+                + json.dumps(
+                    [
+                        {
+                            "ordinal": item.get("ordinal"),
+                            "stem": item.get("stem"),
+                            "knowledge_points": item.get("knowledge_points") or [],
+                        }
+                        for item in avoid
+                        if item.get("stem")
+                    ],
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         prompt = (
             f"生成一道 {slot['planned_type']} 题，难度 {slot['planned_difficulty']}，分值 {slot['planned_score']}。"
             "只返回一个 JSON 对象，不要 markdown 代码块，不要额外说明。"
             "必填字段：type、stem、answer、explanation、knowledge_points；选择题还要 options（至少两个，id 用 A/B/C）。"
             f"type 必须是 {slot['planned_type']}。"
             f"JSON 示例：{self._question_schema_example(slot['planned_type'], slot['planned_score'])}\n"
-            f"{repair}"
+            f"{repair}{avoid_section}"
             f"考纲重点：{syllabus_focus}\n"
             f"{grounding_instruction}\n\n"
             f"资料片段：\n{self.learning._anchors_text(anchors) or '无'}"
@@ -1881,11 +2111,33 @@ class ExamService:
             if question["id"] not in answered_ids
         ]
 
-    @staticmethod
-    def _attempt_view(attempt: dict) -> dict:
-        if attempt["mode"] == "exam" and attempt.get("completion_status") != "completed":
-            return {**attempt, "feedback": []}
-        return attempt
+    def _timer_running(self, attempt: dict) -> bool:
+        return attempt.get("status") == "in-progress" and attempt.get("completion_status") != "completed"
+
+    def _hydrate_timing(self, attempt: dict) -> dict:
+        if "elapsed_ms" in attempt:
+            return {
+                **attempt,
+                "elapsed_ms": int(attempt.get("elapsed_ms") or 0),
+                "timing_started_at": attempt.get("timing_started_at"),
+            }
+        started = attempt.get("created_at") if self._timer_running(attempt) else None
+        return {**attempt, "elapsed_ms": 0, "timing_started_at": attempt.get("timing_started_at", started)}
+
+    def _apply_timing(self, attempt: dict, *, running: bool, timestamp: int | None = None) -> dict:
+        now = self._now() if timestamp is None else timestamp
+        current = self._hydrate_timing(attempt)
+        elapsed = int(current.get("elapsed_ms") or 0)
+        started = current.get("timing_started_at")
+        if self._timer_running(current) and started is not None:
+            elapsed += max(0, now - int(started))
+        return {"elapsed_ms": elapsed, "timing_started_at": now if running else None}
+
+    def _attempt_view(self, attempt: dict) -> dict:
+        viewed = self._hydrate_timing(attempt)
+        if viewed["mode"] == "exam" and viewed.get("completion_status") != "completed":
+            return {**viewed, "feedback": []}
+        return viewed
 
     def _recent_missed_knowledge_points(self, subject_id: str) -> list[str]:
         subject = self.learning._subject(subject_id)
@@ -2238,6 +2490,106 @@ class ExamService:
             "updated_at": self._now(),
         }
         self._replace(subject_id, "exam_blueprints", blueprint["id"], failed)
+
+    def _commit_blueprint_draft(self, subject_id: str, blueprint: dict, fields: dict) -> dict:
+        updated = {
+            **blueprint,
+            "title": fields.get("title") or blueprint.get("title") or "练习卷",
+            "status": "draft",
+            "syllabus": fields.get("syllabus") or [],
+            "question_plan": fields["question_plan"],
+            "total_score": fields["total_score"],
+            "duration_minutes": fields.get("duration_minutes"),
+            "issues": fields.get("issues") or [],
+            "updated_at": self._now(),
+        }
+        validated = ExamBlueprint.model_validate(updated).model_dump()
+        self._replace(subject_id, "exam_blueprints", blueprint["id"], validated)
+        return validated
+
+    def _default_blueprint_fields(self, subject_id: str, payload: dict) -> dict:
+        subject = self.learning._subject(subject_id)
+        prompt = (payload.get("prompt") or "").strip()
+        name = subject.get("name") or "本科目"
+        title = prompt[:40] if prompt else f"{name}练习卷"
+        if title in {"出一套练习卷", f"出一套{name}练习卷"}:
+            title = f"{name}练习卷"
+        plan = [self._normalize_plan(item) for item in self._default_question_plan(prompt)]
+        total_score = float(sum(item["count"] * item["score_each"] for item in plan))
+        issues = []
+        if payload.get("use_defaults"):
+            issues = [self._default_blueprint_issue()]
+        return {
+            "title": title or f"{name}练习卷",
+            "syllabus": [name] if name and name != "本科目" else [],
+            "question_plan": plan,
+            "total_score": total_score,
+            "duration_minutes": 45,
+            "issues": issues,
+        }
+
+    @staticmethod
+    def _default_blueprint_issue() -> dict:
+        return {
+            "code": "BLUEPRINT_USED_DEFAULTS",
+            "severity": "warning",
+            "path": "question_plan",
+            "message": "题型题量使用了默认套卷，可在确认前修改",
+        }
+
+    @staticmethod
+    def _default_question_plan(prompt: str) -> list[dict]:
+        text = prompt or ""
+        easy = any(token in text for token in ("简单", "基础", "入门", "easy"))
+        hard = any(token in text for token in ("困难", "很难", "hard"))
+        choice_difficulty = "hard" if hard and not easy else "easy"
+        rest_difficulty = "hard" if hard and not easy else "medium" if not easy else "easy"
+        return [
+            {"type": "single-choice", "count": 4, "difficulty": choice_difficulty, "score_each": 10},
+            {"type": "true-false", "count": 2, "difficulty": choice_difficulty, "score_each": 10},
+            {"type": "fill-blank", "count": 2, "difficulty": rest_difficulty, "score_each": 10},
+            {"type": "short-answer", "count": 1, "difficulty": rest_difficulty, "score_each": 20},
+        ]
+
+    def _coerce_blueprint_parse(self, text: str, seed: dict) -> dict:
+        raw = self._parse_model_json(text)
+        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            raw = raw[0]
+        if not isinstance(raw, dict):
+            raise ValueError("blueprint is not an object")
+        title = str(raw.get("title") or seed["title"]).strip()[:200] or seed["title"]
+        syllabus = self._string_list(raw.get("syllabus") if raw.get("syllabus") is not None else seed.get("syllabus"))
+        plan_raw = raw.get("question_plan") if raw.get("question_plan") is not None else raw.get("plan")
+        used_defaults = False
+        try:
+            plan = [self._normalize_plan(item) for item in plan_raw] if isinstance(plan_raw, list) else []
+        except (ValidationError, KeyError, TypeError, ValueError):
+            plan = []
+        if not plan:
+            plan = copy.deepcopy(seed["question_plan"])
+            used_defaults = True
+        try:
+            total_score = float(raw["total_score"])
+            if total_score <= 0:
+                raise ValueError("total_score must be positive")
+        except (KeyError, TypeError, ValueError):
+            total_score = float(sum(item["count"] * item["score_each"] for item in plan))
+        duration = raw.get("duration_minutes", seed.get("duration_minutes"))
+        try:
+            duration = int(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            duration = seed.get("duration_minutes")
+        issues = self._blueprint_issues(plan, total_score)
+        if used_defaults:
+            issues = [*issues, self._default_blueprint_issue()]
+        return {
+            "title": title,
+            "syllabus": syllabus or seed.get("syllabus") or [],
+            "question_plan": plan,
+            "total_score": total_score,
+            "duration_minutes": duration,
+            "issues": issues,
+        }
 
     def _update_slot(self, subject_id: str, draft_id: str, question_id: str, changes: dict) -> None:
         _, draft = self.learning._find_owned("exam_drafts", draft_id)

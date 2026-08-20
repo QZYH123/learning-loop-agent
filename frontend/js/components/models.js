@@ -1,12 +1,43 @@
 import { icons } from '../icons.js';
 import { API_FORMATS, escapeHtml, normalizeBaseUrl, statusLabel } from '../util.js';
 
+let lastModelsKey = null;
+
 export function renderModels(state, root, handlers) {
-  if (state.modal !== 'models') {
+  const key = modelsDialogKey(state);
+  if (key === lastModelsKey) return;
+  lastModelsKey = key;
+  const html = modelsDialogHtml(state);
+  if (!html) {
     root.innerHTML = '';
-    root.onclick = null;
     return;
   }
+  root.innerHTML = html;
+  bindModelDialog(root, state, handlers);
+}
+
+function modelsDialogKey(state) {
+  if (state.modal !== 'models') return '';
+  return JSON.stringify({
+    models: (state.models || []).map((item) => [
+      item.id,
+      item.model,
+      item.provider,
+      item.api_format,
+      item.has_api_key,
+      item.validation?.status,
+      item.validation?.message,
+      item.id === state.currentModelId,
+    ]),
+    editingId: state.editingModelId || null,
+    busy: state.modelBusy,
+    discovered: (state.discoveredModels || []).map((item) => item.name),
+    discoverError: state.discoverError || '',
+  });
+}
+
+function modelsDialogHtml(state) {
+  if (state.modal !== 'models') return '';
 
   const form = state.modelForm || defaultForm();
   const discovered = state.discoveredModels || [];
@@ -14,7 +45,7 @@ export function renderModels(state, root, handlers) {
   const busy = state.modelBusy;
   const formatMeta = API_FORMATS.find((item) => item.id === form.api_format) || API_FORMATS[0];
 
-  root.innerHTML = `
+  return `
     <div class="overlay">
       <div class="dialog dialog-models" role="dialog" aria-modal="true">
         <h2>模型服务</h2>
@@ -49,10 +80,17 @@ export function renderModels(state, root, handlers) {
         <form id="model-form" class="form-grid">
           <label class="field"><span class="field-label">服务商</span><input class="input" name="provider" value="${escapeHtml(form.provider)}" placeholder="OpenAI / 自定义" /></label>
           <label class="field"><span class="field-label">API 格式</span>
-            <select class="select" name="api_format" title="${escapeHtml(formatMeta.hint)}">
-              ${API_FORMATS.map((item) => `<option value="${item.id}" ${item.id === form.api_format ? 'selected' : ''} title="${escapeHtml(item.hint)}">${item.label}</option>`).join('')}
-            </select>
-            <span class="field-hint">${escapeHtml(formatMeta.hint)}，示例 ${escapeHtml(formatMeta.baseUrl)}</span>
+            <input type="hidden" name="api_format" value="${escapeHtml(form.api_format)}" />
+            <div class="dropdown field-dropdown">
+              <button type="button" class="select select-trigger" data-action="toggle-format" title="${escapeHtml(formatMeta.hint)}">
+                <span class="select-value">${escapeHtml(formatMeta.label)}</span>
+                ${icons.chevronDown(14)}
+              </button>
+              <div class="menu format-menu" hidden>
+                ${API_FORMATS.map((item) => `<button type="button" class="menu-item ${item.id === form.api_format ? 'is-active' : ''}" data-action="pick-format" data-format="${escapeHtml(item.id)}"><span>${escapeHtml(item.label)}</span></button>`).join('')}
+              </div>
+            </div>
+            <span class="field-hint" data-format-hint>${escapeHtml(formatMeta.hint)}，示例 ${escapeHtml(formatMeta.baseUrl)}</span>
           </label>
           <label class="field"><span class="field-label">Base URL</span><input class="input" name="base_url" value="${escapeHtml(form.base_url)}" placeholder="${escapeHtml(formatMeta.baseUrl)}" /></label>
           <label class="field"><span class="field-label">API Key</span><input class="input" name="api_key" type="password" value="${escapeHtml(form.api_key)}" placeholder="${editingId ? '留空则保持原 Key' : '可选'}" autocomplete="off" /></label>
@@ -84,26 +122,39 @@ export function renderModels(state, root, handlers) {
       </div>
     </div>
   `;
+}
 
+function bindModelDialog(root, state, handlers) {
+  let currentFormat = (state.modelForm || defaultForm()).api_format;
   const formEl = root.querySelector('#model-form');
   const overlay = root.querySelector('.overlay');
-  const syncForm = () => {
-    const next = readForm(formEl);
-    const prev = form;
-    if (next.api_format !== prev.api_format) {
-      const spec = API_FORMATS.find((item) => item.id === next.api_format);
-      const old = API_FORMATS.find((item) => item.id === prev.api_format);
-      if (spec && (!prev.base_url || prev.base_url === old?.baseUrl)) {
-        next.base_url = spec.baseUrl;
-        formEl.elements.base_url.value = spec.baseUrl;
-      }
-      if (next.api_format === 'ollama' && (next.provider === 'OpenAI' || prev.provider === 'OpenAI')) {
-        next.provider = 'Ollama';
-        formEl.elements.provider.value = 'Ollama';
-      }
+  const formatMenu = root.querySelector('.format-menu');
+  const formatValue = root.querySelector('.select-value');
+  const formatHint = root.querySelector('[data-format-hint]');
+  const formatTrigger = root.querySelector('[data-action="toggle-format"]');
+
+  const applyFormat = (id) => {
+    const spec = API_FORMATS.find((item) => item.id === id);
+    if (!spec || !formEl.elements.api_format) return;
+    const prev = currentFormat;
+    formEl.elements.api_format.value = id;
+    if (formatValue) formatValue.textContent = spec.label;
+    if (formatHint) formatHint.textContent = `${spec.hint}，示例 ${spec.baseUrl}`;
+    if (formatTrigger) formatTrigger.title = spec.hint;
+    formatMenu?.querySelectorAll('[data-format]').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.format === id);
+    });
+    const old = API_FORMATS.find((item) => item.id === prev);
+    if (!formEl.elements.base_url.value || formEl.elements.base_url.value === old?.baseUrl) {
+      formEl.elements.base_url.value = spec.baseUrl;
     }
-    handlers.onModelFormChange(next);
+    if (id === 'ollama' && (formEl.elements.provider.value === 'OpenAI' || prev === 'openai-chat-completions' || prev === 'openai-responses')) {
+      formEl.elements.provider.value = 'Ollama';
+    }
+    currentFormat = id;
   };
+
+  const syncForm = () => handlers.onModelFormChange(readForm(formEl));
   formEl.addEventListener('change', syncForm);
   formEl.addEventListener('input', syncForm);
 
@@ -115,6 +166,18 @@ export function renderModels(state, root, handlers) {
     event.stopPropagation();
     const action = event.target.closest('[data-action]')?.dataset.action;
     const id = event.target.closest('[data-id]')?.dataset.id;
+    if (action === 'toggle-format') {
+      if (formatMenu) formatMenu.hidden = !formatMenu.hidden;
+      return;
+    }
+    if (action === 'pick-format') {
+      const formatId = event.target.closest('[data-format]')?.dataset.format;
+      if (formatId) applyFormat(formatId);
+      if (formatMenu) formatMenu.hidden = true;
+      syncForm();
+      return;
+    }
+    if (formatMenu) formatMenu.hidden = true;
     if (action === 'close' || (event.target === overlay && closeArmed)) {
       handlers.onCloseModal();
       return;

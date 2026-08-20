@@ -46,6 +46,7 @@ class ExamBlueprintPromptInput(ContractModel):
     grounding_mode: GroundingMode
     source_version_ids: list[str] = Field(default_factory=list, json_schema_extra={"uniqueItems": True})
     model_id: str | None = None
+    use_defaults: bool = False
 
     @field_validator("source_version_ids")
     @classmethod
@@ -294,6 +295,10 @@ class ExamList(ContractModel):
     items: list[Exam]
 
 
+class ExamPatch(PatchModel):
+    title: str = Field(default=None, min_length=1, max_length=200)
+
+
 class ExamDocumentReplaceInput(ContractModel):
     base_version_id: str
     document: ExamDocument
@@ -440,6 +445,8 @@ class Attempt(ContractModel):
     paper: AttemptPaper
     answers: list[AttemptAnswer]
     feedback: list[QuestionFeedback]
+    elapsed_ms: int = Field(ge=0)
+    timing_started_at: int | None
     created_at: int
     updated_at: int
     submitted_at: int | None = None

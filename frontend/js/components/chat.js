@@ -385,7 +385,7 @@ function sessionMenu(state) {
 
 function styleMenu(current) {
   return `
-    <div class="menu menu-right">
+    <div class="menu menu-right menu-style">
       ${CHAT_STYLES.map(
         (item) => `
         <button type="button" class="menu-item ${item.id === current ? 'is-active' : ''}" data-action="set-style" data-id="${item.id}">

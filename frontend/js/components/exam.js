@@ -35,7 +35,7 @@ export function examLeftHtml(state, handlers) {
     ? ''
     : renderChatPane(state, handlers, {
         variant: 'task',
-        placeholder: '想出一套什么卷？输入 / 用命令',
+        placeholder: '例如 /组卷 出一套简单计网小测',
         emptyTitle: '开始新对话',
       });
 }
@@ -88,7 +88,7 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed, state = 
               ? `<button type="button" class="btn btn-primary btn-sm" data-action="confirm-blueprint" data-id="${blueprint.id}">确认蓝图</button>`
               : blueprint?.status === 'confirmed'
                 ? `<button type="button" class="btn btn-primary btn-sm" data-action="generate-draft" data-id="${blueprint.id}">开始组题</button>`
-                : `<button type="button" class="btn btn-primary btn-sm" data-action="focus-composer">用对话组卷</button>`
+                : `<button type="button" class="btn btn-primary btn-sm" data-action="create-blueprint">新建蓝图</button>`
           }
         </div>
       </div>`;
@@ -138,20 +138,29 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed, state = 
 function renderBlueprint(state, blueprint) {
   const items = state.blueprints || [];
   if (!items.length) {
-    return `<div class="empty"><h3>还没有蓝图</h3><button type="button" class="btn btn-primary" data-action="focus-composer">用对话组卷</button></div>`;
+    return `<div class="empty"><h3>还没有蓝图</h3><p class="item-sub">可以先用默认题型，再改题量和分值</p><button type="button" class="btn btn-primary" data-action="create-blueprint">新建蓝图</button></div>`;
   }
   return `
     <div class="resource-row">
       ${items
-        .map(
-          (item) => `
-        <button type="button" class="mini ${item.id === state.activeBlueprintId ? 'is-active' : ''}" data-action="select-blueprint" data-id="${item.id}">
-          <div class="item-title">${escapeHtml(item.title || '蓝图')}</div>
-          <div class="item-sub"><span>${statusLabel('blueprint', item.status)}</span><span>${formatTime(item.updated_at)}</span></div>
-        </button>
-      `,
+        .map((item) =>
+          renderMiniCard({
+            active: item.id === state.activeBlueprintId,
+            renaming: state.renamingBlueprintId === item.id,
+            action: 'select-blueprint',
+            id: item.id,
+            title: item.title || '蓝图',
+            sub: `<span>${statusLabel('blueprint', item.status)}</span><span>${formatTime(item.updated_at)}</span>`,
+            renameKind: 'blueprint',
+          }),
         )
         .join('')}
+      <div class="mini-wrap">
+        <button type="button" class="mini" data-action="create-blueprint">
+          <div class="item-title">新建蓝图</div>
+          <div class="item-sub">默认题型，可改</div>
+        </button>
+      </div>
     </div>
     ${
       !blueprint
@@ -159,9 +168,12 @@ function renderBlueprint(state, blueprint) {
         : blueprint.status === 'parsing'
           ? `<div class="boot">${icons.rotateCw(18, 'spin')}<h3>解析中</h3></div>`
           : blueprint.status === 'failed'
-            ? `<div class="fail"><h3>解析失败</h3><button type="button" class="btn btn-primary" data-action="focus-composer">重新组卷</button></div>`
+            ? `<div class="fail"><h3>${escapeHtml(blueprint.issues?.[0]?.message || '解析失败')}</h3><button type="button" class="btn btn-primary" data-action="create-blueprint">新建蓝图</button></div>`
             : `<div>
                 <p class="item-sub" style="margin-bottom:10px">${escapeHtml(truncate(blueprint.prompt || '', 160))}</p>
+                ${(blueprint.issues || [])
+                  .map((issue) => `<p class="item-sub">${escapeHtml(issue.message)}</p>`)
+                  .join('')}
                 ${renderSyllabus(blueprint)}
                 <div class="plan">
                   ${(blueprint.question_plan || [])
@@ -279,13 +291,16 @@ function renderExamDoc(state, exam, proposal) {
   return `
     <div class="resource-row">
       ${items
-        .map(
-          (item) => `
-        <button type="button" class="mini ${item.id === state.activeExamId ? 'is-active' : ''}" data-action="select-exam" data-id="${item.id}">
-          <div class="item-title">${escapeHtml(item.document?.title || '试卷')}</div>
-          <div class="item-sub">${item.total_score} 分</div>
-        </button>
-      `,
+        .map((item) =>
+          renderMiniCard({
+            active: item.id === state.activeExamId,
+            renaming: state.renamingExamId === item.id,
+            action: 'select-exam',
+            id: item.id,
+            title: item.document?.title || '试卷',
+            sub: `${item.total_score} 分`,
+            renameKind: 'exam',
+          }),
         )
         .join('')}
     </div>
@@ -317,6 +332,25 @@ function renderExamDoc(state, exam, proposal) {
               )
               .join('')
     }
+  `;
+}
+
+export function renderMiniCard({ active, renaming, action, id, title, sub, renameKind }) {
+  const titleHtml = renaming
+    ? `<input class="input inline-rename" data-rename-resource="${renameKind}" data-id="${id}" value="${escapeHtml(title)}" maxlength="200" />`
+    : `<div class="item-title">${escapeHtml(title)}</div>`;
+  const inner = renaming
+    ? `<div class="mini is-active">${titleHtml}<div class="item-sub">${sub}</div></div>`
+    : `<button type="button" class="mini ${active ? 'is-active' : ''}" data-action="${action}" data-id="${id}">${titleHtml}<div class="item-sub">${sub}</div></button>`;
+  return `
+    <div class="mini-wrap ${active ? 'is-active' : ''} ${renaming ? 'is-renaming' : ''}">
+      ${inner}
+      ${
+        active && !renaming
+          ? `<button type="button" class="ghost-icon mini-rename" data-action="rename-${renameKind}" data-id="${id}" title="重命名" aria-label="重命名">${icons.edit3(12)}</button>`
+          : ''
+      }
+    </div>
   `;
 }
 
