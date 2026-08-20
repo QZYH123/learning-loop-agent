@@ -50,7 +50,7 @@ export function examRightHtml(state) {
   const draftProposal = pendingProposal(state.draftProposals);
   return `
         <div class="task">
-          ${renderHeader(tab, blueprint, draft, exam, tab === 'draft' ? draftProposal : proposal, collapsed)}
+          ${renderHeader(tab, blueprint, draft, exam, tab === 'draft' ? draftProposal : proposal, collapsed, state)}
           <div class="local-nav">
             <button type="button" class="seg ${tab === 'blueprint' ? 'is-active' : ''}" data-action="exam-tab" data-tab="blueprint">蓝图</button>
             <button type="button" class="seg ${tab === 'draft' ? 'is-active' : ''}" data-action="exam-tab" data-tab="draft">草稿</button>
@@ -73,7 +73,7 @@ function expandBtn(collapsed) {
     : '';
 }
 
-function renderHeader(tab, blueprint, draft, exam, proposal, collapsed) {
+function renderHeader(tab, blueprint, draft, exam, proposal, collapsed, state = {}) {
   if (tab === 'blueprint') {
     return `
       <div class="pane-head">
@@ -104,8 +104,8 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed) {
         <div class="pane-actions">
           ${
             proposal?.status === 'ready'
-              ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-draft-proposal" data-id="${proposal.id}">应用修改</button>
-                 <button type="button" class="icon-btn" data-action="discard-draft-proposal" data-id="${proposal.id}" title="放弃">${icons.x(15)}</button>`
+              ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-draft-proposal" data-id="${proposal.id}" ${state.draftProposalBusyId === proposal.id ? 'disabled' : ''}>${state.draftProposalBusyId === proposal.id ? '应用中' : '应用修改'}</button>
+                 <button type="button" class="icon-btn" data-action="discard-draft-proposal" data-id="${proposal.id}" title="放弃" ${state.draftProposalBusyId === proposal.id ? 'disabled' : ''}>${icons.x(15)}</button>`
               : draft && (draft.status === 'editable' || draft.status === 'generating')
               ? `<button type="button" class="btn btn-primary btn-sm" data-action="publish-draft" data-id="${draft.id}" ${draft.status !== 'editable' || !draftPublishState(draft).canPublish ? 'disabled' : ''} title="${draftPublishState(draft).canPublish ? '发布试卷' : '先重试失败或待复查题目'}">发布试卷</button>`
               : `<button type="button" class="btn btn-primary btn-sm" data-action="focus-composer">用对话组卷</button>`
@@ -123,8 +123,8 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed) {
       <div class="pane-actions">
         ${
           proposal?.status === 'ready'
-            ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-exam-proposal" data-id="${proposal.id}">应用修改</button>
-               <button type="button" class="icon-btn" data-action="discard-exam-proposal" data-id="${proposal.id}" title="放弃">${icons.x(15)}</button>`
+            ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-exam-proposal" data-id="${proposal.id}" ${state.draftProposalBusyId === proposal.id ? 'disabled' : ''}>${state.draftProposalBusyId === proposal.id ? '应用中' : '应用修改'}</button>
+               <button type="button" class="icon-btn" data-action="discard-exam-proposal" data-id="${proposal.id}" title="放弃" ${state.draftProposalBusyId === proposal.id ? 'disabled' : ''}>${icons.x(15)}</button>`
             : exam
               ? `<button type="button" class="btn btn-primary btn-sm" data-action="go-attempt" data-id="${exam.id}">去作答</button>`
               : `<button type="button" class="btn btn-primary btn-sm" data-action="focus-composer">用对话组卷</button>`
@@ -258,9 +258,10 @@ function renderDraft(state, draft) {
               <span>${slot.ordinal}.</span>
               <span>${QUESTION_TYPES[slot.planned_type] || slot.planned_type}</span>
               <span class="status ${slot.status === 'complete' ? 'status-ok' : slot.status === 'failed' ? 'status-bad' : 'status-warn'}">${statusLabel('draft', slot.status)}</span>
-              ${retryable ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试">${icons.rotateCw(14)}</button>` : ''}
+              ${retryable ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试" ${state.retryingQuestionId === slot.id || slot.status === 'generating' || slot.status === 'queued' ? 'disabled' : ''}>${icons.rotateCw(14)}</button>` : ''}
             </div>
             ${q ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}${renderSolution(q)}` : `<p class="item-sub">${escapeHtml(sanitizeErrorMessage(slot.error?.message || (slot.status === 'generating' || slot.status === 'queued' ? '生成中' : '待生成')))}</p>`}
+            ${renderQuestionRevise(state, draft, slot, q, proposal)}
           </article>
         `;
             })
@@ -317,6 +318,23 @@ function renderExamDoc(state, exam, proposal) {
               .join('')
     }
   `;
+}
+
+function renderQuestionRevise(state, draft, slot, question, proposal) {
+  if (!question || draft.status !== 'editable' || proposal) return '';
+  if (state.draftQuestionBusyId === slot.id) {
+    return `<button type="button" class="btn btn-primary btn-sm q-revise-toggle" disabled>正在修改</button>`;
+  }
+  if (state.draftQuestionBusyId) return '';
+  if (state.draftQuestionEditId === slot.id) {
+    return `
+      <div class="q-revise">
+        <input id="question-revise-input" class="input" type="text" placeholder="写一句修改要求" value="${escapeHtml(state.draftQuestionPrompt || '')}" maxlength="10000" />
+        <button type="button" class="btn btn-primary btn-sm" data-action="revise-question" data-id="${slot.id}">改这题</button>
+        <button type="button" class="icon-btn" data-action="cancel-question-revise" title="取消">${icons.x(14)}</button>
+      </div>`;
+  }
+  return `<button type="button" class="btn btn-ghost btn-sm q-revise-toggle" data-action="open-question-revise" data-id="${slot.id}">改这题</button>`;
 }
 
 function renderOptions(question) {

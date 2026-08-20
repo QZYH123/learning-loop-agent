@@ -1773,6 +1773,7 @@ components:
       required: [instruction]
       properties:
         instruction: {type: string, minLength: 1, maxLength: 10000}
+        scope: {$ref: '#/components/schemas/RevisionScope'}
         model_id:
           anyOf:
             - $ref: '#/components/schemas/Identifier'

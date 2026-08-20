@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import math
+import re
 import time
 import uuid
 
@@ -374,6 +375,7 @@ class ExamService:
             raise LearningError(409, "OPERATION_IN_PROGRESS", "该题仍在生成")
         blueprint = self.get_blueprint(draft["blueprint_id"])
         profile = self._selected_model(subject["id"], None)
+        repair_hint = (slot.get("error") or {}).get("message")
         self._update_slot(subject["id"], draft_id, question_id, {"status": "queued", "error": None, "updated_at": self._now()})
 
         async def worker():
@@ -387,7 +389,7 @@ class ExamService:
                 counters={"retries": 1},
             )
             try:
-                question = await self._generate_question(profile, blueprint, slot)
+                question = await self._generate_question(profile, blueprint, slot, repair_hint=repair_hint)
             except asyncio.CancelledError:
                 self._update_slot(subject["id"], draft_id, question_id, {**slot, "updated_at": self._now()})
                 raise
@@ -495,6 +497,8 @@ class ExamService:
         subject, draft = self.learning._find_owned("exam_drafts", draft_id)
         if draft["status"] != "editable":
             raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可修改")
+        if self.operations.active_for_subject(subject["id"], "exam-revision"):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "已有修改正在生成，请稍候")
         questions = [copy.deepcopy(item["question"]) for item in draft["questions"] if item.get("question")]
         if not questions:
             raise LearningError(409, "QUESTION_STRUCTURE_INVALID", "草稿还没有可修改的题目")
@@ -535,7 +539,10 @@ class ExamService:
                         f"试卷：{json.dumps(document, ensure_ascii=False)}\n\n指令：{payload['instruction']}"
                     ),
                 }])
-                raw_changes = json.loads(response["text"])["changes"]
+                parsed = self._parse_model_json(response["text"])
+                if not isinstance(parsed, dict):
+                    raise ValueError("changes is required")
+                raw_changes = parsed.get("changes")
                 changes = [ExamChange.model_validate(item).model_dump() for item in raw_changes]
                 if not isinstance(changes, list) or not changes:
                     raise ValueError("changes is required")
@@ -573,12 +580,26 @@ class ExamService:
         _, draft = self.learning._find_owned("exam_drafts", proposal["draft_id"])
         if draft["status"] != "editable":
             raise LearningError(409, "RESOURCE_CONFLICT", "当前试卷草稿不可修改")
+        original_questions = [copy.deepcopy(item["question"]) for item in draft["questions"] if item.get("question")]
+        original_ids = [item["id"] for item in original_questions]
         document = {
             "title": draft["title"],
             "instructions": draft.get("instructions") or [],
-            "questions": [copy.deepcopy(item["question"]) for item in draft["questions"] if item.get("question")],
+            "questions": original_questions,
         }
-        updated_document = self._apply_revision_changes(document, proposal["changes"])
+        try:
+            updated_document = self._apply_revision_changes(document, proposal["changes"])
+        except (LearningError, ValidationError, JsonPatchException, JsonPointerException, ValueError, KeyError, TypeError) as exc:
+            message = str(exc or "")
+            if "does not match the base document" in message or "not found" in message.lower():
+                raise LearningError(409, "REVISION_PROPOSAL_STALE", "试卷已更新，该修改预览已失效") from exc
+            raise LearningError(409, "REVISION_PROPOSAL_INVALID", "修改后的试卷结构无效") from exc
+        restored_questions = []
+        for index, question in enumerate(updated_document["questions"]):
+            if index < len(original_ids) and question.get("id") != original_ids[index]:
+                question = {**question, "id": original_ids[index]}
+            restored_questions.append(question)
+        updated_document = {**updated_document, "questions": restored_questions}
         questions_by_id = {item["id"]: item for item in updated_document["questions"]}
         slots = []
         for slot in draft["questions"]:
@@ -605,6 +626,9 @@ class ExamService:
         applied = {**proposal, "status": "applied", "updated_at": self._now()}
         self._replace(subject["id"], "exam_drafts", draft["id"], updated_draft)
         self._replace(subject["id"], "draft_revision_proposals", proposal_id, applied)
+        for item in self.list_draft_revision_proposals(draft["id"]):
+            if item["id"] != proposal_id and item["status"] == "ready":
+                self.discard_draft_revision_proposal(item["id"])
         return self._draft_view(updated_draft)
 
     def discard_draft_revision_proposal(self, proposal_id: str) -> None:
@@ -1046,7 +1070,10 @@ class ExamService:
                 validation_started_at = self._now()
                 validation_started = time.perf_counter()
                 try:
-                    raw_changes = json.loads(response["text"])["changes"]
+                    parsed = self._parse_model_json(response["text"])
+                    if not isinstance(parsed, dict):
+                        raise ValueError("changes is required")
+                    raw_changes = parsed.get("changes")
                     changes = [ExamChange.model_validate(item).model_dump() for item in raw_changes]
                     if not isinstance(changes, list) or not changes:
                         raise ValueError("changes is required")
@@ -1475,7 +1502,7 @@ class ExamService:
 
     # Question and grading helpers ---------------------------------------
 
-    async def _generate_question(self, profile: dict, blueprint: dict, slot: dict) -> dict:
+    async def _generate_question(self, profile: dict, blueprint: dict, slot: dict, *, repair_hint: str | None = None) -> dict:
         query = " ".join([*blueprint.get("syllabus", []), slot["planned_type"]])
         anchors = [] if blueprint["grounding_mode"] == "general-knowledge" else self.sources.retrieve(query, blueprint["source_version_ids"], limit=5)
         if blueprint["grounding_mode"] == "strict" and not anchors:
@@ -1488,10 +1515,14 @@ class ExamService:
             "general-knowledge": "使用通用知识生成，并将依据标为通用知识。",
         }[blueprint["grounding_mode"]]
         syllabus_focus = "、".join(blueprint.get("syllabus") or []) or "无"
+        repair = f"上一轮失败：{repair_hint}。请按示例补全缺失字段后重新输出。\n" if repair_hint else ""
         prompt = (
             f"生成一道 {slot['planned_type']} 题，难度 {slot['planned_difficulty']}，分值 {slot['planned_score']}。"
-            "只返回 JSON，字段为 type、stem、options（选择题）、answer、explanation、knowledge_points。"
-            "answer.kind 按题型使用 choice、fill-blank、true-false 或 subjective。\n"
+            "只返回一个 JSON 对象，不要 markdown 代码块，不要额外说明。"
+            "必填字段：type、stem、answer、explanation、knowledge_points；选择题还要 options（至少两个，id 用 A/B/C）。"
+            f"type 必须是 {slot['planned_type']}。"
+            f"JSON 示例：{self._question_schema_example(slot['planned_type'], slot['planned_score'])}\n"
+            f"{repair}"
             f"考纲重点：{syllabus_focus}\n"
             f"{grounding_instruction}\n\n"
             f"资料片段：\n{self.learning._anchors_text(anchors) or '无'}"
@@ -1503,7 +1534,13 @@ class ExamService:
         validation_started_at = self._now()
         validation_started = time.perf_counter()
         try:
-            raw = json.loads(response["text"])
+            raw = self._parse_model_json(response["text"])
+            if isinstance(raw, list) and raw:
+                raw = raw[0]
+            if isinstance(raw, dict) and isinstance(raw.get("question"), dict):
+                raw = raw["question"]
+            if not isinstance(raw, dict):
+                raise ValueError("generated question is not an object")
             question = self._normalize_generated_question(raw, slot, citations, blueprint["grounding_mode"])
             question = self._validate_question_resources(
                 blueprint["subject_id"],
@@ -1517,28 +1554,29 @@ class ExamService:
         return question
 
     def _normalize_generated_question(self, raw: dict, slot: dict, citations: list[dict], basis: str) -> dict:
-        question_type = raw.get("type") or slot["planned_type"]
-        if question_type != slot["planned_type"]:
-            raise ValueError("generated question type does not match the plan")
+        question_type = slot["planned_type"]
         options = []
         if question_type in {"single-choice", "multiple-choice"}:
-            options = []
-            for index, item in enumerate(raw["options"]):
-                option_id = item.get("id") if isinstance(item, dict) else chr(65 + index)
-                content = item.get("content") if isinstance(item, dict) else item
-                options.append({"id": option_id, "content": self._blocks(content)})
-        answer = self._normalize_answer(raw["answer"], question_type)
+            options = self._normalize_options(raw.get("options") if raw.get("options") is not None else raw.get("choices"))
+            if len(options) < 2:
+                raise ValueError("choice questions require at least two options")
+        stem = raw.get("stem") if raw.get("stem") not in (None, "") else raw.get("content") or raw.get("question")
+        explanation = raw.get("explanation") if raw.get("explanation") not in (None, "") else raw.get("analysis") or raw.get("solution") or "见参考答案。"
+        knowledge_points = self._string_list(raw.get("knowledge_points") if raw.get("knowledge_points") is not None else raw.get("knowledge_point"))
+        if not knowledge_points:
+            knowledge_points = [item for item in (slot.get("planned_type"),) if item]
+        answer = self._normalize_answer(raw.get("answer"), question_type, options, slot["planned_score"])
         complete_evidence = bool(citations) or basis == "general-knowledge"
         question = {
             "id": slot["id"],
             "type": question_type,
-            "stem": self._blocks(raw["stem"]),
+            "stem": self._blocks(stem),
             "options": options,
             "score": float(slot["planned_score"]),
             "answer_area": {"lines": 0 if question_type in {"single-choice", "multiple-choice", "true-false"} else 3 if question_type == "fill-blank" else 8},
             "answer": answer,
-            "explanation": self._blocks(raw["explanation"]),
-            "knowledge_points": raw["knowledge_points"],
+            "explanation": self._blocks(explanation),
+            "knowledge_points": knowledge_points,
             "evidence": {
                 "basis": basis,
                 "citations": citations,
@@ -1549,33 +1587,67 @@ class ExamService:
         }
         return self._validate_manual_question(question, slot["id"])
 
-    def _normalize_answer(self, answer: dict, question_type: str) -> dict:
+    def _normalize_options(self, raw_options) -> list[dict]:
+        if isinstance(raw_options, dict):
+            raw_options = [{"id": key, "content": value} for key, value in raw_options.items()]
+        if not isinstance(raw_options, list):
+            return []
+        options = []
+        used_ids: set[str] = set()
+        for index, item in enumerate(raw_options):
+            option_id = chr(65 + index)
+            content = item
+            if isinstance(item, dict):
+                option_id = str(item.get("id") or item.get("label") or option_id)
+                if len(option_id) > 1 and option_id[1] in ".、．)）":
+                    option_id = option_id[0]
+                content = item.get("content")
+                if content is None:
+                    content = item.get("text") or item.get("label") or item.get("value") or item.get("option")
+                if content is None and item.get("type") in {"markdown", "latex", "table", "image"}:
+                    content = item
+            if option_id in used_ids:
+                option_id = f"{option_id}{index + 1}"
+            used_ids.add(option_id)
+            options.append({"id": option_id, "content": self._blocks(content)})
+        if len(options) == 1:
+            filler_id = "B" if options[0]["id"] != "B" else "C"
+            options.append({"id": filler_id, "content": self._blocks("以上都不对")})
+        return options
+
+    def _normalize_answer(self, answer, question_type: str, options: list[dict] | None = None, planned_score: float = 1) -> dict:
         if question_type in {"single-choice", "multiple-choice"}:
-            return {"kind": "choice", "option_ids": answer["option_ids"]}
+            option_ids = [item["id"] for item in options or []]
+            selected = self._extract_choice_ids(answer, option_ids)
+            matched = [item for item in selected if item in option_ids]
+            if not matched and selected:
+                content_by_id = {
+                    item["id"]: "".join(
+                        block.get("text") or "" for block in item.get("content") or [] if isinstance(block, dict)
+                    )
+                    for item in options or []
+                }
+                for text in selected:
+                    for option_id, content in content_by_id.items():
+                        if text and (text in content or content in text):
+                            matched.append(option_id)
+                matched = list(dict.fromkeys(matched))
+            if question_type == "single-choice" and len(matched) > 1:
+                matched = matched[:1]
+            if not matched:
+                raise ValueError("choice answer is missing")
+            return {"kind": "choice", "option_ids": matched}
         if question_type == "fill-blank":
-            blanks = []
-            for index, blank in enumerate(answer["blanks"]):
-                blanks.append({
-                    "id": blank.get("id") or f"blank-{index + 1}",
-                    "acceptable_answers": blank["acceptable_answers"],
-                    "normalization": blank.get("normalization") or {
-                        "trim": True,
-                        "case_sensitive": False,
-                        "collapse_whitespace": True,
-                    },
-                })
+            blanks = self._extract_blanks(answer)
+            if not blanks:
+                raise ValueError("fill-blank answer is missing blanks")
             return {"kind": "fill-blank", "blanks": blanks}
         if question_type == "true-false":
-            return {"kind": "true-false", "value": bool(answer["value"])}
-        points = [
-            {
-                "id": point.get("id") or self._ids("scoring-point"),
-                "description": point["description"],
-                "score": float(point["score"]),
-            }
-            for point in answer["scoring_points"]
-        ]
-        return {"kind": "subjective", "reference_answer": self._blocks(answer["reference_answer"]), "scoring_points": points}
+            value = self._extract_bool(answer)
+            if value is None:
+                raise ValueError("true-false answer is missing")
+            return {"kind": "true-false", "value": value}
+        return self._extract_subjective(answer, planned_score)
 
     def _validate_manual_question(self, question: dict, question_id: str) -> dict:
         candidate = {**question, "id": question_id}
@@ -1878,9 +1950,241 @@ class ExamService:
     def _blocks(self, value) -> list[dict]:
         if isinstance(value, str):
             return [self.learning._markdown_block(value)]
+        if isinstance(value, dict):
+            return [self._coerce_block(value)]
         if isinstance(value, list):
-            return [item if isinstance(item, dict) else self.learning._markdown_block(str(item)) for item in value]
+            if not value:
+                raise ValueError("content blocks must be a string or list")
+            return [
+                self._coerce_block(item) if isinstance(item, dict) else self.learning._markdown_block(str(item))
+                for item in value
+            ]
         raise ValueError("content blocks must be a string or list")
+
+    def _coerce_block(self, item: dict) -> dict:
+        block_type = item.get("type")
+        block_id = item.get("id") or self._ids("block")
+        if block_type == "markdown":
+            return {"id": block_id, "type": "markdown", "text": str(item.get("text") or item.get("content") or "")}
+        if block_type == "latex":
+            return {
+                "id": block_id,
+                "type": "latex",
+                "latex": str(item.get("latex") or item.get("text") or ""),
+                "display": bool(item.get("display", False)),
+            }
+        if block_type == "table":
+            return {
+                "id": block_id,
+                "type": "table",
+                "columns": item.get("columns") or [],
+                "rows": item.get("rows") or [],
+            }
+        if block_type == "image" and isinstance(item.get("asset"), dict):
+            return {
+                "id": block_id,
+                "type": "image",
+                "asset": item["asset"],
+                "alt": item.get("alt"),
+                "caption": item.get("caption"),
+            }
+        text = item.get("text") or item.get("content") or item.get("markdown") or item.get("value") or item.get("latex")
+        if text is None:
+            raise ValueError("content blocks must be a string or list")
+        if isinstance(text, list):
+            return self._blocks(text)[0]
+        return self.learning._markdown_block(str(text))
+
+    @staticmethod
+    def _parse_model_json(text: str):
+        if not isinstance(text, str) or not text.strip():
+            raise json.JSONDecodeError("Expecting value", text or "", 0)
+        stripped = text.strip()
+        candidates = [stripped]
+        fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped, re.I)
+        if fence:
+            candidates.append(fence.group(1).strip())
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end > start:
+            candidates.append(stripped[start : end + 1])
+        seen: set[str] = set()
+        last_error = None
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+        raise last_error or json.JSONDecodeError("Expecting value", stripped, 0)
+
+    @staticmethod
+    def _question_schema_example(question_type: str, score: float) -> str:
+        examples = {
+            "single-choice": (
+                '{"type":"single-choice","stem":"题干","options":[{"id":"A","content":"选项A"},'
+                '{"id":"B","content":"选项B"},{"id":"C","content":"选项C"},{"id":"D","content":"选项D"}],'
+                '"answer":{"kind":"choice","option_ids":["A"]},"explanation":"解析","knowledge_points":["考点"]}'
+            ),
+            "multiple-choice": (
+                '{"type":"multiple-choice","stem":"题干","options":[{"id":"A","content":"选项A"},'
+                '{"id":"B","content":"选项B"},{"id":"C","content":"选项C"}],'
+                '"answer":{"kind":"choice","option_ids":["A","C"]},"explanation":"解析","knowledge_points":["考点"]}'
+            ),
+            "fill-blank": (
+                '{"type":"fill-blank","stem":"……____……","answer":{"kind":"fill-blank",'
+                '"blanks":[{"id":"blank-1","acceptable_answers":["答案"]}]},"explanation":"解析","knowledge_points":["考点"]}'
+            ),
+            "true-false": (
+                '{"type":"true-false","stem":"题干","answer":{"kind":"true-false","value":true},'
+                '"explanation":"解析","knowledge_points":["考点"]}'
+            ),
+        }
+        if question_type in examples:
+            return examples[question_type]
+        return (
+            f'{{"type":"{question_type}","stem":"题干","answer":{{"kind":"subjective","reference_answer":"参考答案",'
+            f'"scoring_points":[{{"id":"point-1","description":"得分点","score":{float(score)}}}] }},'
+            '"explanation":"解析","knowledge_points":["考点"]}'
+        )
+
+    @staticmethod
+    def _string_list(value) -> list[str]:
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        if not isinstance(value, list):
+            return []
+        items = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                items.append(item.strip())
+            elif isinstance(item, dict):
+                text = item.get("name") or item.get("title") or item.get("text") or item.get("point")
+                if text:
+                    items.append(str(text).strip())
+        return [item for item in items if item]
+
+    def _extract_choice_ids(self, answer, option_ids: list[str]) -> list[str]:
+        if isinstance(answer, str):
+            text = answer.strip()
+            if text in option_ids:
+                return [text]
+            letter = text[:1].upper() if text else ""
+            if letter in option_ids:
+                return [letter]
+            return [text] if text else []
+        if isinstance(answer, bool):
+            return []
+        if isinstance(answer, (int, float)):
+            index = int(answer)
+            if 0 <= index < len(option_ids):
+                return [option_ids[index]]
+            if 1 <= index <= len(option_ids):
+                return [option_ids[index - 1]]
+            return []
+        if isinstance(answer, list):
+            selected = []
+            for item in answer:
+                selected.extend(self._extract_choice_ids(item, option_ids))
+            return list(dict.fromkeys(selected))
+        if isinstance(answer, dict):
+            for key in ("option_ids", "options", "choices", "correct", "value", "answer", "id"):
+                if answer.get(key) is None:
+                    continue
+                found = self._extract_choice_ids(answer[key], option_ids)
+                if found:
+                    return found
+        return []
+
+    @staticmethod
+    def _extract_bool(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"true", "t", "yes", "y", "1", "对", "正确", "是", "√", "right"}:
+                return True
+            if text in {"false", "f", "no", "n", "0", "错", "错误", "否", "×", "wrong"}:
+                return False
+        if isinstance(value, dict):
+            for key in ("value", "answer", "correct", "is_true"):
+                if key in value:
+                    found = ExamService._extract_bool(value[key])
+                    if found is not None:
+                        return found
+        return None
+
+    @staticmethod
+    def _blank_definition(index: int, answers: list[str], blank_id: str | None = None) -> dict:
+        return {
+            "id": blank_id or f"blank-{index + 1}",
+            "acceptable_answers": answers,
+            "normalization": {"trim": True, "case_sensitive": False, "collapse_whitespace": True},
+        }
+
+    def _extract_blanks(self, answer) -> list[dict]:
+        if isinstance(answer, str) and answer.strip():
+            return [self._blank_definition(0, [answer.strip()])]
+        if isinstance(answer, list):
+            blanks = []
+            for index, item in enumerate(answer):
+                if isinstance(item, str) and item.strip():
+                    blanks.append(self._blank_definition(index, [item.strip()]))
+                elif isinstance(item, dict):
+                    raw_answers = item.get("acceptable_answers") or item.get("answers") or item.get("value") or item.get("text")
+                    if isinstance(raw_answers, str):
+                        raw_answers = [raw_answers]
+                    answers = [str(value).strip() for value in (raw_answers or []) if str(value).strip()]
+                    if answers:
+                        blanks.append(self._blank_definition(index, answers, item.get("id")))
+            return blanks
+        if isinstance(answer, dict):
+            if answer.get("blanks") is not None:
+                return self._extract_blanks(answer["blanks"])
+            raw_answers = answer.get("acceptable_answers") or answer.get("answers") or answer.get("value") or answer.get("text")
+            if raw_answers:
+                return self._extract_blanks(raw_answers)
+        return []
+
+    def _extract_subjective(self, answer, planned_score: float) -> dict:
+        points = []
+        reference = answer
+        if isinstance(answer, dict):
+            reference = answer.get("reference_answer") or answer.get("answer") or answer.get("text") or answer.get("value") or "见得分点"
+            raw_points = answer.get("scoring_points") or answer.get("points") or []
+            if isinstance(raw_points, list):
+                for index, point in enumerate(raw_points):
+                    if isinstance(point, str) and point.strip():
+                        points.append({
+                            "id": f"point-{index + 1}",
+                            "description": point.strip(),
+                            "score": float(planned_score) / max(len(raw_points), 1),
+                        })
+                    elif isinstance(point, dict):
+                        description = str(point.get("description") or point.get("text") or point.get("point") or "").strip()
+                        if not description:
+                            continue
+                        points.append({
+                            "id": point.get("id") or f"point-{index + 1}",
+                            "description": description,
+                            "score": float(point["score"] if point.get("score") is not None else planned_score / max(len(raw_points), 1)),
+                        })
+        elif isinstance(answer, list):
+            reference = "；".join(str(item) for item in answer if item)
+            return self._extract_subjective({"reference_answer": reference or "见得分点", "scoring_points": answer}, planned_score)
+        if isinstance(reference, (dict, list)):
+            reference_blocks = self._blocks(reference)
+        else:
+            reference_text = str(reference or "").strip() or "见得分点"
+            reference_blocks = self._blocks(reference_text)
+        if not points:
+            description = reference_blocks[0].get("text") if reference_blocks and isinstance(reference_blocks[0], dict) else "要点"
+            points = [{"id": "point-1", "description": str(description or "要点")[:200], "score": float(planned_score)}]
+        return {"kind": "subjective", "reference_answer": reference_blocks, "scoring_points": points}
 
     @staticmethod
     def _structure_error_message(exc: Exception) -> str:
@@ -1894,6 +2198,8 @@ class ExamService:
             return "主观题缺少得分点，请重试生成"
         if "content block" in lowered:
             return "题目正文格式无效，请重试生成"
+        if "option" in lowered and "choice" in lowered:
+            return "选择题缺少选项或答案，请重试生成"
         if "json" in lowered or "expecting" in lowered:
             return "题目生成结果无法解析，请重试"
         return "题目结构不完整，请重试生成"

@@ -46,13 +46,16 @@ import {
 class App {
   constructor() {
     this.root = document.getElementById('app');
-    this.ui = { composerFocus: false, range: [0, 0], chatScroll: 0, chatStick: true, contentScroll: 0, searchFocus: false, searchRange: [0, 0] };
+    this.ui = { composerFocus: false, range: [0, 0], chatScroll: 0, chatStick: true, contentScroll: 0, searchFocus: false, searchRange: [0, 0], reviseFocus: false, reviseRange: [0, 0] };
     this.selectionPop = null;
     this.draftPoll = null;
     this.sourcePoll = null;
     this.generatingPoll = null;
     this.generatingWatchSessionId = null;
     this.sending = false;
+    this.revising = false;
+    this.applyingProposal = false;
+    this.retryingQuestions = new Set();
     this.regions = { workspace: null, shell: '', left: '', right: '', nav: '' };
   }
 
@@ -78,10 +81,9 @@ class App {
   bindGlobals() {
     document.addEventListener('click', (event) => this.onClick(event));
     document.addEventListener('change', (event) => this.onFieldChange(event));
+    document.addEventListener('input', (event) => this.onFieldInput(event));
     document.addEventListener('mouseup', (event) => this.onMouseUp(event));
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') store.setState({ openMenu: null, modal: null });
-    });
+    document.addEventListener('keydown', (event) => this.onKeyDown(event));
     window.addEventListener('resize', () => {
       if (store.state.openMenu) store.setState({ openMenu: null });
     });
@@ -101,6 +103,9 @@ class App {
     }
     const content = document.getElementById('task-scroll');
     if (content) this.ui.contentScroll = content.scrollTop;
+    const revise = document.getElementById('question-revise-input');
+    this.ui.reviseFocus = revise && document.activeElement === revise;
+    if (revise) this.ui.reviseRange = [revise.selectionStart, revise.selectionEnd];
   }
 
   restoreUi() {
@@ -119,6 +124,14 @@ class App {
     }
     const chat = document.getElementById('chat-stream');
     const content = document.getElementById('task-scroll');
+    const revise = document.getElementById('question-revise-input');
+    if (revise) {
+      revise.value = store.state.draftQuestionPrompt || '';
+      if (this.ui.reviseFocus) {
+        revise.focus();
+        revise.setSelectionRange(this.ui.reviseRange[0], this.ui.reviseRange[1]);
+      }
+    }
     if (chat) chat.scrollTop = this.ui.chatStick ? chat.scrollHeight : this.ui.chatScroll;
     if (content) content.scrollTop = this.ui.contentScroll;
   }
@@ -375,12 +388,32 @@ class App {
       else if (action === 'confirm-blueprint') await this.confirmBlueprint(id);
       else if (action === 'generate-draft') await this.generateDraft(id);
       else if (action === 'select-draft') await this.selectDraft(id);
-      else if (action === 'retry-question') await this.retryQuestion(target.dataset.draftId, id);
+      else if (action === 'retry-question') {
+        if (this.retryingQuestions.has(id)) return;
+        await this.retryQuestion(target.dataset.draftId, id);
+      }
+      else if (action === 'open-question-revise') {
+        if (this.revising || store.state.draftQuestionBusyId) return;
+        store.setState({ draftQuestionEditId: id, draftQuestionPrompt: '' });
+        queueMicrotask(() => document.getElementById('question-revise-input')?.focus());
+      } else if (action === 'cancel-question-revise') {
+        if (this.revising) return;
+        store.setState({ draftQuestionEditId: null, draftQuestionPrompt: '' });
+      } else if (action === 'revise-question') {
+        if (this.revising || store.state.draftQuestionBusyId) return;
+        await this.reviseDraftQuestion(id);
+      }
       else if (action === 'publish-draft') await this.publishDraft(id);
-      else if (action === 'apply-draft-proposal') await this.applyDraftProposal(id);
+      else if (action === 'apply-draft-proposal') {
+        if (this.applyingProposal || store.state.draftProposalBusyId) return;
+        await this.applyDraftProposal(id);
+      }
       else if (action === 'discard-draft-proposal') await this.discardDraftProposal(id);
       else if (action === 'select-exam') await this.selectExam(id);
-      else if (action === 'apply-exam-proposal') await this.applyExamProposal(id);
+      else if (action === 'apply-exam-proposal') {
+        if (this.applyingProposal || store.state.draftProposalBusyId) return;
+        await this.applyExamProposal(id);
+      }
       else if (action === 'discard-exam-proposal') await this.discardExamProposal(id);
       else if (action === 'undo-exam') await this.undoExam(id);
       else if (action === 'redo-exam') await this.redoExam(id);
@@ -411,6 +444,31 @@ class App {
       }
     } catch (err) {
       store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  onFieldInput(event) {
+    if (event.target.id === 'question-revise-input') {
+      store.patch({ draftQuestionPrompt: event.target.value });
+    }
+  }
+
+  onKeyDown(event) {
+    if (event.key === 'Escape') {
+      store.setState({
+        openMenu: null,
+        modal: null,
+        draftQuestionEditId: null,
+        draftQuestionPrompt: '',
+      });
+      return;
+    }
+    if (event.key === 'Enter' && event.target.id === 'question-revise-input') {
+      event.preventDefault();
+      if (this.revising || store.state.draftQuestionBusyId) return;
+      this.reviseDraftQuestion(store.state.draftQuestionEditId).catch((err) => {
+        store.addToast(sanitizeErrorMessage(err.message), 'error');
+      });
     }
   }
 
@@ -1036,18 +1094,48 @@ class App {
     return blueprint?.title || '';
   }
 
-  async proposeDraftEdit(instruction) {
+  async proposeDraftEdit(instruction, scope) {
     const draft = store.activeDraft();
     if (!draft) throw new Error('请先选择一份草稿或试卷');
     const accepted = await api.createDraftRevisionProposal(draft.id, {
       instruction,
+      scope: scope || { kind: 'whole-exam', question_ids: [], block_ids: [] },
       model_id: store.state.currentModelId,
     });
     store.trackOperation(accepted.operation);
     await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
     await this.loadDraftProposals(draft.id);
-    store.setState({ examTab: 'draft', workspace: 'exam', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
+    store.setState({
+      examTab: 'draft',
+      workspace: 'exam',
+      mobilePane: { ...store.state.mobilePane, exam: 'content' },
+      draftQuestionEditId: null,
+      draftQuestionPrompt: '',
+    });
     store.addToast('修改预览已就绪', 'success');
+  }
+
+  async reviseDraftQuestion(questionId) {
+    if (this.revising) return;
+    const instruction = (document.getElementById('question-revise-input')?.value || store.state.draftQuestionPrompt || '').trim();
+    if (!questionId) return;
+    if (!instruction) return store.addToast('请填写修改要求', 'error');
+    this.revising = true;
+    store.setState({
+      draftQuestionBusyId: questionId,
+      draftQuestionEditId: null,
+      draftQuestionPrompt: '',
+    });
+    try {
+      await this.proposeDraftEdit(instruction, {
+        kind: 'questions',
+        question_ids: [questionId],
+        block_ids: [],
+      });
+    } finally {
+      this.revising = false;
+      store.setState({ draftQuestionBusyId: null });
+    }
   }
 
   async loadDraftProposals(draftId) {
@@ -1056,13 +1144,21 @@ class App {
   }
 
   async applyDraftProposal(proposalId) {
-    await api.applyDraftRevisionProposal(proposalId);
-    const draftId = store.state.activeDraftId;
-    if (draftId) {
-      await this.selectDraft(draftId);
-      await this.loadDraftProposals(draftId);
+    if (this.applyingProposal) return;
+    this.applyingProposal = true;
+    store.setState({ draftProposalBusyId: proposalId });
+    try {
+      await api.applyDraftRevisionProposal(proposalId);
+      const draftId = store.state.activeDraftId;
+      if (draftId) {
+        await this.selectDraft(draftId);
+        await this.loadDraftProposals(draftId);
+      }
+      store.addToast('已应用修改', 'success');
+    } finally {
+      this.applyingProposal = false;
+      store.setState({ draftProposalBusyId: null });
     }
-    store.addToast('已应用修改', 'success');
   }
 
   async discardDraftProposal(proposalId) {
@@ -1372,6 +1468,8 @@ class App {
       activeDraftId: id,
       drafts: store.state.drafts.map((item) => (item.id === id ? draft : item)),
       examTab: 'draft',
+      draftQuestionEditId: id === store.state.activeDraftId ? store.state.draftQuestionEditId : null,
+      draftQuestionPrompt: id === store.state.activeDraftId ? store.state.draftQuestionPrompt : '',
     });
     await this.loadDraftProposals(id).catch(() => store.setState({ draftProposals: [] }));
     this.watchDraft();
@@ -1501,10 +1599,18 @@ class App {
   }
 
   async retryQuestion(draftId, questionId) {
-    const accepted = await api.retryDraftQuestion(draftId, questionId);
-    store.trackOperation(accepted.operation);
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
-    await this.selectDraft(draftId);
+    if (this.retryingQuestions.has(questionId)) return;
+    this.retryingQuestions.add(questionId);
+    store.setState({ retryingQuestionId: questionId });
+    try {
+      const accepted = await api.retryDraftQuestion(draftId, questionId);
+      store.trackOperation(accepted.operation);
+      await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+      await this.selectDraft(draftId);
+    } finally {
+      this.retryingQuestions.delete(questionId);
+      if (store.state.retryingQuestionId === questionId) store.setState({ retryingQuestionId: null });
+    }
   }
 
   async publishDraft(id) {
@@ -1549,9 +1655,17 @@ class App {
   }
 
   async applyExamProposal(id) {
-    await api.applyRevisionProposal(id);
-    await this.loadExamDetail(store.state.activeExamId);
-    store.addToast('已应用', 'success');
+    if (this.applyingProposal) return;
+    this.applyingProposal = true;
+    store.setState({ draftProposalBusyId: id });
+    try {
+      await api.applyRevisionProposal(id);
+      await this.loadExamDetail(store.state.activeExamId);
+      store.addToast('已应用', 'success');
+    } finally {
+      this.applyingProposal = false;
+      store.setState({ draftProposalBusyId: null });
+    }
   }
 
   async discardExamProposal(id) {

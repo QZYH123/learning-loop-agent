@@ -1,8 +1,9 @@
+import asyncio
 import copy
 import json
 import re
 
-from backend.tests.conftest import ImmediateFakeModelClient, make_client
+from backend.tests.conftest import ImmediateFakeModelClient, make_client, wait_for
 from backend.tests.test_learning_api import create_subject_and_model
 from backend.tests.test_sources_api import upload_source, wait_for_operation
 
@@ -166,6 +167,67 @@ class ExamFakeModel(ImmediateFakeModelClient):
         else:
             return {"text": "选区解释", "provider": profile["provider"], "model": profile["model"]}
         return {"text": json.dumps(result), "provider": profile["provider"], "model": profile["model"]}
+
+
+class MessyExamFakeModel(ExamFakeModel):
+    async def chat(self, profile, messages, max_tokens=None):
+        content = messages[-1]["content"] if messages else ""
+        if not isinstance(content, str) or "生成一道" not in content:
+            return await super().chat(profile, messages, max_tokens)
+        self.chat_calls.append({"profile": profile, "messages": messages})
+        if "生成一道 single-choice" in content:
+            payload = {
+                "type": "single_choice",
+                "stem": {"text": "A limit primarily describes what?"},
+                "options": [
+                    {"id": "A", "text": "Nearby behavior"},
+                    {"id": "B", "text": "Only the point value"},
+                ],
+                "answer": "A",
+                "explanation": "Limits describe nearby behavior.",
+                "knowledge_points": "Limits",
+            }
+            return {"text": "```json\n" + json.dumps(payload) + "\n```", "provider": profile["provider"], "model": profile["model"]}
+        if "生成一道 fill-blank" in content:
+            payload = {
+                "type": "fill-blank",
+                "stem": "The nearby behavior is described by a ____.",
+                "answer": "limit",
+                "explanation": "The missing term is limit.",
+                "knowledge_points": ["Limits"],
+            }
+            return {"text": json.dumps(payload), "provider": profile["provider"], "model": profile["model"]}
+        if "生成一道 true-false" in content:
+            payload = {
+                "type": "true-false",
+                "stem": "A limit can exist even when the point value differs.",
+                "answer": True,
+                "explanation": "A limit concerns nearby values.",
+                "knowledge_points": ["Limits"],
+            }
+            return {"text": json.dumps(payload), "provider": profile["provider"], "model": profile["model"]}
+        payload = {
+            "type": "short-answer",
+            "stem": "Explain what a limit describes.",
+            "answer": "It describes nearby behavior.",
+            "explanation": "Focus on values near the point.",
+            "knowledge_points": ["Limits"],
+        }
+        return {"text": json.dumps(payload), "provider": profile["provider"], "model": profile["model"]}
+
+
+class WaitingRevisionFakeModel(ExamFakeModel):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def chat(self, profile, messages, max_tokens=None):
+        content = messages[-1]["content"] if messages else ""
+        if isinstance(content, str) and "结构化差异预览" in content:
+            self.started.set()
+            await self.release.wait()
+        return await super().chat(profile, messages, max_tokens)
 
 
 def build_exam(client):
@@ -568,3 +630,83 @@ def test_generate_question_prompt_includes_syllabus_or_none(tmp_path):
         empty_contents = _user_contents(fake, "生成一道")[before:]
         assert empty_contents
         assert all("考纲重点：无" in content for content in empty_contents)
+
+
+def _prepare_editable_draft(client):
+    _, model_id, _, blueprint_id = build_exam(client)
+    client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"total_score": 20})
+    assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").status_code == 200
+    generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate").json()
+    assert wait_for_operation(client, generated["operation"]["id"])["status"] == "succeeded"
+    draft_id = generated["resource"]["id"]
+    draft = client.get(f"/api/exam-drafts/{draft_id}").json()
+    for slot in draft["questions"]:
+        if slot["status"] == "needs-review":
+            retried = client.post(f"/api/exam-drafts/{draft_id}/questions/{slot['id']}/retry").json()
+            assert wait_for_operation(client, retried["operation"]["id"])["status"] == "succeeded"
+    return model_id, client.get(f"/api/exam-drafts/{draft_id}").json()
+
+
+def test_generate_accepts_common_model_json_shapes(tmp_path):
+    fake = MessyExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        _, _, _, blueprint_id = build_exam(client)
+        client.patch(f"/api/exam-blueprints/{blueprint_id}", json={"total_score": 20})
+        assert client.post(f"/api/exam-blueprints/{blueprint_id}/confirm").status_code == 200
+        generated = client.post(f"/api/exam-blueprints/{blueprint_id}/generate").json()
+        assert wait_for_operation(client, generated["operation"]["id"])["status"] == "succeeded"
+        draft = client.get(f"/api/exam-drafts/{generated['resource']['id']}").json()
+        assert {item["status"] for item in draft["questions"]} == {"complete"}
+        choice = next(item for item in draft["questions"] if item["planned_type"] == "single-choice")
+        assert choice["question"]["answer"]["option_ids"] == ["A"]
+        fill = next(item for item in draft["questions"] if item["planned_type"] == "fill-blank")
+        assert fill["question"]["answer"]["blanks"][0]["acceptable_answers"] == ["limit"]
+        subjective = next(item for item in draft["questions"] if item["planned_type"] == "short-answer")
+        assert subjective["question"]["answer"]["scoring_points"]
+
+
+def test_apply_stale_draft_revision_returns_conflict(tmp_path):
+    client, _ = make_client(tmp_path, model_client=ExamFakeModel())
+    with client:
+        model_id, draft = _prepare_editable_draft(client)
+        target = next(item for item in draft["questions"] if item.get("question"))
+        proposed = client.post(f"/api/exam-drafts/{draft['id']}/revision-proposals", json={
+            "instruction": "把这题改简单一点",
+            "scope": {"kind": "questions", "question_ids": [target["id"]], "block_ids": []},
+            "model_id": model_id,
+        })
+        assert proposed.status_code == 202
+        assert wait_for_operation(client, proposed.json()["operation"]["id"])["status"] == "succeeded"
+        proposal = next(
+            item
+            for item in client.get(f"/api/exam-drafts/{draft['id']}/revision-proposals").json()["items"]
+            if item["status"] == "ready"
+        )
+        edited = copy.deepcopy(target["question"])
+        edited["stem"][0]["text"] = "人工改过的题干"
+        assert client.put(f"/api/exam-drafts/{draft['id']}/questions/{target['id']}", json=edited).status_code == 200
+        applied = client.post(f"/api/draft-revision-proposals/{proposal['id']}/apply")
+        assert applied.status_code == 409
+        assert applied.json()["error"]["code"] in {"REVISION_PROPOSAL_STALE", "REVISION_PROPOSAL_INVALID"}
+
+
+def test_second_draft_revision_blocked_while_generating(tmp_path):
+    fake = WaitingRevisionFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        model_id, draft = _prepare_editable_draft(client)
+        target = next(item for item in draft["questions"] if item.get("question"))
+        payload = {
+            "instruction": "把这题改简单一点",
+            "scope": {"kind": "questions", "question_ids": [target["id"]], "block_ids": []},
+            "model_id": model_id,
+        }
+        first = client.post(f"/api/exam-drafts/{draft['id']}/revision-proposals", json=payload)
+        assert first.status_code == 202
+        wait_for(lambda: fake.started.is_set())
+        second = client.post(f"/api/exam-drafts/{draft['id']}/revision-proposals", json=payload)
+        assert second.status_code == 409
+        assert second.json()["error"]["code"] == "OPERATION_IN_PROGRESS"
+        fake.release.set()
+        assert wait_for_operation(client, first.json()["operation"]["id"])["status"] == "succeeded"

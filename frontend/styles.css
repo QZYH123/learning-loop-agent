@@ -172,7 +172,8 @@ code, pre { font-family: var(--font-mono); }
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .icon-btn { width: 32px; padding: 0; }
-.icon-btn:hover, .chip-btn:hover { background: var(--bg-hover); color: var(--ink); }
+.icon-btn:hover:not(:disabled), .chip-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--ink); }
+.icon-btn:disabled, .chip-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .icon-btn.is-active { border-color: var(--focus); color: var(--blue); background: var(--blue-soft); }
 .chip-btn.is-warn { border-color: var(--amber); color: var(--amber); }
 .chip-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
@@ -481,6 +482,10 @@ code, pre { font-family: var(--font-mono); }
 }
 .q-head span:first-child { font-family: var(--font-serif); font-size: 17px; font-weight: 700; color: var(--blue); }
 .q > p { font-size: 14.5px; margin: 0 0 8px; }
+.q-revise-toggle { margin-top: 10px; }
+.q-revise { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.q-revise .input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; }
+.q-revise .btn, .q-revise .icon-btn { flex-shrink: 0; }
 .option, .option-view {
   display: flex; gap: 9px; align-items: flex-start; padding: 8px 11px; border: 1px solid var(--border);
   border-radius: var(--radius); margin: 6px 0; background: var(--bg-card);
