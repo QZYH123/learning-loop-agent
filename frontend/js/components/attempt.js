@@ -6,6 +6,7 @@ import {
   countBlanks,
   escapeHtml,
   feedbackForQuestion,
+  formatTime,
   renderBlocks,
   statusLabel,
 } from '../util.js';
@@ -43,13 +44,18 @@ export function attemptLeftHtml(state, handlers) {
 
 export function attemptRightHtml(state) {
   const collapsed = !!state.sidebarCollapsed.attempt;
+  const tab = state.attemptTab || 'exams';
   const exam = state.exams.find((item) => item.id === state.activeExamId) || null;
   const attempt = state.activeAttempt;
   return `
         <div class="task">
-          ${renderHeader(exam, attempt, collapsed)}
+          ${tab === 'missed' ? renderMissedHeader(collapsed) : renderHeader(exam, attempt, collapsed)}
+          <div class="local-nav">
+            <button type="button" class="seg ${tab === 'exams' ? 'is-active' : ''}" data-action="attempt-tab" data-tab="exams">试卷</button>
+            <button type="button" class="seg ${tab === 'missed' ? 'is-active' : ''}" data-action="attempt-tab" data-tab="missed">错题</button>
+          </div>
           <div class="task-body" id="task-scroll" data-select-root="attempt">
-            ${renderBody(state, exam, attempt)}
+            ${tab === 'missed' ? renderMissed(state) : renderBody(state, exam, attempt)}
           </div>
         </div>
   `;
@@ -108,10 +114,110 @@ function renderHeader(exam, attempt, collapsed) {
     </div>`;
 }
 
+function renderMissedHeader(collapsed) {
+  const expand = collapsed
+    ? `<button type="button" class="icon-btn" data-action="collapse-left" title="展开">${icons.panelLeftOpen(15)}</button>`
+    : '';
+  return `
+    <div class="pane-head">
+      <div class="head-meta">${expand}<div class="pane-title"><span>错题</span></div></div>
+      <div class="pane-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-action="practice-missed-set">再练一套</button>
+      </div>
+    </div>`;
+}
+
+function renderMissed(state) {
+  const groups = state.missedQuestions || [];
+  if (!groups.length) {
+    return `<div class="empty"><h3>还没有错题</h3><button type="button" class="btn btn-primary" data-action="attempt-tab" data-tab="exams">去作答</button></div>`;
+  }
+  const selected = new Set(state.missedSelectedPoints || []);
+  return groups
+    .map((group) => {
+      const point = group.knowledge_point;
+      const checked = selected.has(point) ? 'checked' : '';
+      const rows = (group.questions || [])
+        .map((item) => {
+          const type = QUESTION_TYPES[item.question_type] || item.question_type;
+          return `
+        <button type="button" class="item" data-action="open-missed-question" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-question-id="${escapeHtml(item.question_id || '')}">
+          <div class="item-main">
+            <div class="item-title">${escapeHtml(type)} · ${escapeHtml(item.stem_preview || '')}</div>
+            <div class="item-sub">
+              <span>${escapeHtml(item.exam_title || '试卷')}</span>
+              <span>${formatTime(item.missed_at)}</span>
+            </div>
+          </div>
+        </button>`;
+        })
+        .join('');
+      return `
+      <section class="missed-group">
+        <label class="missed-head">
+          <input type="checkbox" data-action="toggle-missed-point" data-point="${escapeHtml(point)}" ${checked} />
+          <span class="missed-head-title">${escapeHtml(point)}</span>
+          <span class="item-sub">${group.miss_count} 题</span>
+        </label>
+        <div class="list">${rows}</div>
+      </section>`;
+    })
+    .join('');
+}
+
 function attemptTimerHtml(attempt) {
   if (!attempt) return '';
   const running = attemptTimerRunning(attempt);
   return `<span class="attempt-timer" data-attempt-timer data-elapsed-ms="${Number(attempt.elapsed_ms) || 0}" data-timing-started-at="${attempt.timing_started_at || ''}" data-running="${running ? '1' : '0'}" title="作答用时">${formatElapsed(attemptElapsedMs(attempt))}</span>`;
+}
+
+function isOpenAttempt(item) {
+  return item?.completion_status === 'in-progress' && (item.status === 'in-progress' || item.status === 'paused');
+}
+
+function renderStartActions(state, exam) {
+  const openAttempt = (state.examAttempts || []).find(isOpenAttempt);
+  if (!openAttempt) {
+    return `
+      <button type="button" class="btn btn-primary" data-action="start-attempt" data-id="${exam.id}" data-mode="practice">开始练习</button>
+      <button type="button" class="btn btn-ghost" data-action="start-attempt" data-id="${exam.id}" data-mode="exam">开始考试</button>
+    `;
+  }
+  return `
+    <button type="button" class="btn btn-primary" data-action="open-attempt" data-id="${openAttempt.id}">继续作答</button>
+    <button type="button" class="btn btn-ghost" data-action="start-another" data-id="${exam.id}">再做一份</button>
+    ${
+      state.startAnotherOpen
+        ? `<button type="button" class="btn btn-ghost" data-action="start-attempt" data-id="${exam.id}" data-mode="practice">开始练习</button>
+           <button type="button" class="btn btn-ghost" data-action="start-attempt" data-id="${exam.id}" data-mode="exam">开始考试</button>`
+        : ''
+    }
+  `;
+}
+
+function renderAttemptList(state) {
+  const items = (state.examAttempts || []).slice(0, 10);
+  if (!items.length) return '';
+  return `
+    <div class="list">
+      ${items
+        .map((item) => {
+          const mode = item.mode === 'exam' ? '考试' : '练习';
+          const status = item.completion_status === 'completed' ? '已完成' : statusLabel('attempt', item.status);
+          return `
+        <button type="button" class="item" data-action="open-attempt" data-id="${item.id}">
+          <div class="item-main">
+            <div class="item-title">${mode} · ${item.answered_count}/${item.question_count}</div>
+            <div class="item-sub">
+              <span>${status}</span>
+              <span>${formatTime(item.updated_at)}</span>
+            </div>
+          </div>
+        </button>`;
+        })
+        .join('')}
+    </div>
+  `;
 }
 
 function attemptPrimary(attempt) {
@@ -155,10 +261,10 @@ function renderBody(state, exam, attempt) {
           ? `<div class="empty">
               <h3>${escapeHtml(exam.document?.title || '试卷')}</h3>
               <div class="pane-actions">
-                <button type="button" class="btn btn-primary" data-action="start-attempt" data-id="${exam.id}" data-mode="practice">开始练习</button>
-                <button type="button" class="btn btn-ghost" data-action="start-attempt" data-id="${exam.id}" data-mode="exam">开始考试</button>
+                ${renderStartActions(state, exam)}
               </div>
-            </div>`
+            </div>
+            ${renderAttemptList(state)}`
           : `<div class="empty"><h3>选择一份试卷</h3></div>`
       }
     `;

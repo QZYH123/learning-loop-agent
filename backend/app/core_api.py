@@ -1,7 +1,7 @@
 """HTTP routes for subjects, models, chat, and learning artifacts."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, File, Response, UploadFile
 
 from .api_models import (
     Chat,
@@ -52,6 +52,20 @@ def create_core_router(learning) -> APIRouter:
     def create_subject(payload: SubjectInput):
         return learning.create_subject(payload.name)
 
+    @router.post(
+        "/api/subjects/import",
+        operation_id="importSubject",
+        status_code=201,
+        response_model=Subject,
+        responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    async def import_subject(file: UploadFile = File(...)):
+        try:
+            content = await file.read()
+            return learning.import_subject(content)
+        finally:
+            await file.close()
+
     @router.get(
         "/api/subjects/{subject_id}",
         operation_id="getSubject",
@@ -88,6 +102,25 @@ def create_core_router(learning) -> APIRouter:
     )
     def activate_subject(subject_id: str):
         return learning.activate_subject(subject_id)
+
+    @router.get(
+        "/api/subjects/{subject_id}/export",
+        operation_id="exportSubject",
+        responses={
+            200: {
+                "description": "科目空间 zip 副本",
+                "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}},
+            },
+            404: {"model": ErrorResponse},
+        },
+    )
+    def export_subject(subject_id: str):
+        payload = learning.export_subject(subject_id)
+        return Response(
+            content=payload["content"],
+            media_type=payload["content_type"],
+            headers={"Content-Disposition": payload["content_disposition"]},
+        )
 
     @router.get("/api/models", operation_id="listModels", response_model=ModelServiceList)
     def list_models():

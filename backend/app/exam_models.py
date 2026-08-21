@@ -429,6 +429,45 @@ class QuestionFeedback(ContractModel):
     created_at: int
 
 
+class AttemptSummary(ContractModel):
+    id: str
+    exam_id: str
+    exam_version_id: str
+    mode: Literal["exam", "practice"]
+    status: Literal["in-progress", "paused", "grading", "submitted"]
+    completion_status: Literal["in-progress", "completed"]
+    answered_count: int = Field(ge=0)
+    question_count: int = Field(ge=0)
+    has_feedback: bool
+    created_at: int
+    updated_at: int
+
+
+class AttemptSummaryList(ContractModel):
+    items: list[AttemptSummary]
+
+
+class MissedQuestion(ContractModel):
+    exam_id: str
+    exam_version_id: str
+    exam_title: str = Field(min_length=1, max_length=200)
+    question_id: str
+    question_type: QuestionType
+    stem_preview: str = Field(max_length=80)
+    attempt_id: str
+    missed_at: int
+
+
+class MissedQuestionGroup(ContractModel):
+    knowledge_point: str = Field(min_length=1, max_length=200)
+    miss_count: int = Field(ge=0)
+    questions: list[MissedQuestion] = Field(max_length=10)
+
+
+class MissedQuestionList(ContractModel):
+    items: list[MissedQuestionGroup] = Field(max_length=30)
+
+
 class Attempt(ContractModel):
     id: str
     exam_id: str

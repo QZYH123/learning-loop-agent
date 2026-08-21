@@ -21,18 +21,36 @@
 
 ## 运行
 
+安装依赖后，一条命令启动（就绪后自动打开浏览器）：
+
+```bash
+python3 -m backend.app
+```
+
+或：
+
+```bash
+./run.sh
+```
+
+首次使用：
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.app.main:app --reload --port 4173
+python3 -m backend.app
 ```
 
-浏览器打开 <http://127.0.0.1:4173>。先创建科目空间，再添加
-模型服务（名称、API 格式、模型、Base URL、可选 API Key），验证后即可
-发送问题。应用状态和完整会话记录保存在服务端本地数据文件中，重启后自动恢复。
+启动后会打印实际地址（默认 <http://127.0.0.1:4173>；4173 被占用时依次尝试 4174–4179）。加 `--no-browser` 可跳过打开浏览器。先创建科目空间，再添加模型服务（名称、API 格式、模型、Base URL、可选 API Key），验证后即可发送问题。应用状态和完整会话记录保存在服务端本地数据文件中，重启后自动恢复。
 
 可通过环境变量 `LEARNING_LOOP_DATA_DIR` 修改数据目录。
+
+开发时可用热重载：
+
+```bash
+uvicorn backend.app.main:app --reload --port 4173
+```
 
 ## 测试
 

@@ -14,6 +14,11 @@ from urllib.parse import urlparse
 
 SCHEMA_VERSION = 1
 SUBJECT_NAME_MAX_LENGTH = 80
+DEFAULT_PET_NAME = "小墨"
+PET_NAME_MAX_LENGTH = 12
+# 默认靠右安放：居中会压在双栏中缝与输入区上方
+DEFAULT_PET_POSITION_X = 78
+DEFAULT_PET_POSITION_Y = 100
 CHAT_MESSAGE_MAX_LENGTH = 20_000
 MODEL_PROVIDER_MAX_LENGTH = 60
 MODEL_NAME_MAX_LENGTH = 120
@@ -93,6 +98,60 @@ def _ids(value=None):
     return lambda: str(value)
 
 
+def default_pet() -> dict:
+    return {
+        "name": DEFAULT_PET_NAME,
+        "adopted_at": None,
+        "position_x": DEFAULT_PET_POSITION_X,
+        "position_y": DEFAULT_PET_POSITION_Y,
+        "hidden": False,
+        "pats_by_date": {},
+    }
+
+
+def _clamp_pet_position(value) -> float | int:
+    number = float(value)
+    if number < 0:
+        number = 0
+    elif number > 100:
+        number = 100
+    if number == int(number):
+        return int(number)
+    return number
+
+
+def _normalize_pet(raw) -> dict:
+    pet = default_pet()
+    if not isinstance(raw, dict):
+        return pet
+    name = raw.get("name")
+    if isinstance(name, str):
+        trimmed = name.strip()
+        if trimmed and len(trimmed) <= PET_NAME_MAX_LENGTH:
+            pet["name"] = trimmed
+    adopted = raw.get("adopted_at")
+    if isinstance(adopted, (int, float)) and not isinstance(adopted, bool) and math.isfinite(adopted) and adopted >= 0:
+        pet["adopted_at"] = int(adopted)
+    position = raw.get("position_x")
+    if isinstance(position, (int, float)) and not isinstance(position, bool) and math.isfinite(position):
+        pet["position_x"] = _clamp_pet_position(position)
+    position_y = raw.get("position_y")
+    if isinstance(position_y, (int, float)) and not isinstance(position_y, bool) and math.isfinite(position_y):
+        pet["position_y"] = _clamp_pet_position(position_y)
+    if isinstance(raw.get("hidden"), bool):
+        pet["hidden"] = raw["hidden"]
+    pats = raw.get("pats_by_date")
+    if isinstance(pats, dict):
+        cleaned = {}
+        for key, value in pats.items():
+            if not isinstance(key, str) or not key:
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+                cleaned[key] = int(value)
+        pet["pats_by_date"] = cleaned
+    return pet
+
+
 def initial_workspace(now=None) -> dict:
     timestamp = _now_ms(now)
     return {
@@ -101,6 +160,7 @@ def initial_workspace(now=None) -> dict:
         "current_model_id": None,
         "subjects": [],
         "models": [],
+        "pet": default_pet(),
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -913,6 +973,7 @@ def normalize_workspace(raw, now=None) -> tuple[dict, str | None]:
         "current_model_id": raw.get("current_model_id") if raw.get("current_model_id") in model_ids else None,
         "subjects": subjects,
         "models": models,
+        "pet": _normalize_pet(raw.get("pet")),
         "created_at": _number_or(raw.get("created_at"), timestamp),
         "updated_at": _number_or(raw.get("updated_at"), timestamp),
     }

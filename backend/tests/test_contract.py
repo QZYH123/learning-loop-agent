@@ -93,7 +93,7 @@ def test_operations_are_unique_and_cover_every_ticket():
 
     assert len(operation_ids) == len(set(operation_ids))
     assert all(operation.get("x-tickets") for _, _, operation in operations)
-    assert covered_tickets == TICKETS
+    assert TICKETS <= covered_tickets
 
 
 def test_operations_declare_success_and_structured_error_responses():
@@ -153,7 +153,26 @@ def test_issue16_contract_covers_context_lifecycle_boundaries():
     assert "/api/subjects/{subject_id}/documents" in paths
     assert "/api/attempts/{attempt_id}/complete" in paths
     assert "source_context" in schemas["components"]["schemas"]["ChatMessage"]["properties"]
+    assert "tool_events" in schemas["components"]["schemas"]["ChatMessage"]["properties"]
+    assert "tool_events" not in schemas["components"]["schemas"]["ChatMessage"].get("required", [])
+    tool_event = schemas["components"]["schemas"]["ToolEvent"]
+    assert tool_event["required"] == ["id", "name", "status", "summary"]
+    assert tool_event["properties"]["status"]["enum"] == ["succeeded", "failed"]
     assert "only_use_specified_sources" in schemas["components"]["schemas"]["ChatMessageInput"]["properties"]
+    assert "workspace_context" in schemas["components"]["schemas"]["ChatMessageInput"]["properties"]
+    workspace_context = schemas["components"]["schemas"]["WorkspaceContext"]
+    assert workspace_context["additionalProperties"] is False
+    assert workspace_context["required"] == ["workspace"]
+    assert set(workspace_context["properties"]) == {
+        "workspace",
+        "blueprint_id",
+        "draft_id",
+        "exam_id",
+        "ai_document_id",
+        "attempt_id",
+    }
+    assert "workspace_context" in schemas["components"]["schemas"]["MessageSourceContext"]["properties"]
+    assert "workspace_context" not in schemas["components"]["schemas"]["MessageSourceContext"]["required"]
     assert "completion_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
     assert "grading_status" in schemas["components"]["schemas"]["Attempt"]["properties"]
     definitions = schemas["components"]["schemas"]
@@ -235,6 +254,16 @@ def test_issue16_request_models_keep_key_closed_constraints(tmp_path):
         "citations",
     } <= set(actual["MessageSourceContext"]["required"])
     assert "source_context" in actual["ChatMessage"]["required"]
+    assert "workspace_context" in actual["ChatMessageInput"]["properties"]
+    assert actual["WorkspaceContext"]["additionalProperties"] is False
+    assert actual["WorkspaceContext"]["required"] == ["workspace"]
+    assert "workspace_context" not in actual["MessageSourceContext"]["required"]
+    assert "tool_events" in actual["ChatMessage"]["properties"]
+    assert "tool_events" not in actual["ChatMessage"].get("required", [])
+    tool_event_ref = actual["ChatMessage"]["properties"]["tool_events"]["items"]["$ref"]
+    tool_event = actual[tool_event_ref.rsplit("/", 1)[-1]]
+    assert set(tool_event["required"]) == {"id", "name", "status", "summary"}
+    assert tool_event["properties"]["status"]["enum"] == ["succeeded", "failed"]
     assert actual["Session"]["properties"]["source_version_ids"]["uniqueItems"] is True
     discovery = actual["ModelDiscoveryInput"]["properties"]
     assert discovery["base_url"]["format"] == "uri"

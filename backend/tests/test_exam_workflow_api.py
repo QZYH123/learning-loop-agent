@@ -13,8 +13,8 @@ class ExamFakeModel(ImmediateFakeModelClient):
         super().__init__(answer="选区解释")
         self.fill_attempts = 0
 
-    async def chat(self, profile, messages, max_tokens=None):
-        self.chat_calls.append({"profile": profile, "messages": messages})
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
+        self.chat_calls.append({"profile": profile, "messages": messages, "tools": tools})
         content = messages[-1]["content"]
         if not isinstance(content, str):
             return {"text": "选区解释", "provider": profile["provider"], "model": profile["model"]}
@@ -216,10 +216,10 @@ class ExamFakeModel(ImmediateFakeModelClient):
 
 
 class MessyExamFakeModel(ExamFakeModel):
-    async def chat(self, profile, messages, max_tokens=None):
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
         content = messages[-1]["content"] if messages else ""
         if not isinstance(content, str) or "生成一道" not in content:
-            return await super().chat(profile, messages, max_tokens)
+            return await super().chat(profile, messages, max_tokens, tools=tools)
         self.chat_calls.append({"profile": profile, "messages": messages})
         if "生成一道 single-choice" in content:
             payload = {
@@ -268,12 +268,12 @@ class WaitingRevisionFakeModel(ExamFakeModel):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def chat(self, profile, messages, max_tokens=None):
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
         content = messages[-1]["content"] if messages else ""
         if isinstance(content, str) and "结构化差异预览" in content:
             self.started.set()
             await self.release.wait()
-        return await super().chat(profile, messages, max_tokens)
+        return await super().chat(profile, messages, max_tokens, tools=tools)
 
 
 def build_exam(client):

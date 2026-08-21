@@ -1,6 +1,5 @@
 const THEME_KEY = 'lla.theme';
 const SIDEBAR_KEY = 'lla.sidebar';
-const ATTEMPTS_KEY = 'lla.attempts';
 
 function readJson(key, fallback) {
   try {
@@ -38,6 +37,7 @@ export class Store {
       sources: [],
       activeSourceId: null,
       sourceAnchors: [],
+      sourceViewVersionId: null,
       sourceKind: 'files',
       aiDocuments: [],
       activeAiDocumentId: null,
@@ -56,8 +56,13 @@ export class Store {
       draftProposalBusyId: null,
       retryingQuestionId: null,
       examTab: 'blueprint',
+      attemptTab: 'exams',
+      missedQuestions: [],
+      missedSelectedPoints: [],
+      missedSelectionReady: false,
       sourceVersions: [],
-      attemptsByExam: readJson(ATTEMPTS_KEY, {}),
+      examAttempts: [],
+      startAnotherOpen: false,
       activeAttemptId: null,
       activeAttempt: null,
       review: null,
@@ -67,6 +72,7 @@ export class Store {
       pendingPins: [],
       attachments: [],
       groundingMode: 'general-knowledge',
+      groundingBySubject: {},
       selection: null,
       chatOp: null,
       operations: [],
@@ -90,6 +96,10 @@ export class Store {
       confirmMessage: '',
       confirmOk: '确认',
       confirmAction: null,
+      examEdition: 'questions',
+      examEditionAction: null,
+      examEditionExamId: null,
+      examEditionTitle: '',
       renamingSessionId: null,
       renamingBlueprintId: null,
       renamingExamId: null,
@@ -181,13 +191,6 @@ export class Store {
 
   toggleSidebar(workspace) {
     this.setSidebarCollapsed(workspace, !this.state.sidebarCollapsed[workspace]);
-  }
-
-  rememberAttempt(examId, attemptId) {
-    const current = this.state.attemptsByExam[examId] || [];
-    const next = { ...this.state.attemptsByExam, [examId]: [attemptId, ...current.filter((id) => id !== attemptId)] };
-    writeJson(ATTEMPTS_KEY, next);
-    this.setState({ attemptsByExam: next, activeAttemptId: attemptId });
   }
 
   trackOperation(op) {

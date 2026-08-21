@@ -771,8 +771,6 @@ class ExamService:
             for item in subject.get("data", {}).get("exam_exports", [])
         ):
             raise LearningError(409, "OPERATION_IN_PROGRESS", "试卷仍有修改或导出任务正在执行")
-        if any(item.get("exam_id") == exam_id for item in subject.get("data", {}).get("attempts", [])):
-            raise LearningError(409, "RESOURCE_CONFLICT", "试卷已有作答记录，不能删除")
 
         def update(data):
             return {
@@ -781,9 +779,21 @@ class ExamService:
                 "exam_versions": [item for item in data.get("exam_versions", []) if item["exam_id"] != exam_id],
                 "exam_histories": [item for item in data.get("exam_histories", []) if item["exam_id"] != exam_id],
                 "revision_proposals": [item for item in data.get("revision_proposals", []) if item["exam_id"] != exam_id],
+                "attempts": [item for item in data.get("attempts", []) if item.get("exam_id") != exam_id],
+                "exam_exports": [item for item in data.get("exam_exports", []) if item.get("exam_id") != exam_id],
             }
 
         self.learning._mutate(subject["id"], update)
+
+    def list_exam_attempts(self, exam_id: str) -> list[dict]:
+        subject, _ = self.learning._find_owned("exams", exam_id)
+        items = [
+            item
+            for item in subject.get("data", {}).get("attempts", [])
+            if item.get("exam_id") == exam_id
+        ]
+        items.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
+        return [self._attempt_summary(item) for item in items]
 
     def create_attempt(self, exam_id: str, payload: dict) -> dict:
         subject, exam = self.learning._find_owned("exams", exam_id)
@@ -2139,29 +2149,106 @@ class ExamService:
             return {**viewed, "feedback": []}
         return viewed
 
-    def _recent_missed_knowledge_points(self, subject_id: str) -> list[str]:
+    def _attempt_summary(self, attempt: dict) -> dict:
+        viewed = self._attempt_view(attempt)
+        questions = viewed.get("paper", {}).get("questions") or []
+        question_ids = {item.get("id") for item in questions if item.get("id")}
+        answers = viewed.get("answers") or []
+        answered_ids = {item.get("question_id") for item in answers if item.get("question_id") in question_ids}
+        return {
+            "id": viewed["id"],
+            "exam_id": viewed["exam_id"],
+            "exam_version_id": viewed["exam_version_id"],
+            "mode": viewed["mode"],
+            "status": viewed["status"],
+            "completion_status": viewed.get("completion_status", "in-progress"),
+            "answered_count": len(answered_ids),
+            "question_count": len(questions),
+            "has_feedback": bool(viewed.get("feedback")),
+            "created_at": viewed["created_at"],
+            "updated_at": viewed["updated_at"],
+        }
+
+    UNMARKED_KNOWLEDGE_POINT = "未标考点"
+    MISSED_GROUP_LIMIT = 30
+    MISSED_QUESTIONS_PER_GROUP = 10
+    RECENT_MISSED_POINT_LIMIT = 10
+
+    def _is_missed_feedback(self, feedback: dict) -> bool:
+        return feedback.get("correct") is False or bool(feedback.get("missed_points"))
+
+    def _stem_preview(self, question: dict) -> str:
+        text = self.learning._content_text(question.get("stem") or [])
+        return re.sub(r"\s+", " ", text).strip()[:80]
+
+    def _collect_missed_questions(self, subject_id: str) -> list[dict]:
         subject = self.learning._subject(subject_id)
-        attempts = subject.get("data", {}).get("attempts", [])
-        with_feedback = [item for item in attempts if item.get("feedback")]
-        if not with_feedback:
-            return []
-        attempt = max(with_feedback, key=lambda item: item.get("updated_at", 0))
-        document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
-        questions = {item["id"]: item for item in document.get("questions", [])}
+        attempts = [item for item in subject.get("data", {}).get("attempts", []) if item.get("feedback")]
+        ranked = sorted(
+            enumerate(attempts),
+            key=lambda pair: (pair[1].get("updated_at", 0), pair[0]),
+            reverse=True,
+        )
+        collected: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for _, attempt in ranked:
+            try:
+                document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
+            except LearningError:
+                continue
+            questions = {item["id"]: item for item in document.get("questions", [])}
+            exam_title = str(document.get("title") or "").strip() or "试卷"
+            for feedback in attempt.get("feedback") or []:
+                if not self._is_missed_feedback(feedback):
+                    continue
+                question = questions.get(feedback.get("question_id"))
+                if not question:
+                    continue
+                key = (attempt["exam_id"], question["id"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append({
+                    "exam_id": attempt["exam_id"],
+                    "exam_version_id": attempt["exam_version_id"],
+                    "exam_title": exam_title,
+                    "question_id": question["id"],
+                    "question_type": question.get("type"),
+                    "stem_preview": self._stem_preview(question),
+                    "attempt_id": attempt["id"],
+                    "missed_at": feedback.get("created_at") or attempt.get("updated_at") or 0,
+                    "knowledge_points": [point for point in question.get("knowledge_points") or [] if point],
+                })
+        return collected
+
+    def list_missed_questions(self, subject_id: str) -> list[dict]:
+        grouped: dict[str, list[dict]] = {}
+        for record in self._collect_missed_questions(subject_id):
+            points = record["knowledge_points"] or [self.UNMARKED_KNOWLEDGE_POINT]
+            item = {key: value for key, value in record.items() if key != "knowledge_points"}
+            for point in points:
+                grouped.setdefault(point, []).append(item)
+        groups = []
+        for point, questions in grouped.items():
+            ordered = sorted(questions, key=lambda item: item["missed_at"], reverse=True)
+            groups.append({
+                "knowledge_point": point,
+                "miss_count": len(questions),
+                "questions": ordered[: self.MISSED_QUESTIONS_PER_GROUP],
+            })
+        groups.sort(key=lambda item: (-item["miss_count"], item["knowledge_point"]))
+        return groups[: self.MISSED_GROUP_LIMIT]
+
+    def _recent_missed_knowledge_points(self, subject_id: str) -> list[str]:
         collected: list[str] = []
         seen: set[str] = set()
-        for feedback in attempt["feedback"]:
-            if feedback.get("correct") is not False and not feedback.get("missed_points"):
-                continue
-            question = questions.get(feedback.get("question_id"))
-            if not question:
-                continue
-            for point in question.get("knowledge_points") or []:
+        for record in self._collect_missed_questions(subject_id):
+            for point in record["knowledge_points"]:
                 if not point or point in seen:
                     continue
                 seen.add(point)
                 collected.append(point)
-                if len(collected) >= 10:
+                if len(collected) >= self.RECENT_MISSED_POINT_LIMIT:
                     return collected
         return collected
 

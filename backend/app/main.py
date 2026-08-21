@@ -33,6 +33,8 @@ from .observability import EvaluationService, ObservabilityService
 from .observability_api import create_observability_router
 from .issue16_api import create_issue16_router
 from .operations import OperationFailure, OperationManager
+from .pet import PetService
+from .pet_api import create_pet_router
 from .rendering import ExamRenderingService
 from .rendering_api import create_rendering_router
 from .sources import MAX_SOURCE_BYTES, SourceLibrary, SourceLibraryError
@@ -65,7 +67,7 @@ def _error_response(
     )
 
 
-def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> FastAPI:
+def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now=None) -> FastAPI:
     data_path = Path(data_dir or os.environ.get("LEARNING_LOOP_DATA_DIR") or DEFAULT_DATA_DIR)
     store = WorkspaceStore(data_path / "workspace.json")
     workspace = WorkspaceService(store)
@@ -81,7 +83,10 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     exams = ExamService(learning)
     rendering = ExamRenderingService(exams, data_path)
     evaluations = EvaluationService(learning, observability)
+    pet = PetService(workspace, now=now)
     learning.selection_resolver = exams.resolve_selection
+    learning.exams = exams
+    learning.documents = documents
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -109,6 +114,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
     app.state.rendering_service = rendering
     app.state.observability_service = observability
     app.state.evaluation_service = evaluations
+    app.state.pet_service = pet
     app.state.store = store
 
     @app.exception_handler(LearningError)
@@ -143,6 +149,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None) -> 
 
     app.include_router(create_issue16_router(learning, attachments, documents))
     app.include_router(create_core_router(learning))
+    app.include_router(create_pet_router(pet))
     app.include_router(create_exam_router(exams))
     app.include_router(create_rendering_router(rendering))
     app.include_router(create_observability_router(observability, evaluations))

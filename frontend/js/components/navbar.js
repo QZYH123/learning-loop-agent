@@ -23,6 +23,7 @@ export function navbarHtml(state) {
           </button>
           ${menu === 'subject' ? subjectMenu(state) : ''}
         </div>
+        <input type="file" accept=".zip" hidden id="subject-import-input" />
       </div>
 
       <nav class="tabs" aria-label="工作区">
@@ -49,6 +50,15 @@ export function navbarHtml(state) {
 export function renderNavbar(state, root, handlers) {
   root.innerHTML = navbarHtml(state);
 
+  const importInput = root.querySelector('#subject-import-input');
+  if (importInput) {
+    importInput.onchange = (event) => {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (file) handlers.onImportSubject(file);
+    };
+  }
+
   root.onclick = (event) => {
     const btn = event.target.closest('[data-action]');
     if (!btn) return;
@@ -61,6 +71,8 @@ export function renderNavbar(state, root, handlers) {
     if (action === 'create-subject') handlers.onOpenModal('subject');
     if (action === 'rename-subject') handlers.onOpenModal('rename-subject');
     if (action === 'delete-subject') handlers.onDeleteSubject();
+    if (action === 'export-subject') handlers.onExportSubject();
+    if (action === 'import-subject') importInput?.click();
     if (action === 'open-models') handlers.onOpenModal('models');
     if (action === 'toggle-theme') handlers.onToggleTheme();
   };
@@ -93,9 +105,11 @@ function subjectMenu(state) {
       ${
         state.activeSubjectId
           ? `<button type="button" class="menu-item" data-action="rename-subject">${icons.edit3(14)}<span>重命名</span></button>
-             <button type="button" class="menu-item" data-action="delete-subject">${icons.trash2(14)}<span>删除科目</span></button>`
+             <button type="button" class="menu-item" data-action="delete-subject">${icons.trash2(14)}<span>删除科目</span></button>
+             <button type="button" class="menu-item" data-action="export-subject">${icons.download(14)}<span>导出</span></button>`
           : ''
       }
+      <button type="button" class="menu-item" data-action="import-subject">${icons.upload(14)}<span>导入</span></button>
       <button type="button" class="menu-item" data-action="create-subject">${icons.plus(14)}<span>新建科目</span></button>
     </div>
   `;

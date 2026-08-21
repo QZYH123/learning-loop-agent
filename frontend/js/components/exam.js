@@ -129,9 +129,27 @@ function renderHeader(tab, blueprint, draft, exam, proposal, collapsed, state = 
               ? `<button type="button" class="btn btn-primary btn-sm" data-action="go-attempt" data-id="${exam.id}">去作答</button>`
               : `<button type="button" class="btn btn-primary btn-sm" data-action="focus-composer">用对话组卷</button>`
         }
-        ${exam?.can_undo ? `<button type="button" class="icon-btn" data-action="undo-exam" data-id="${exam.id}" title="撤销">${icons.undo(15)}</button>` : ''}
-        ${exam?.can_redo ? `<button type="button" class="icon-btn" data-action="redo-exam" data-id="${exam.id}" title="重做">${icons.redo(15)}</button>` : ''}
+        ${exam ? examMoreMenu(exam, state) : ''}
       </div>
+    </div>`;
+}
+
+function examMoreMenu(exam, state) {
+  return `
+    <div class="dropdown">
+      <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="exam-more" title="更多" aria-expanded="${state.openMenu === 'exam-more'}">${icons.moreHorizontal(15)}</button>
+      ${
+        state.openMenu === 'exam-more'
+          ? `<div class="menu menu-right" role="menu">
+              <button type="button" class="menu-item" data-action="print-exam" data-id="${exam.id}">${icons.printer(14)}<span>打印</span></button>
+              <button type="button" class="menu-item" data-action="export-exam-pdf" data-id="${exam.id}">${icons.download(14)}<span>导出 PDF</span></button>
+              <button type="button" class="menu-item" data-action="export-exam-markdown" data-id="${exam.id}">${icons.fileText(14)}<span>导出 Markdown</span></button>
+              ${exam.can_undo || exam.can_redo ? '<div class="menu-split"></div>' : ''}
+              ${exam.can_undo ? `<button type="button" class="menu-item" data-action="undo-exam" data-id="${exam.id}">${icons.undo(14)}<span>撤销</span></button>` : ''}
+              ${exam.can_redo ? `<button type="button" class="menu-item" data-action="redo-exam" data-id="${exam.id}">${icons.redo(14)}<span>重做</span></button>` : ''}
+            </div>`
+          : ''
+      }
     </div>`;
 }
 
@@ -152,6 +170,7 @@ function renderBlueprint(state, blueprint) {
             title: item.title || '蓝图',
             sub: `<span>${statusLabel('blueprint', item.status)}</span><span>${formatTime(item.updated_at)}</span>`,
             renameKind: 'blueprint',
+            deleteAction: 'delete-blueprint',
           }),
         )
         .join('')}
@@ -234,13 +253,16 @@ function renderDraft(state, draft) {
   return `
     <div class="resource-row">
       ${items
-        .map(
-          (item) => `
-        <button type="button" class="mini ${item.id === state.activeDraftId ? 'is-active' : ''}" data-action="select-draft" data-id="${item.id}">
-          <div class="item-title">${escapeHtml(item.title || '草稿')}</div>
-          <div class="item-sub">${statusLabel('draft', item.status)}</div>
-        </button>
-      `,
+        .map((item) =>
+          renderMiniCard({
+            active: item.id === state.activeDraftId,
+            renaming: false,
+            action: 'select-draft',
+            id: item.id,
+            title: item.title || '草稿',
+            sub: statusLabel('draft', item.status),
+            deleteAction: 'delete-draft',
+          }),
         )
         .join('')}
     </div>
@@ -300,6 +322,7 @@ function renderExamDoc(state, exam, proposal) {
             title: item.document?.title || '试卷',
             sub: `${item.total_score} 分`,
             renameKind: 'exam',
+            deleteAction: 'delete-exam',
           }),
         )
         .join('')}
@@ -318,38 +341,29 @@ function renderExamDoc(state, exam, proposal) {
           </section>`
         : !exam
           ? `<div class="empty"><h3>选择一份试卷</h3></div>`
-          : questions
-              .map(
-                (q, index) => `
-          <article class="q" data-question-id="${q.id}">
-            <div class="q-head"><span>${index + 1}.</span><span>${QUESTION_TYPES[q.type] || q.type}</span><span>${q.score} 分</span></div>
-            ${renderBlocks(q.stem)}
-            ${renderOptions(q)}
-            ${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}
-            ${renderSolution(q)}
-          </article>
-        `,
-              )
-              .join('')
+          : questions.map((q, index) => renderExamQuestion(q, { index, showSolution: true })).join('')
     }
   `;
 }
 
-export function renderMiniCard({ active, renaming, action, id, title, sub, renameKind }) {
+export function renderMiniCard({ active, renaming, action, id, title, sub, renameKind, deleteAction }) {
   const titleHtml = renaming
     ? `<input class="input inline-rename" data-rename-resource="${renameKind}" data-id="${id}" value="${escapeHtml(title)}" maxlength="200" />`
     : `<div class="item-title">${escapeHtml(title)}</div>`;
   const inner = renaming
     ? `<div class="mini is-active">${titleHtml}<div class="item-sub">${sub}</div></div>`
     : `<button type="button" class="mini ${active ? 'is-active' : ''}" data-action="${action}" data-id="${id}">${titleHtml}<div class="item-sub">${sub}</div></button>`;
+  const ops = [];
+  if (renameKind) {
+    ops.push(`<button type="button" class="ghost-icon" data-action="rename-${renameKind}" data-id="${id}" title="重命名" aria-label="重命名">${icons.edit3(12)}</button>`);
+  }
+  if (deleteAction) {
+    ops.push(`<button type="button" class="ghost-icon is-danger" data-action="${deleteAction}" data-id="${id}" title="删除" aria-label="删除">${icons.trash2(12)}</button>`);
+  }
   return `
-    <div class="mini-wrap ${active ? 'is-active' : ''} ${renaming ? 'is-renaming' : ''}">
+    <div class="mini-wrap ${active ? 'is-active' : ''} ${renaming ? 'is-renaming' : ''} ${ops.length > 1 ? 'has-two-ops' : ''}">
       ${inner}
-      ${
-        active && !renaming
-          ? `<button type="button" class="ghost-icon mini-rename" data-action="rename-${renameKind}" data-id="${id}" title="重命名" aria-label="重命名">${icons.edit3(12)}</button>`
-          : ''
-      }
+      ${active && !renaming && ops.length ? `<div class="mini-ops">${ops.join('')}</div>` : ''}
     </div>
   `;
 }
@@ -371,11 +385,43 @@ function renderQuestionRevise(state, draft, slot, question, proposal) {
   return `<button type="button" class="btn btn-ghost btn-sm q-revise-toggle" data-action="open-question-revise" data-id="${slot.id}">改这题</button>`;
 }
 
-function renderOptions(question) {
+export function renderOptions(question) {
   if (!question.options?.length) return '';
   return question.options
     .map((opt) => `<div class="option-view"><span>${escapeHtml(opt.id)}</span><div>${renderBlocks(opt.content)}</div></div>`)
     .join('');
+}
+
+export function renderExamQuestion(question, { index = 0, showSolution = false } = {}) {
+  if (!question) return '';
+  const ordinal = question.ordinal || index + 1;
+  return `
+    <article class="q" data-question-id="${question.id}">
+      <div class="q-head"><span>${ordinal}.</span><span>${QUESTION_TYPES[question.type] || question.type}</span><span>${question.score} 分</span></div>
+      ${renderBlocks(question.stem)}
+      ${renderOptions(question)}
+      ${showSolution && question.answer ? `<div class="answer-key">${escapeHtml(formatKey(question.answer))}</div>` : ''}
+      ${showSolution ? renderSolution(question) : ''}
+    </article>
+  `;
+}
+
+export function renderExamPrintDocument(doc) {
+  const showSolution = doc?.edition === 'solutions';
+  const questions = (doc?.questions || [])
+    .map((item, index) => {
+      const question = item.question || item;
+      const merged = showSolution && item.solution ? { ...question, ...item.solution } : question;
+      return renderExamQuestion(merged, { index, showSolution });
+    })
+    .join('');
+  return `
+    <div class="print-exam">
+      <h1>${escapeHtml(doc?.title || '试卷')}</h1>
+      ${doc?.instructions?.length ? `<div class="print-instructions">${renderBlocks(doc.instructions)}</div>` : ''}
+      ${questions}
+    </div>
+  `;
 }
 
 function stringifyChange(value) {

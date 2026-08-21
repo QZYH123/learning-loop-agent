@@ -21,7 +21,7 @@ from .model_client import ModelClientError
 from .operations import OperationFailure
 
 
-STAGE_NAMES = Literal["parse", "retrieve", "model-call", "structure-validation", "retry", "apply-change", "undo", "render", "export"]
+STAGE_NAMES = Literal["parse", "retrieve", "model-call", "structure-validation", "retry", "apply-change", "undo", "render", "export", "tool-call"]
 RUN_STATUSES = Literal["running", "succeeded", "failed", "canceled"]
 OPERATION_KINDS = Literal[
     "model-verification",

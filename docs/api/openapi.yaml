@@ -33,6 +33,7 @@ tags:
   - name: Operations
   - name: Observability
   - name: Evaluations
+  - name: Pet
 
 paths:
   /api/health:
@@ -64,6 +65,56 @@ paths:
               schema:
                 $ref: ./schemas.yaml#/components/schemas/Workspace
 
+  /api/pet:
+    get:
+      operationId: getPet
+      tags: [Pet]
+      summary: 读取桌宠状态
+      description: 首次访问时写入 adopted_at。墨水与统计从各科目已有数据只读推导。
+      x-tickets: ['34']
+      responses:
+        '200':
+          description: 当前桌宠
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Pet
+    patch:
+      operationId: updatePet
+      tags: [Pet]
+      summary: 更新桌宠显示设置
+      description: name 去首尾空白后须为 1–12 个字符；position_x / position_y 夹取到 0–100。
+      x-tickets: ['34']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/PetPatch
+      responses:
+        '200':
+          description: 更新后的桌宠
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Pet
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/pet/pat:
+    post:
+      operationId: patPet
+      tags: [Pet]
+      summary: 摸摸桌宠
+      description: 今日 pats 计数加一。摸摸每次 +1 墨水，每日最多计 5 滴。
+      x-tickets: ['34']
+      responses:
+        '200':
+          description: 摸摸后的桌宠
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Pet
+
   /api/subjects:
     get:
       operationId: listSubjects
@@ -91,6 +142,33 @@ paths:
       responses:
         '201':
           description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas.yaml#/components/schemas/Subject
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /api/subjects/import:
+    post:
+      operationId: importSubject
+      tags: [Subjects]
+      summary: 导入科目空间副本
+      description: |
+        上传由 exportSubject 生成的 zip。保留原科目与资料版本 id。
+        若工作区已有相同科目 id 或任一资料版本 id，整体拒绝，不做重映射或合并。
+        科目名与现有重名但 id 不同时，导入名自动加「（导入）」后缀。
+        先全量校验再落盘；损坏 zip 或缺 manifest 返回 422，不产生半导入。
+      x-tickets: ['33']
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: ./schemas.yaml#/components/schemas/SubjectImportUpload
+      responses:
+        '201':
+          description: 已导入科目空间
           content:
             application/json:
               schema:
@@ -161,6 +239,26 @@ paths:
             application/json:
               schema:
                 $ref: ./schemas.yaml#/components/schemas/Workspace
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/subjects/{subject_id}/export:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: exportSubject
+      tags: [Subjects]
+      summary: 导出科目空间副本
+      description: |
+        同步返回 zip：manifest.json、完整科目节点 subject.json、
+        该科目资料原文件/解析索引/缓存（sources/），以及属于该科目资料版本的 citations.json。
+        不走异步任务。
+      x-tickets: ['33']
+      responses:
+        '200':
+          description: 科目空间 zip 副本
+          content:
+            application/zip:
+              schema: {type: string, format: binary}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /api/models:
@@ -940,6 +1038,23 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/ExamList}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /api/subjects/{subject_id}/missed-questions:
+    parameters:
+      - $ref: '#/components/parameters/SubjectId'
+    get:
+      operationId: listMissedQuestions
+      tags: [Attempts]
+      summary: 列出科目内跨试卷错题投影
+      description: 只读投影，按考点分组。仅统计带反馈的作答；同一题多次答错只保留最近一次。不含答案、解析或反馈明细。
+      x-tickets: ['30']
+      responses:
+        '200':
+          description: 按考点分组的错题列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/MissedQuestionList}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /api/exams/{exam_id}:
     parameters:
       - $ref: '#/components/parameters/ExamId'
@@ -1002,7 +1117,7 @@ paths:
       summary: 删除试卷
       x-tickets: ['09']
       responses:
-        '204': {description: 已删除；导出副本不受影响}
+        '204': {description: 已删除；版本、修改提案、作答记录和导出任务一并删除}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
 
@@ -1156,6 +1271,19 @@ paths:
   /api/exams/{exam_id}/attempts:
     parameters:
       - $ref: '#/components/parameters/ExamId'
+    get:
+      operationId: listExamAttempts
+      tags: [Attempts]
+      summary: 列出某试卷的全部作答记录
+      description: 按更新时间倒序返回摘要。不含答案、题目正文、反馈明细或考试模式隐藏解析。
+      x-tickets: ['27']
+      responses:
+        '200':
+          description: 作答记录列表
+          content:
+            application/json:
+              schema: {$ref: ./schemas.yaml#/components/schemas/AttemptSummaryList}
+        '404': {$ref: '#/components/responses/NotFound'}
     post:
       operationId: createAttempt
       tags: [Attempts]

@@ -4,7 +4,7 @@ from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam
 
 
 class FailingFakeModelClient(ImmediateFakeModelClient):
-    async def chat(self, profile, messages, max_tokens=None):
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
         raise ModelClientError("模型暂时不可用", code="MODEL_CONNECTION_FAILED")
 
 
@@ -13,11 +13,11 @@ class RetryableGradingModel(ExamFakeModel):
         super().__init__()
         self.fail_grading = False
 
-    async def chat(self, profile, messages, max_tokens=None):
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
         content = messages[-1]["content"]
         if self.fail_grading and isinstance(content, str) and "根据评分点评估答案" in content:
             raise ModelClientError("模型暂时不可用", code="MODEL_CONNECTION_FAILED")
-        return await super().chat(profile, messages)
+        return await super().chat(profile, messages, max_tokens, tools=tools)
 
 
 def generation_call(model_client):
@@ -673,18 +673,18 @@ class SequenceTitleModel(ImmediateFakeModelClient):
         super().__init__(answer=answer)
         self.title = title
 
-    async def chat(self, profile, messages, max_tokens=None):
-        self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens})
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
+        self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens, "tools": tools})
         text = self.title if max_tokens is not None else self.answer
-        return {"text": text, "provider": profile["provider"], "model": profile["model"]}
+        return {"text": text, "provider": profile["provider"], "model": profile["model"], "tool_calls": []}
 
 
 class NamingErrorModel(ImmediateFakeModelClient):
-    async def chat(self, profile, messages, max_tokens=None):
+    async def chat(self, profile, messages, max_tokens=None, tools=None, on_delta=None):
         if max_tokens is not None:
-            self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens})
+            self.chat_calls.append({"profile": profile, "messages": messages, "max_tokens": max_tokens, "tools": tools})
             raise RuntimeError("naming failed")
-        return await super().chat(profile, messages, max_tokens)
+        return await super().chat(profile, messages, max_tokens, tools=tools)
 
 
 def _subject_and_model(client):

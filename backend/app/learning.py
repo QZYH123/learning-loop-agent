@@ -27,6 +27,19 @@ from .api_models import LearningArtifact
 from .model_client import ModelClientError
 from .operations import OperationFailure
 from .sources import SourceLibraryError
+from .subject_transfer import (
+    CONFLICT_MESSAGE,
+    TransferError,
+    build_export_zip,
+    collect_source_entries,
+    content_disposition,
+    export_zip_filename,
+    imported_subject_name,
+    parse_export_zip,
+    write_source_entries,
+)
+
+SESSION_AGENT_TOOL_ROUNDS = 4
 
 
 class LearningError(Exception):
@@ -48,6 +61,8 @@ class LearningService:
         self._ids = id_factory or (lambda prefix: f"{prefix}-{uuid.uuid4().hex}")
         self.selection_resolver = None
         self.attachments = None
+        self.exams = None
+        self.documents = None
 
     # Subjects and models -------------------------------------------------
 
@@ -89,6 +104,86 @@ class LearningService:
             raise LearningError(409, "SUBJECT_DELETE_BLOCKED", "该科目仍有异步任务在运行")
         result = self.workspace_service.dispatch({"type": SUBJECT_DELETE, "subject_id": subject_id})
         self._require_dispatch(result, not_found_codes={"SUBJECT_NOT_FOUND"})
+
+    def export_subject(self, subject_id: str) -> dict:
+        snapshot = self.workspace_service.snapshot()
+        subject = self._subject(subject_id, snapshot)
+        node = {
+            "id": subject["id"],
+            "name": subject["name"],
+            "created_at": subject["created_at"],
+            "updated_at": subject["updated_at"],
+            "data": subject.get("data") or {},
+        }
+        version_ids = {
+            item.get("id")
+            for item in node["data"].get("source_versions", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        citations = [
+            item
+            for item in self.source_library.list_citations()
+            if item.get("source_version_id") in version_ids
+        ]
+        source_entries = collect_source_entries(self.source_library, node["data"].get("source_versions", []))
+        content = build_export_zip(
+            subject=node,
+            citations=citations,
+            source_entries=source_entries,
+            exported_at=self._now(),
+        )
+        file_name = export_zip_filename(subject["name"])
+        return {
+            "content": content,
+            "file_name": file_name,
+            "content_type": "application/zip",
+            "content_disposition": content_disposition(file_name),
+        }
+
+    def import_subject(self, zip_bytes: bytes) -> dict:
+        try:
+            parsed = parse_export_zip(zip_bytes)
+        except TransferError as exc:
+            raise LearningError(exc.status_code, exc.code, str(exc)) from exc
+        subject = parsed["subject"]
+        snapshot = self.workspace_service.snapshot()
+        existing_subject_ids = {item.get("id") for item in snapshot.get("subjects", [])}
+        existing_version_ids = {
+            version.get("id")
+            for item in snapshot.get("subjects", [])
+            for version in item.get("data", {}).get("source_versions", [])
+            if isinstance(version, dict) and version.get("id")
+        }
+        incoming_version_ids = {
+            version.get("id")
+            for version in subject.get("data", {}).get("source_versions", [])
+            if isinstance(version, dict) and version.get("id")
+        }
+        if subject["id"] in existing_subject_ids or incoming_version_ids & existing_version_ids:
+            raise LearningError(409, "RESOURCE_CONFLICT", CONFLICT_MESSAGE)
+        existing_names = {item.get("name") for item in snapshot.get("subjects", [])}
+        imported = {
+            **subject,
+            "name": imported_subject_name(subject["name"], existing_names),
+            "data": subject.get("data") or {},
+        }
+        try:
+            write_source_entries(self.source_library, parsed["source_entries"])
+        except TransferError as exc:
+            raise LearningError(exc.status_code, exc.code, str(exc)) from exc
+        self.source_library.merge_citations(parsed["citations"])
+
+        def update(workspace):
+            return {
+                **workspace,
+                "subjects": [*workspace.get("subjects", []), imported],
+                "active_subject_id": imported["id"],
+            }
+
+        self.workspace_service.update_workspace(update)
+        if self.workspace_service.last_storage_error:
+            raise LearningError(500, "STORAGE_WRITE_FAILED", "无法保存本地数据", retryable=True)
+        return self.get_subject(imported["id"])
 
     def list_models(self) -> list[dict]:
         return [self._model_view(item) for item in self.workspace_service.snapshot().get("models", [])]
@@ -713,6 +808,7 @@ class LearningService:
             "selection": selection,
             "attachment_ids": attachment_ids,
             "citations": [],
+            "workspace_context": self._workspace_context(payload.get("workspace_context")),
         }
         content = payload.get("content") or self._intent_label(payload["intent"])
         user_id = self._ids("message")
@@ -720,7 +816,7 @@ class LearningService:
             self.attachments.claim(subject["id"], attachment_ids, user_id)
         user_message = {"id": user_id, "role": "user", "intent": payload["intent"], "chat_style": chat_style, "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
         assistant_id = self._ids("message")
-        assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "chat_style": chat_style, "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
+        assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "chat_style": chat_style, "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "tool_events": [], "source_context": context, "selection": selection, "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
         updated_session = {**session, "messages": [*session.get("messages", []), user_message, assistant], "updated_at": timestamp}
         if len(updated_session["messages"]) == 2 and session.get("title") == "新会话":
             updated_session["title"] = content[:60]
@@ -799,6 +895,7 @@ class LearningService:
                 "error": None,
                 "grounding_result": None,
                 "citations": [],
+                "tool_events": [],
                 "completed_at": None,
                 "updated_at": timestamp,
                 "model": self._model_snapshot(profile),
@@ -876,6 +973,7 @@ class LearningService:
                 await self._maybe_name_new_session(session_id, profile, content, text)
                 return {"type": "chat-message", "id": assistant_id}
             citations = self._citations_for_anchors(anchors, selected_citations)
+            tools = self._session_assistant_tools(grounding_mode, selected_ids)
             messages = self._grounded_messages(
                 {"messages": session.get("messages", []), "chat_style": chat_style},
                 {**payload, "chat_style": chat_style},
@@ -884,15 +982,31 @@ class LearningService:
                 profile,
                 selection_context,
                 attachment_inputs,
+                extra_instruction=self._tool_use_instruction(tools),
             )
-            response = await self.model_client.chat(profile, messages)
+            assistant_text, tool_anchors = await self._run_session_assistant_loop(
+                subject_id=subject_id,
+                session_id=session_id,
+                assistant_id=assistant_id,
+                profile=profile,
+                messages=messages,
+                tools=tools,
+                selected_ids=selected_ids,
+                focused_ids=focused_ids,
+                grounding_mode=grounding_mode,
+                workspace_context=context.get("workspace_context"),
+                model_id=profile["id"],
+            )
+            if tool_anchors:
+                citations = self._citations_for_anchors(tool_anchors, citations)
             final_context = {**context, "citations": citations}
             result = (
                 "general-knowledge"
                 if context["grounding_mode"] == "general-knowledge"
                 else "supplemental" if context["grounding_mode"] == "supplemental" else "covered"
             )
-            assistant_text = response.get("text") or ""
+            _, session = self._find_session(session_id)
+            current = next((item for item in session.get("messages", []) if item.get("id") == assistant_id), {})
             self._update_session_message(
                 subject_id,
                 session_id,
@@ -903,6 +1017,7 @@ class LearningService:
                     "grounding_result": result,
                     "citations": citations,
                     "source_context": final_context,
+                    "tool_events": list(current.get("tool_events") or []),
                     "completed_at": self._now(),
                     "updated_at": self._now(),
                 },
@@ -1270,6 +1385,440 @@ class LearningService:
             "completed_at": timestamp,
         })
 
+    async def _run_session_assistant_loop(
+        self,
+        *,
+        subject_id: str,
+        session_id: str,
+        assistant_id: str,
+        profile: dict,
+        messages: list[dict],
+        tools: list[dict],
+        selected_ids: list[str],
+        focused_ids: list[str],
+        grounding_mode: str,
+        workspace_context: dict | None = None,
+        model_id: str | None = None,
+    ) -> tuple[str, list[dict]]:
+        conversation = list(messages)
+        available_tools = list(tools)
+        collected_anchors: list[dict] = []
+        tool_round = 0
+        while True:
+            use_tools = bool(available_tools) and tool_round < SESSION_AGENT_TOOL_ROUNDS
+            if not use_tools and tool_round:
+                conversation.append({"role": "user", "content": "请根据已有工具结果直接回答，不要再调用工具。"})
+            _, session = self._find_session(session_id)
+            current = next((item for item in session.get("messages", []) if item.get("id") == assistant_id), {})
+            content_before = list(current.get("content") or [])
+            accumulated = ""
+            last_persist = 0.0
+
+            def on_delta(chunk: str) -> None:
+                nonlocal accumulated, last_persist
+                if not isinstance(chunk, str) or not chunk:
+                    return
+                accumulated += chunk
+                now = time.perf_counter()
+                if last_persist and now - last_persist < 0.3:
+                    return
+                self._update_session_message(
+                    subject_id,
+                    session_id,
+                    assistant_id,
+                    {
+                        "status": "generating",
+                        "content": [self._markdown_block(accumulated)],
+                        "updated_at": self._now(),
+                    },
+                )
+                last_persist = now
+
+            response = await self.model_client.chat(
+                profile,
+                conversation,
+                tools=available_tools if use_tools else None,
+                on_delta=on_delta,
+            )
+            if response.get("tools_unsupported") and use_tools:
+                self._append_session_tool_event(
+                    subject_id,
+                    session_id,
+                    assistant_id,
+                    {
+                        "id": self._ids("tool-event"),
+                        "name": "tools-unsupported",
+                        "status": "failed",
+                        "summary": "当前模型不支持工具调用，已按普通问答回复",
+                        "resource": None,
+                        "arguments": None,
+                    },
+                )
+                available_tools = []
+                text = response.get("text") or ""
+                if text:
+                    return text, collected_anchors
+                continue
+            tool_calls = response.get("tool_calls") or []
+            text = response.get("text") or ""
+            if tool_calls and use_tools:
+                self._update_session_message(
+                    subject_id,
+                    session_id,
+                    assistant_id,
+                    {"status": "generating", "content": content_before, "updated_at": self._now()},
+                )
+            if not tool_calls:
+                return text, collected_anchors
+            if not use_tools:
+                return text or "我已经根据目前掌握的信息作答。", collected_anchors
+            conversation.append({
+                "role": "assistant",
+                "content": text,
+                "tool_calls": tool_calls,
+            })
+            for call in tool_calls:
+                result_text, anchors = self._execute_session_tool(
+                    subject_id=subject_id,
+                    session_id=session_id,
+                    assistant_id=assistant_id,
+                    call=call,
+                    selected_ids=selected_ids,
+                    focused_ids=focused_ids,
+                    grounding_mode=grounding_mode,
+                    workspace_context=workspace_context,
+                    model_id=model_id,
+                )
+                collected_anchors.extend(anchors)
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": call.get("id") or "",
+                    "name": call.get("name") or "",
+                    "content": result_text,
+                })
+            tool_round += 1
+
+    def _session_assistant_tools(self, grounding_mode: str, selected_ids: list[str]) -> list[dict]:
+        tools = []
+        if grounding_mode != "general-knowledge" and selected_ids:
+            tools.append({
+                "name": "search_sources",
+                "description": "在当前会话已选资料范围内检索相关片段。需要核对出处、补充依据或用户问到资料细节时使用；不要编造资料外内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词或问题"},
+                    },
+                    "required": ["query"],
+                },
+            })
+        tools.append({
+            "name": "get_study_state",
+            "description": "读取当前科目的学习状态摘要：最近蓝图、草稿、试卷、最近一次作答进度，以及最近错点。需要结合学习进度或错点时使用。",
+            "parameters": {"type": "object", "properties": {}},
+        })
+        tools.append({
+            "name": "propose_exam_blueprint",
+            "description": "根据组卷要求创建一份待确认的组卷蓝图。只创建不确认；用户需到组卷区确认题型后再组题。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "requirements": {"type": "string", "description": "组卷要求或题目安排说明"},
+                },
+                "required": ["requirements"],
+            },
+        })
+        tools.append({
+            "name": "propose_revision",
+            "description": "针对当前工作区选中的草稿、试卷或 AI 文档创建修改提案。只产生待确认差异，不应用。没有选中对象时不要假装已修改。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {"type": "string", "description": "修改要求"},
+                },
+                "required": ["instruction"],
+            },
+        })
+        tools.append({
+            "name": "create_ai_document",
+            "description": "根据说明创建一份 AI 资料文档。文档异步生成，用户需到资料区查看确认。不要替用户改已有文档。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {"type": "string", "description": "文档主题或写作要求"},
+                },
+                "required": ["instruction"],
+            },
+        })
+        return tools
+
+    @staticmethod
+    def _tool_use_instruction(tools: list[dict]) -> str:
+        if not tools:
+            return ""
+        names = "、".join(item["name"] for item in tools)
+        proposal_names = {"propose_exam_blueprint", "propose_revision", "create_ai_document"}
+        text = (
+            f" 你可以使用工具（{names}）。"
+            "需要核对资料出处或当前学习状态时再调用只读工具；能直接回答就不要调用。"
+        )
+        if any(item["name"] in proposal_names for item in tools):
+            text += (
+                " 提案工具每次回复最多使用一个；创建后告诉用户去哪个区确认；"
+                "不要替用户确认或应用提案。"
+            )
+        return text
+
+    @staticmethod
+    def _workspace_context(value) -> dict | None:
+        if not isinstance(value, dict) or not value.get("workspace"):
+            return None
+        allowed = ("workspace", "blueprint_id", "draft_id", "exam_id", "ai_document_id", "attempt_id")
+        cleaned = {key: value[key] for key in allowed if value.get(key)}
+        return cleaned or None
+
+    def _execute_session_tool(
+        self,
+        *,
+        subject_id: str,
+        session_id: str,
+        assistant_id: str,
+        call: dict,
+        selected_ids: list[str],
+        focused_ids: list[str],
+        grounding_mode: str,
+        workspace_context: dict | None = None,
+        model_id: str | None = None,
+    ) -> tuple[str, list[dict]]:
+        started_at = self._now()
+        started = time.perf_counter()
+        name = call.get("name") or ""
+        arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+        event = {
+            "id": self._ids("tool-event"),
+            "name": name or "unknown",
+            "status": "failed",
+            "summary": "",
+            "resource": None,
+            "arguments": None,
+        }
+        anchors: list[dict] = []
+        result_text = ""
+        try:
+            if name == "search_sources":
+                query = arguments.get("query") if isinstance(arguments.get("query"), str) else ""
+                event["arguments"] = {"query": query[:200]}
+                if grounding_mode == "general-knowledge" or not selected_ids:
+                    raise ValueError("当前对话不能检索资料")
+                anchors = self.source_library.retrieve(query, selected_ids, priority_version_ids=focused_ids)
+                result_text = self._anchors_text(anchors) or "未检索到相关资料片段。"
+                event["status"] = "succeeded"
+                event["summary"] = f"已检索资料：{query[:40]}" if query.strip() else "已检索资料"
+            elif name == "get_study_state":
+                event["arguments"] = {}
+                result_text = self._tool_get_study_state(subject_id)
+                event["status"] = "succeeded"
+                event["summary"] = "已读取学习进度与最近错点"
+            elif name == "propose_exam_blueprint":
+                requirements = arguments.get("requirements") if isinstance(arguments.get("requirements"), str) else ""
+                event["arguments"] = {"requirements": requirements[:200]}
+                result_text, event["resource"], event["summary"] = self._tool_propose_exam_blueprint(
+                    subject_id,
+                    requirements,
+                    grounding_mode,
+                    selected_ids,
+                    model_id,
+                )
+                event["status"] = "succeeded"
+            elif name == "propose_revision":
+                instruction = arguments.get("instruction") if isinstance(arguments.get("instruction"), str) else ""
+                event["arguments"] = {"instruction": instruction[:200]}
+                result_text, event["resource"], event["summary"] = self._tool_propose_revision(
+                    instruction,
+                    workspace_context,
+                    model_id,
+                )
+                event["status"] = "succeeded"
+            elif name == "create_ai_document":
+                instruction = arguments.get("instruction") if isinstance(arguments.get("instruction"), str) else ""
+                event["arguments"] = {"instruction": instruction[:200]}
+                result_text, event["resource"], event["summary"] = self._tool_create_ai_document(
+                    subject_id,
+                    instruction,
+                    grounding_mode,
+                    selected_ids,
+                    model_id,
+                )
+                event["status"] = "succeeded"
+            else:
+                result_text = f"未知工具：{name or '未命名'}"
+                event["summary"] = result_text
+        except LearningError as exc:
+            result_text = str(exc)
+            event["status"] = "failed"
+            event["summary"] = str(exc) or f"{name or '工具'}执行失败"
+        except Exception as exc:
+            result_text = f"工具执行失败：{exc}"
+            event["status"] = "failed"
+            event["summary"] = f"{name or '工具'}执行失败"
+        self.operations.record_stage(
+            "tool-call",
+            status=event["status"],
+            started_at=started_at,
+            completed_at=self._now(),
+            outer_elapsed_ms=max(0, round((time.perf_counter() - started) * 1000)),
+            counters={"model_calls": 1},
+            attributes={"tool": name or "unknown"},
+        )
+        self._append_session_tool_event(subject_id, session_id, assistant_id, event)
+        return result_text, anchors
+
+    def _tool_propose_exam_blueprint(
+        self,
+        subject_id: str,
+        requirements: str,
+        grounding_mode: str,
+        selected_ids: list[str],
+        model_id: str | None,
+    ) -> tuple[str, dict, str]:
+        if self.exams is None:
+            raise RuntimeError("组卷服务尚未就绪")
+        accepted = self.exams.parse_blueprint(subject_id, {
+            "prompt": requirements,
+            "grounding_mode": grounding_mode,
+            "source_version_ids": list(selected_ids),
+            "model_id": model_id,
+        })
+        resource = accepted["resource"]
+        summary = "已创建蓝图，正在解析"
+        return self._proposal_tool_result(resource, f"{summary}，请到组卷区确认"), resource, summary
+
+    def _tool_propose_revision(
+        self,
+        instruction: str,
+        workspace_context: dict | None,
+        model_id: str | None,
+    ) -> tuple[str, dict | None, str]:
+        context = workspace_context if isinstance(workspace_context, dict) else {}
+        draft_id = context.get("draft_id")
+        exam_id = context.get("exam_id")
+        ai_document_id = context.get("ai_document_id")
+        if draft_id:
+            if self.exams is None:
+                raise RuntimeError("组卷服务尚未就绪")
+            accepted = self.exams.create_draft_revision_proposal(draft_id, {
+                "instruction": instruction,
+                "scope": {"kind": "whole-exam", "question_ids": [], "block_ids": []},
+                "model_id": model_id,
+            })
+            resource = accepted["resource"]
+            summary = "已创建草稿修改提案"
+            return self._proposal_tool_result(resource, f"{summary}，请到组卷区确认"), resource, summary
+        if exam_id:
+            if self.exams is None:
+                raise RuntimeError("组卷服务尚未就绪")
+            _, exam = self._find_owned("exams", exam_id)
+            accepted = self.exams.create_revision_proposal(exam_id, {
+                "base_version_id": exam["current_version_id"],
+                "instruction": instruction,
+                "scope": {"kind": "whole-exam", "question_ids": [], "block_ids": []},
+                "model_id": model_id,
+            })
+            resource = accepted["resource"]
+            summary = "已创建试卷修改提案"
+            return self._proposal_tool_result(resource, f"{summary}，请到组卷区确认"), resource, summary
+        if ai_document_id:
+            if self.documents is None:
+                raise RuntimeError("文档服务尚未就绪")
+            document = self.documents.get_document(ai_document_id)
+            accepted = self.documents.create_proposal(ai_document_id, {
+                "base_version_id": document["current_version_id"],
+                "instruction": instruction,
+                "model_id": model_id,
+            })
+            resource = accepted["resource"]
+            summary = "已创建文档修改提案"
+            return self._proposal_tool_result(resource, f"{summary}，请到资料区确认"), resource, summary
+        summary = "当前没有选中可修改的对象"
+        return summary, None, summary
+
+    def _tool_create_ai_document(
+        self,
+        subject_id: str,
+        instruction: str,
+        grounding_mode: str,
+        selected_ids: list[str],
+        model_id: str | None,
+    ) -> tuple[str, dict, str]:
+        if self.documents is None:
+            raise RuntimeError("文档服务尚未就绪")
+        accepted = self.documents.create_document(subject_id, {
+            "instruction": instruction,
+            "source_version_ids": list(selected_ids),
+            "grounding_mode": grounding_mode,
+            "model_id": model_id,
+        })
+        resource = accepted["resource"]
+        summary = "已创建 AI 文档，正在生成"
+        return self._proposal_tool_result(resource, f"{summary}，请到资料区查看"), resource, summary
+
+    @staticmethod
+    def _proposal_tool_result(resource: dict | None, summary: str) -> str:
+        return json.dumps({"resource": resource, "message": summary}, ensure_ascii=False)
+
+    def _tool_get_study_state(self, subject_id: str) -> str:
+        if self.exams is None:
+            payload = {
+                "blueprints": [],
+                "drafts": [],
+                "exams": [],
+                "latest_attempt": None,
+                "missed_knowledge_points": [],
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        blueprints = self.exams.list_blueprints(subject_id)
+        drafts = self.exams.list_drafts(subject_id)
+        papers = self.exams.list_exams(subject_id)
+        attempts = self._subject(subject_id).get("data", {}).get("attempts", [])
+
+        def recent(items, count=3):
+            return sorted(items, key=lambda item: item.get("updated_at") or item.get("created_at") or 0, reverse=True)[:count]
+
+        latest_attempt = None
+        if attempts:
+            attempt = max(attempts, key=lambda item: item.get("updated_at") or 0)
+            exam = next((item for item in papers if item.get("id") == attempt.get("exam_id")), None)
+            title = ((exam or {}).get("document") or {}).get("title") or (attempt.get("paper") or {}).get("title")
+            questions = (attempt.get("paper") or {}).get("questions") or []
+            latest_attempt = {
+                "exam_title": title,
+                "mode": attempt.get("mode"),
+                "status": attempt.get("completion_status") or attempt.get("status"),
+                "progress": f"{len(attempt.get('answers') or [])}/{len(questions)}",
+            }
+        payload = {
+            "blueprints": [{"title": item.get("title"), "status": item.get("status")} for item in recent(blueprints)],
+            "drafts": [{"title": item.get("title"), "status": item.get("status")} for item in recent(drafts)],
+            "exams": [
+                {"title": (item.get("document") or {}).get("title") or item.get("title"), "status": "published"}
+                for item in recent(papers)
+            ],
+            "latest_attempt": latest_attempt,
+            "missed_knowledge_points": self.exams._recent_missed_knowledge_points(subject_id),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _append_session_tool_event(self, subject_id: str, session_id: str, assistant_id: str, event: dict) -> None:
+        _, session = self._find_session(session_id)
+        current = next((item for item in session.get("messages", []) if item.get("id") == assistant_id), {})
+        events = [*(current.get("tool_events") or []), event]
+        self._update_session_message(
+            subject_id,
+            session_id,
+            assistant_id,
+            {"tool_events": events, "updated_at": self._now()},
+        )
+
     def _grounded_messages(
         self,
         chat: dict,
@@ -1279,11 +1828,14 @@ class LearningService:
         profile: dict,
         selection_context: str | None = None,
         attachments: list[dict] | None = None,
+        extra_instruction: str = "",
     ) -> list[dict]:
         intent = payload["intent"]
         instruction = self._grounding_instruction(grounding_mode)
         chat_style = self._requested_chat_style(payload, self._stored_chat_style(chat))
         instruction += self._chat_style_instruction(chat_style)
+        if extra_instruction:
+            instruction += extra_instruction
         context = self._anchors_text(anchors)
         question = payload.get("content") or self._intent_label(intent)
         selection = payload.get("selection") or {}

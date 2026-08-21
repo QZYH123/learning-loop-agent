@@ -152,12 +152,16 @@ function renderFiles(state, source) {
             : (state.sourceAnchors || []).length
               ? `${
                   (state.sourceVersions || []).length > 1
-                    ? `<p class="item-sub" style="margin-bottom:10px">共 ${(state.sourceVersions || []).length} 个版本，当前 v${source.current_version?.number || 1}</p>`
+                    ? `<p class="item-sub" style="margin-bottom:10px">共 ${(state.sourceVersions || []).length} 个版本，当前 v${
+                        (state.sourceVersions || []).find((item) => item.id === state.sourceViewVersionId)?.number
+                        || source.current_version?.number
+                        || 1
+                      }</p>`
                     : ''
                 }${state.sourceAnchors
                   .map(
                     (anchor, index) => `
-          <section class="anchor" data-question-id="">
+          <section class="anchor" id="anchor-${anchor.id}" data-question-id="">
             <div class="anchor-label">${escapeHtml(sourceAnchorLabel(anchor, index))}</div>
             ${renderBlocks(anchor.content)}
           </section>

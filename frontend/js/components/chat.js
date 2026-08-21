@@ -338,7 +338,7 @@ function renderMessage(msg) {
     .map((cite) => {
       const location = shortLocation(cite.location?.label);
       const label = location ? `${cite.source_name || '资料'} · ${location}` : (cite.source_name || '资料');
-      return `<span class="cite" title="${escapeHtml(cite.excerpt || cite.location?.label || label)}">${escapeHtml(label)}</span>`;
+      return `<button type="button" class="cite" data-action="open-citation" data-source-id="${escapeHtml(cite.source_id || '')}" data-version-id="${escapeHtml(cite.source_version_id || '')}" data-anchor-id="${escapeHtml(cite.anchor_id || '')}" ${cite.id ? `data-citation-id="${escapeHtml(cite.id)}"` : ''} title="${escapeHtml(cite.excerpt || cite.location?.label || label)}">${escapeHtml(label)}</button>`;
     })
     .join('');
   const bubbleBody = isGenerating && !text && !plainText
@@ -349,6 +349,7 @@ function renderMessage(msg) {
     ? `<div class="msg-error">${escapeHtml(sanitizeErrorMessage(msg.error?.message || '生成失败'))}</div>
        <button type="button" class="btn btn-ghost btn-sm" data-action="retry-message" data-id="${msg.id}">重试</button>`
     : '';
+  const toolEvents = role === 'assistant' ? renderToolEvents(msg.tool_events) : '';
   return `
     <article class="msg msg-${role}">
       <div class="msg-meta">
@@ -358,10 +359,51 @@ function renderMessage(msg) {
         ${status ? `<span>${status}</span>` : ''}
         <span>${formatTime(msg.created_at)}</span>
       </div>
+      ${toolEvents}
       <div class="bubble">${bubbleBody}</div>
       ${errorBlock}
     </article>
   `;
+}
+
+const TOOL_LINE_ICONS = {
+  search_sources: 'search',
+  get_study_state: 'activity',
+  'tools-unsupported': 'info',
+};
+
+const TOOL_RESOURCE_META = {
+  'exam-blueprint': { icon: 'list', accent: 'exam', kind: '蓝图', dest: '去组卷区确认' },
+  'exam-draft': { icon: 'feather', accent: 'exam', kind: '草稿', dest: '去组卷区查看' },
+  'draft-revision-proposal': { icon: 'gitCompare', accent: 'exam', kind: '修改提案', dest: '去组卷区预览' },
+  'revision-proposal': { icon: 'gitCompare', accent: 'exam', kind: '修改提案', dest: '去组卷区预览' },
+  exam: { icon: 'book', accent: 'exam', kind: '试卷', dest: '去组卷区查看' },
+  'ai-document': { icon: 'fileText', accent: 'sources', kind: 'AI 文档', dest: '去资料区查看' },
+  'ai-document-proposal': { icon: 'gitCompare', accent: 'sources', kind: '修改提案', dest: '去资料区预览' },
+  attempt: { icon: 'checkSquare', accent: 'attempt', kind: '答卷', dest: '去作答区查看' },
+};
+
+function renderToolEvents(events) {
+  if (!events?.length) return '';
+  const rows = events.map((event) => {
+    const failed = event.status === 'failed';
+    const summary = escapeHtml(event.summary || event.name || '工具调用');
+    const resource = event.resource;
+    const meta = resource?.type && resource?.id ? TOOL_RESOURCE_META[resource.type] : null;
+    if (meta) {
+      return `<button type="button" class="tool-event-card is-${meta.accent}" data-action="open-tool-resource" data-type="${escapeHtml(resource.type)}" data-id="${escapeHtml(resource.id)}">
+        <span class="tool-card-icon">${icons[meta.icon](15)}</span>
+        <span class="tool-card-main">
+          <span class="tool-card-title">${summary}</span>
+          <span class="tool-card-dest">${meta.kind} · ${meta.dest}</span>
+        </span>
+        ${icons.chevronRight(14, 'tool-card-go')}
+      </button>`;
+    }
+    const iconName = failed ? 'alertTriangle' : (TOOL_LINE_ICONS[event.name] || 'zap');
+    return `<div class="tool-event${failed ? ' is-failed' : ''}">${icons[iconName](13)}<span>${summary}</span></div>`;
+  }).join('');
+  return `<div class="tool-events">${rows}</div>`;
 }
 
 function sessionMenu(state) {

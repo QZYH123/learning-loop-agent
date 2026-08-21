@@ -36,7 +36,7 @@ async function request(endpoint, options = {}) {
     response = await fetch(endpoint, { ...options, headers });
   } catch (err) {
     throw new ApiError(
-      '无法连接本地服务，请确认已启动 uvicorn（http://127.0.0.1:4173）',
+      '无法连接本地服务，请先运行 python3 -m backend.app（http://127.0.0.1:4173）',
       'NETWORK_ERROR',
       0,
       { cause: String(err?.message || err) },
@@ -65,6 +65,58 @@ function json(method, endpoint, body) {
   return request(endpoint, { method, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
+function filenameFromDisposition(header) {
+  const starred = /filename\*=UTF-8''([^;]+)/i.exec(header || '');
+  if (starred?.[1]) return decodeURIComponent(starred[1]);
+  const quoted = /filename="([^"]+)"/i.exec(header || '');
+  if (quoted?.[1]) return quoted[1];
+  const plain = /filename=([^;]+)/i.exec(header || '');
+  return plain?.[1]?.trim() || '';
+}
+
+function triggerDownload(blob, fileName) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = fileName;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+async function downloadFile(endpoint, { accept, fallbackName }) {
+  let response;
+  try {
+    response = await fetch(endpoint, { headers: { Accept: accept } });
+  } catch (err) {
+    throw new ApiError(
+      '无法连接本地服务，请先运行 python3 -m backend.app（http://127.0.0.1:4173）',
+      'NETWORK_ERROR',
+      0,
+      { cause: String(err?.message || err) },
+    );
+  }
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') || '';
+    const payload = contentType.includes('application/json')
+      ? await response.json().catch(() => null)
+      : await response.text().catch(() => null);
+    const error = payload && typeof payload === 'object' ? payload.error : null;
+    throw new ApiError(
+      formatErrorMessage(error, payload, response.status),
+      error?.code || 'API_ERROR',
+      response.status,
+      error?.details || payload,
+    );
+  }
+  const blob = await response.blob();
+  const fileName = filenameFromDisposition(response.headers.get('content-disposition')) || fallbackName;
+  triggerDownload(blob, fileName);
+  return { fileName };
+}
+
 export const api = {
   getHealth() {
     return request('/api/health');
@@ -90,6 +142,17 @@ export const api = {
   },
   activateSubject(subjectId) {
     return json('POST', `/api/subjects/${encodeURIComponent(subjectId)}/activate`);
+  },
+  exportSubject(subjectId) {
+    return downloadFile(`/api/subjects/${encodeURIComponent(subjectId)}/export`, {
+      accept: 'application/zip, application/json',
+      fallbackName: 'subject.zip',
+    });
+  },
+  importSubject(file) {
+    const body = new FormData();
+    body.append('file', file);
+    return request('/api/subjects/import', { method: 'POST', body });
   },
 
   listModels() {
@@ -126,9 +189,9 @@ export const api = {
   cancelOperation(operationId) {
     return json('POST', `/api/operations/${encodeURIComponent(operationId)}/cancel`);
   },
-  async pollOperation(operationId, { deadlineMs = 15 * 60 * 1000, onProgress } = {}) {
+  async pollOperation(operationId, { deadlineMs = 15 * 60 * 1000, onProgress, intervalMs = 400, maxIntervalMs = 2500 } = {}) {
     const deadline = Date.now() + deadlineMs;
-    let intervalMs = 400;
+    let current = intervalMs;
     while (Date.now() < deadline) {
       const op = await this.getOperation(operationId);
       onProgress?.(op);
@@ -136,8 +199,8 @@ export const api = {
       if (op.status === 'failed' || op.status === 'canceled') {
         throw new ApiError(op.error?.message || `任务${op.status === 'canceled' ? '已取消' : '失败'}`, op.error?.code || 'OPERATION_FAILED', 400, op.error);
       }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      intervalMs = Math.min(Math.round(intervalMs * 1.5), 2500);
+      await new Promise((resolve) => setTimeout(resolve, current));
+      current = Math.min(Math.round(current * 1.5), maxIntervalMs);
     }
     throw new ApiError('任务超时', 'OPERATION_TIMEOUT', 408);
   },
@@ -162,7 +225,7 @@ export const api = {
   },
   createSessionMessage(sessionId, payload) {
     return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages`, payload);
-  },
+  }, // payload 可含 workspace_context，原样上送
   appendSessionNote(sessionId, payload) {
     return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/notes`, payload);
   },
@@ -210,6 +273,9 @@ export const api = {
   },
   listSourceVersionAnchors(versionId) {
     return request(`/api/source-versions/${encodeURIComponent(versionId)}/anchors`);
+  },
+  getCitation(citationId) {
+    return request(`/api/citations/${encodeURIComponent(citationId)}`);
   },
 
   listAiDocuments(subjectId) {
@@ -268,6 +334,9 @@ export const api = {
   getDraft(draftId) {
     return request(`/api/exam-drafts/${encodeURIComponent(draftId)}`);
   },
+  deleteDraft(draftId) {
+    return request(`/api/exam-drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' });
+  },
   retryDraftQuestion(draftId, questionId) {
     return json('POST', `/api/exam-drafts/${encodeURIComponent(draftId)}/questions/${encodeURIComponent(questionId)}/retry`);
   },
@@ -290,8 +359,14 @@ export const api = {
   listExams(subjectId) {
     return request(`/api/subjects/${encodeURIComponent(subjectId)}/exams`);
   },
+  listMissedQuestions(subjectId) {
+    return request(`/api/subjects/${encodeURIComponent(subjectId)}/missed-questions`);
+  },
   getExam(examId) {
     return request(`/api/exams/${encodeURIComponent(examId)}`);
+  },
+  deleteExam(examId) {
+    return request(`/api/exams/${encodeURIComponent(examId)}`, { method: 'DELETE' });
   },
   updateExam(examId, patch) {
     return json('PATCH', `/api/exams/${encodeURIComponent(examId)}`, patch);
@@ -317,7 +392,26 @@ export const api = {
   discardRevisionProposal(proposalId) {
     return json('POST', `/api/revision-proposals/${encodeURIComponent(proposalId)}/discard`);
   },
+  getExamRenderDocument(examId, edition) {
+    const params = new URLSearchParams({ edition });
+    return request(`/api/exams/${encodeURIComponent(examId)}/render-document?${params}`);
+  },
+  createExamExport(examId, payload) {
+    return json('POST', `/api/exams/${encodeURIComponent(examId)}/exports`, payload);
+  },
+  getExamExport(exportId) {
+    return request(`/api/exports/${encodeURIComponent(exportId)}`);
+  },
+  async downloadExamExport(exportId) {
+    return downloadFile(`/api/exports/${encodeURIComponent(exportId)}/file`, {
+      accept: 'application/pdf, text/markdown, application/json',
+      fallbackName: `export-${exportId}`,
+    });
+  },
 
+  listExamAttempts(examId) {
+    return request(`/api/exams/${encodeURIComponent(examId)}/attempts`);
+  },
   createAttempt(examId, payload) {
     return json('POST', `/api/exams/${encodeURIComponent(examId)}/attempts`, payload);
   },
@@ -347,5 +441,15 @@ export const api = {
   },
   resumeAttempt(attemptId) {
     return json('POST', `/api/attempts/${encodeURIComponent(attemptId)}/resume`);
+  },
+
+  getPet() {
+    return request('/api/pet');
+  },
+  updatePet(patch) {
+    return json('PATCH', '/api/pet', patch);
+  },
+  patPet() {
+    return json('POST', '/api/pet/pat');
   },
 };

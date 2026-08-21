@@ -378,6 +378,16 @@ components:
         file: {type: string, format: binary}
         display_name: {type: string, minLength: 1, maxLength: 255}
 
+    SubjectImportUpload:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: exportSubject 生成的科目空间 zip
+
     SourceVersionUpload:
       type: object
       additionalProperties: false
@@ -699,6 +709,34 @@ components:
         - required: [image_asset]
           not: {required: [selected_text]}
 
+    ToolEvent:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, summary]
+      description: assistant 消息中一次工具调用的可展示记录；参数已脱敏。
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 工具名，例如 search_sources。
+        status: {type: string, enum: [succeeded, failed]}
+        summary:
+          type: string
+          minLength: 1
+          description: 面向用户的一句中文说明。
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceRef'
+            - type: 'null'
+        arguments:
+          anyOf:
+            - type: object
+              additionalProperties: true
+            - type: 'null'
+          description: 脱敏后的工具参数，不含凭据或完整资料原文。
+
     ChatMessageIntent:
       type: string
       deprecated: true
@@ -738,6 +776,7 @@ components:
           type: array
           uniqueItems: true
           items: {$ref: '#/components/schemas/Identifier'}
+        workspace_context: {$ref: '#/components/schemas/WorkspaceContext'}
       allOf:
         - if:
             properties:
@@ -751,6 +790,7 @@ components:
         focused_source_version_ids: [source-version-1]
         only_use_specified_sources: false
         attachment_ids: []
+        workspace_context: {workspace: learn}
 
     ChatMessageRetryInput:
       type: object
@@ -799,6 +839,10 @@ components:
           anyOf:
             - $ref: '#/components/schemas/ApiError'
             - type: 'null'
+        tool_events:
+          type: array
+          items: {$ref: '#/components/schemas/ToolEvent'}
+          description: assistant 调用工具的记录；无调用时为空数组或省略。
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
         completed_at:
@@ -879,6 +923,39 @@ components:
         citations:
           type: array
           items: {$ref: '#/components/schemas/Citation'}
+        workspace_context:
+          anyOf:
+            - $ref: '#/components/schemas/WorkspaceContext'
+            - type: 'null'
+          description: 发送时的工作区临时关联，只影响本条消息的工具路由。
+
+    WorkspaceContext:
+      type: object
+      additionalProperties: false
+      required: [workspace]
+      description: 当前工作区与活动对象的临时关联；不改变会话资料范围。
+      properties:
+        workspace: {type: string, enum: [learn, sources, exam, attempt]}
+        blueprint_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        draft_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        exam_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        ai_document_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
+        attempt_id:
+          anyOf:
+            - $ref: '#/components/schemas/Identifier'
+            - type: 'null'
 
     SessionInput:
       type: object
@@ -2056,6 +2133,123 @@ components:
             - type: 'null'
         created_at: {$ref: '#/components/schemas/Timestamp'}
 
+    AttemptSummary:
+      type: object
+      additionalProperties: false
+      description: 试卷作答摘要。不含答案、试卷题目正文、反馈明细或隐藏解析。
+      required: [id, exam_id, exam_version_id, mode, status, completion_status, answered_count, question_count, has_feedback, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/Identifier'}
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        exam_version_id: {$ref: '#/components/schemas/Identifier'}
+        mode: {$ref: '#/components/schemas/AttemptMode'}
+        status: {type: string, enum: [in-progress, paused, grading, submitted]}
+        completion_status: {type: string, enum: [in-progress, completed]}
+        answered_count:
+          type: integer
+          minimum: 0
+          description: 已保存答案的题目数。
+        question_count:
+          type: integer
+          minimum: 0
+          description: 试卷题目总数。
+        has_feedback:
+          type: boolean
+          description: 当前对作答者可见的批改反馈是否存在；考试模式标记完成前必须为 false。
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        id: attempt-1
+        exam_id: exam-1
+        exam_version_id: exam-version-1
+        mode: exam
+        status: in-progress
+        completion_status: in-progress
+        answered_count: 1
+        question_count: 4
+        has_feedback: false
+        created_at: 1735689600000
+        updated_at: 1735689600000
+
+    AttemptSummaryList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AttemptSummary'}
+
+    MissedQuestion:
+      type: object
+      additionalProperties: false
+      description: 错题投影条目。不含答案、试卷题目正文、反馈明细或隐藏解析。
+      required: [exam_id, exam_version_id, exam_title, question_id, question_type, stem_preview, attempt_id, missed_at]
+      properties:
+        exam_id: {$ref: '#/components/schemas/Identifier'}
+        exam_version_id: {$ref: '#/components/schemas/Identifier'}
+        exam_title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        question_id: {$ref: '#/components/schemas/Identifier'}
+        question_type: {$ref: '#/components/schemas/QuestionType'}
+        stem_preview:
+          type: string
+          maxLength: 80
+          description: 题干纯文本前 80 字。
+        attempt_id: {$ref: '#/components/schemas/Identifier'}
+        missed_at: {$ref: '#/components/schemas/Timestamp'}
+      example:
+        exam_id: exam-1
+        exam_version_id: exam-version-1
+        exam_title: 极限综合练习
+        question_id: question-1
+        question_type: single-choice
+        stem_preview: A limit primarily describes what?
+        attempt_id: attempt-1
+        missed_at: 1735689600000
+
+    MissedQuestionGroup:
+      type: object
+      additionalProperties: false
+      required: [knowledge_point, miss_count, questions]
+      properties:
+        knowledge_point:
+          type: string
+          minLength: 1
+          maxLength: 200
+        miss_count:
+          type: integer
+          minimum: 0
+          description: 该考点下去重后的错题数。
+        questions:
+          type: array
+          maxItems: 10
+          items: {$ref: '#/components/schemas/MissedQuestion'}
+      example:
+        knowledge_point: Limits
+        miss_count: 1
+        questions:
+          - exam_id: exam-1
+            exam_version_id: exam-version-1
+            exam_title: 极限综合练习
+            question_id: question-1
+            question_type: single-choice
+            stem_preview: A limit primarily describes what?
+            attempt_id: attempt-1
+            missed_at: 1735689600000
+
+    MissedQuestionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 30
+          items: {$ref: '#/components/schemas/MissedQuestionGroup'}
+
     Attempt:
       type: object
       additionalProperties: false
@@ -2263,7 +2457,7 @@ components:
       properties:
         name:
           type: string
-          enum: [parse, retrieve, model-call, structure-validation, retry, apply-change, undo, render, export]
+          enum: [parse, retrieve, model-call, structure-validation, retry, apply-change, undo, render, export, tool-call]
         status: {type: string, enum: [succeeded, failed, canceled, skipped]}
         started_at: {$ref: '#/components/schemas/Timestamp'}
         completed_at:
@@ -2408,3 +2602,124 @@ components:
         model_observations: {$ref: '#/components/schemas/ModelResultObservations'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
+
+    PetTodayStats:
+      type: object
+      additionalProperties: false
+      required: [chat_messages, correct_answers, feedback_received, attempts_completed, exams_published, sources_ready]
+      properties:
+        chat_messages: {type: integer, minimum: 0}
+        correct_answers: {type: integer, minimum: 0}
+        feedback_received: {type: integer, minimum: 0}
+        attempts_completed: {type: integer, minimum: 0}
+        exams_published: {type: integer, minimum: 0}
+        sources_ready: {type: integer, minimum: 0}
+
+    PetDayInk:
+      type: object
+      additionalProperties: false
+      required: [date, ink]
+      properties:
+        date: {type: string, format: date}
+        ink: {type: integer, minimum: 0}
+
+    PetBadge:
+      type: object
+      additionalProperties: false
+      required: [id, earned]
+      properties:
+        id: {type: string, enum: [exam_1, attempt_1, streak_7, ink_100]}
+        earned: {type: boolean}
+
+    PetPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          description: 去首尾空白后须为 1–12 个字符。
+        position_x:
+          type: number
+          description: 视口横向位置（脚底锚点），写入时夹取到 0–100。
+        position_y:
+          type: number
+          description: 视口纵向位置（脚底锚点，100 为贴底），写入时夹取到 0–100。
+        hidden: {type: boolean}
+
+    Pet:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - adopted_at
+        - position_x
+        - position_y
+        - hidden
+        - stage
+        - ink_total
+        - ink_today
+        - ink_to_next
+        - streak_days
+        - pats_today
+        - today
+        - recent_days
+        - badges
+      properties:
+        name: {type: string, minLength: 1, maxLength: 12}
+        adopted_at: {$ref: '#/components/schemas/Timestamp'}
+        position_x: {type: number}
+        position_y: {type: number}
+        hidden: {type: boolean}
+        stage: {type: integer, enum: [0, 1, 2, 3]}
+        ink_total: {type: integer, minimum: 0}
+        ink_today: {type: integer, minimum: 0}
+        ink_to_next:
+          anyOf:
+            - {type: integer, minimum: 0}
+            - type: 'null'
+        streak_days: {type: integer, minimum: 0}
+        pats_today: {type: integer, minimum: 0}
+        today: {$ref: '#/components/schemas/PetTodayStats'}
+        recent_days:
+          type: array
+          minItems: 7
+          maxItems: 7
+          items: {$ref: '#/components/schemas/PetDayInk'}
+        badges:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: {$ref: '#/components/schemas/PetBadge'}
+      example:
+        name: 小墨
+        adopted_at: 1755700000000
+        position_x: 78
+        position_y: 100
+        hidden: false
+        stage: 2
+        ink_total: 128
+        ink_today: 23
+        ink_to_next: 172
+        streak_days: 5
+        pats_today: 3
+        today:
+          chat_messages: 6
+          correct_answers: 4
+          feedback_received: 5
+          attempts_completed: 1
+          exams_published: 0
+          sources_ready: 0
+        recent_days:
+          - {date: '2026-08-15', ink: 12}
+          - {date: '2026-08-16', ink: 20}
+          - {date: '2026-08-17', ink: 18}
+          - {date: '2026-08-18', ink: 15}
+          - {date: '2026-08-19', ink: 22}
+          - {date: '2026-08-20', ink: 18}
+          - {date: '2026-08-21', ink: 23}
+        badges:
+          - {id: exam_1, earned: true}
+          - {id: attempt_1, earned: true}
+          - {id: streak_7, earned: false}
+          - {id: ink_100, earned: true}

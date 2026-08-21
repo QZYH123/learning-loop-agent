@@ -26,6 +26,16 @@ export function renderModals(state, root, handlers) {
       `<button type="button" class="btn btn-ghost" data-action="close">取消</button>
        <button type="button" class="btn btn-danger" data-action="confirm-ok">${escapeHtml(state.confirmOk || '确认')}</button>`,
     );
+  } else if (modal === 'exam-edition') {
+    const selected = state.examEdition === 'solutions' ? 'solutions' : 'questions';
+    root.innerHTML = dialog(
+      state.examEditionTitle || '选择版别',
+      `<p class="field-hint">答案版包含答案与解析</p>
+       <label class="option"><input type="radio" name="exam-edition" value="questions" ${selected === 'questions' ? 'checked' : ''} /><span>题目版</span></label>
+       <label class="option"><input type="radio" name="exam-edition" value="solutions" ${selected === 'solutions' ? 'checked' : ''} /><span>答案版</span></label>`,
+      `<button type="button" class="btn btn-ghost" data-action="close">取消</button>
+       <button type="button" class="btn btn-primary" data-action="confirm-exam-edition">确认</button>`,
+    );
   } else {
     root.innerHTML = '';
     return;
@@ -50,10 +60,20 @@ export function renderModals(state, root, handlers) {
       else handlers.onCreateSubject(name);
     }
     if (action === 'confirm-ok') handlers.onConfirmModal();
+    if (action === 'confirm-exam-edition') {
+      const edition = root.querySelector('input[name="exam-edition"]:checked')?.value || 'questions';
+      handlers.onConfirmExamEdition(edition);
+    }
     closeArmed = false;
   });
   root.onkeydown = (event) => {
     if (event.key === 'Escape') handlers.onCloseModal();
+    if (event.key === 'Enter' && modal === 'exam-edition') {
+      event.preventDefault();
+      const edition = root.querySelector('input[name="exam-edition"]:checked')?.value || 'questions';
+      handlers.onConfirmExamEdition(edition);
+      return;
+    }
     if (event.key === 'Enter' && modal !== 'confirm') {
       event.preventDefault();
       const name = root.querySelector('#subject-name')?.value.trim();

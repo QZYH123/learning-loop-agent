@@ -311,6 +311,11 @@ export function readySourceVersionIds(sources) {
     .filter(Boolean);
 }
 
+export function defaultGroundingMode(sources, saved) {
+  if (!readySourceVersionIds(sources).length) return 'general-knowledge';
+  return saved || 'supplemental';
+}
+
 export function currentAiVersion(doc) {
   if (!doc) return null;
   return (doc.versions || []).find((item) => item.id === doc.current_version_id) || doc.versions?.[0] || null;

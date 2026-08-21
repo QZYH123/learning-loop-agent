@@ -11,6 +11,7 @@ from .exam_models import (
     AttemptInput,
     AttemptPatch,
     AttemptReview,
+    AttemptSummaryList,
     DraftQuestion,
     Exam,
     ExamBlueprint,
@@ -30,6 +31,7 @@ from .exam_models import (
     ExamRevisionProposalList,
     ExamVersionList,
     FeedbackInput,
+    MissedQuestionList,
     PublishExamInput,
     QuestionInput,
 )
@@ -235,6 +237,15 @@ def create_exam_router(exams) -> APIRouter:
         return {"items": exams.list_exams(subject_id)}
 
     @router.get(
+        "/api/subjects/{subject_id}/missed-questions",
+        operation_id="listMissedQuestions",
+        response_model=MissedQuestionList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_missed_questions(subject_id: str):
+        return {"items": exams.list_missed_questions(subject_id)}
+
+    @router.get(
         "/api/exams/{exam_id}",
         operation_id="getExam",
         response_model=Exam,
@@ -356,6 +367,15 @@ def create_exam_router(exams) -> APIRouter:
     def discard_revision_proposal(proposal_id: str):
         exams.discard_revision_proposal(proposal_id)
         return Response(status_code=204)
+
+    @router.get(
+        "/api/exams/{exam_id}/attempts",
+        operation_id="listExamAttempts",
+        response_model=AttemptSummaryList,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def list_exam_attempts(exam_id: str):
+        return {"items": exams.list_exam_attempts(exam_id)}
 
     @router.post(
         "/api/exams/{exam_id}/attempts",

@@ -62,7 +62,9 @@ function renderSources(evidence, reliability) {
     .map((item) => {
       const loc = String(item.location?.label || '').split('/').pop()?.trim();
       const label = [item.source_name, loc].filter(Boolean).join(' · ');
-      return label ? `<span class="cite" title="${escapeHtml(item.location?.label || label)}">${escapeHtml(label)}</span>` : '';
+      return label
+        ? `<button type="button" class="cite" data-action="open-citation" data-source-id="${escapeHtml(item.source_id || '')}" data-version-id="${escapeHtml(item.source_version_id || '')}" data-anchor-id="${escapeHtml(item.anchor_id || '')}" ${item.id ? `data-citation-id="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(item.location?.label || label)}">${escapeHtml(label)}</button>`
+        : '';
     })
     .filter(Boolean);
   if (!chips.length && BASIS_LABEL[evidence?.basis]) {

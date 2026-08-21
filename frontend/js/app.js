@@ -20,6 +20,7 @@ import {
   examLeftHtml,
   examRightHtml,
   examShellHtml,
+  renderExamPrintDocument,
 } from './components/exam.js';
 import {
   attemptLeftHtml,
@@ -37,12 +38,14 @@ import {
   currentAiVersion,
   officialSelection,
   readySourceVersionIds,
+  defaultGroundingMode,
   sessionVisible,
   titleFromMessage,
   draftPublishState,
   sanitizeErrorMessage,
 } from './util.js';
 import { formatElapsed } from './attempt-timer.js';
+import { initPet, petNotify } from './pet.js';
 
 class App {
   constructor() {
@@ -59,6 +62,7 @@ class App {
     this.retryingQuestions = new Set();
     this.regions = { workspace: null, shell: '', left: '', right: '', nav: '' };
     this.attemptTimer = null;
+    this.citeHighlightTimer = null;
   }
 
   async init() {
@@ -78,6 +82,7 @@ class App {
     this.bindGlobals();
     await this.bootstrap();
     this.render();
+    initPet();
   }
 
   bindGlobals() {
@@ -156,7 +161,10 @@ class App {
 
   handlers() {
     return {
-      onSelectWorkspace: (id) => store.setState({ workspace: id, openMenu: null }),
+      onSelectWorkspace: (id) => {
+        store.setState({ workspace: id, openMenu: null });
+        if (id === 'attempt') this.loadMissedQuestions();
+      },
       onToggleMenu: (name) => store.setState({ openMenu: store.state.openMenu === name ? null : name }),
       onToggleTheme: () => store.setTheme(store.state.theme === 'paper' ? 'chalkboard' : 'paper'),
       onOpenModal: (modal) => store.setState({
@@ -178,6 +186,8 @@ class App {
       onRenameSubject: (name) => this.renameSubject(name),
       onSwitchSubject: (id) => this.switchSubject(id),
       onDeleteSubject: () => this.deleteSubject(),
+      onExportSubject: () => this.exportSubject(),
+      onImportSubject: (file) => this.importSubject(file),
       onComposerInput: (value) => store.patch({ composerText: value }),
       onGetMentionSources: () => readyMentionSources(store.state.sources),
       onMentionSource: (source) => this.mentionSource(source),
@@ -203,6 +213,7 @@ class App {
         aiDocument: !!store.activeAiDocument(),
       }),
       onConfirmModal: () => this.confirmModal(),
+      onConfirmExamEdition: (edition) => this.confirmExamEdition(edition),
     };
   }
 
@@ -406,7 +417,10 @@ class App {
     const { action } = target.dataset;
     const id = target.dataset.id;
     try {
-      if (action === 'select-workspace') store.setState({ workspace: target.dataset.workspace, openMenu: null });
+      if (action === 'select-workspace') {
+        store.setState({ workspace: target.dataset.workspace, openMenu: null });
+        if (target.dataset.workspace === 'attempt') await this.loadMissedQuestions();
+      }
       else if (action === 'toggle-menu') store.setState({ openMenu: store.state.openMenu === target.dataset.menu ? null : target.dataset.menu });
       else if (action === 'mobile-pane') this.setMobilePane(target.dataset.pane);
       else if (action === 'collapse-left') store.toggleSidebar(store.state.workspace);
@@ -419,7 +433,16 @@ class App {
         event.stopPropagation();
         await this.deleteSession(id);
       } else if (action === 'set-style') await this.setStyle(id);
-      else if (action === 'set-grounding') store.setState({ groundingMode: id, openMenu: null });
+      else if (action === 'set-grounding') {
+        const subjectId = store.state.activeSubjectId;
+        store.setState({
+          groundingMode: id,
+          groundingBySubject: subjectId
+            ? { ...store.state.groundingBySubject, [subjectId]: id }
+            : store.state.groundingBySubject,
+          openMenu: null,
+        });
+      }
       else if (action === 'select-model') await this.selectModel(id);
       else if (action === 'open-models') store.setState({ modal: 'models', openMenu: null, modelForm: store.state.modelForm || defaultForm() });
       else if (action === 'open-subject') store.setState({ modal: 'subject' });
@@ -442,13 +465,28 @@ class App {
       else if (action === 'apply-doc-proposal') await this.applyDocProposal(id);
       else if (action === 'discard-doc-proposal') await this.discardDocProposal(id);
       else if (action === 'exam-tab') store.setState({ examTab: target.dataset.tab });
+      else if (action === 'attempt-tab') {
+        store.setState({ attemptTab: target.dataset.tab });
+        if (target.dataset.tab === 'missed') await this.loadMissedQuestions();
+      }
+      else if (action === 'open-missed-question') await this.openMissedQuestion(target.dataset.attemptId, target.dataset.questionId);
+      else if (action === 'practice-missed-set') await this.practiceMissedSet();
       else if (action === 'select-blueprint') await this.selectBlueprint(id);
       else if (action === 'rename-blueprint') {
         event.stopPropagation();
         store.setState({ renamingBlueprintId: id, renamingExamId: null, renamingSessionId: null, openMenu: null });
-      } else if (action === 'rename-exam') {
+      }       else if (action === 'rename-exam') {
         event.stopPropagation();
         store.setState({ renamingExamId: id, renamingBlueprintId: null, renamingSessionId: null, openMenu: null });
+      } else if (action === 'delete-blueprint') {
+        event.stopPropagation();
+        await this.deleteBlueprint(id);
+      } else if (action === 'delete-draft') {
+        event.stopPropagation();
+        await this.deleteDraft(id);
+      } else if (action === 'delete-exam') {
+        event.stopPropagation();
+        await this.deleteExam(id);
       }
       else if (action === 'create-blueprint') await this.createDefaultBlueprint();
       else if (action === 'remove-blueprint-point') await this.removeBlueprintPoint(id, target.dataset.index);
@@ -484,16 +522,43 @@ class App {
       else if (action === 'discard-exam-proposal') await this.discardExamProposal(id);
       else if (action === 'undo-exam') await this.undoExam(id);
       else if (action === 'redo-exam') await this.redoExam(id);
-      else if (action === 'go-attempt') store.setState({ workspace: 'attempt', activeExamId: id || store.state.activeExamId, mobilePane: { ...store.state.mobilePane, attempt: 'content' } });
+      else if (action === 'print-exam') this.askExamEdition(id, 'print');
+      else if (action === 'export-exam-pdf') this.askExamEdition(id, 'pdf');
+      else if (action === 'export-exam-markdown') this.askExamEdition(id, 'markdown');
+      else if (action === 'go-attempt') {
+        const examId = id || store.state.activeExamId;
+        store.setState({
+          workspace: 'attempt',
+          activeExamId: examId,
+          activeAttempt: null,
+          activeAttemptId: null,
+          review: null,
+          startAnotherOpen: false,
+          mobilePane: { ...store.state.mobilePane, attempt: 'content' },
+        });
+        await this.loadExamAttempts(examId);
+        await this.loadMissedQuestions();
+      }
       else if (action === 'go-exam') store.setState({ workspace: 'exam', examTab: 'blueprint', mobilePane: { ...store.state.mobilePane, exam: 'ai' } });
       else if (action === 'focus-composer') this.focusComposer();
       else if (action === 'start-attempt') await this.startAttempt(id, target.dataset.mode);
+      else if (action === 'start-another') store.setState({ startAnotherOpen: !store.state.startAnotherOpen });
+      else if (action === 'open-attempt') await this.openAttempt(id);
       else if (action === 'complete-attempt') await this.completeAttempt(id);
       else if (action === 'continue-attempt') await this.continueAttempt(id);
       else if (action === 'grade-attempt') await this.gradeAttempt(id);
       else if (action === 'pause-attempt') await this.run('暂停失败', () => api.pauseAttempt(id), () => this.refreshAttempt(id));
       else if (action === 'resume-attempt') await this.run('恢复失败', () => api.resumeAttempt(id), () => this.refreshAttempt(id));
       else if (action === 'ask-feedback') await this.askFeedback(target.dataset.attemptId, id);
+      else if (action === 'open-tool-resource') await this.openToolResource(target.dataset.type, id);
+      else if (action === 'open-citation') {
+        await this.openCitation({
+          sourceId: target.dataset.sourceId,
+          versionId: target.dataset.versionId,
+          anchorId: target.dataset.anchorId,
+          citationId: target.dataset.citationId,
+        });
+      }
     } catch (err) {
       store.addToast(sanitizeErrorMessage(err.message), 'error');
     }
@@ -508,6 +573,12 @@ class App {
     try {
       if (action === 'plan-count' || action === 'plan-score') {
         await this.updateBlueprintPlan(id, index, action === 'plan-count' ? 'count' : 'score_each', target.value);
+      } else if (action === 'toggle-missed-point') {
+        const point = target.dataset.point;
+        const selected = new Set(store.state.missedSelectedPoints || []);
+        if (target.checked) selected.add(point);
+        else selected.delete(point);
+        store.setState({ missedSelectedPoints: [...selected], missedSelectionReady: true });
       }
     } catch (err) {
       store.addToast(sanitizeErrorMessage(err.message), 'error');
@@ -556,6 +627,9 @@ class App {
     if (action === 'delete-subject') await this.deleteSubjectConfirmed();
     else if (action === 'delete-session') await this.deleteSessionConfirmed(store.state.confirmSessionId);
     else if (action === 'delete-source') await this.deleteSourceConfirmed(store.state.confirmSourceId);
+    else if (action === 'delete-blueprint') await this.deleteBlueprintConfirmed(store.state.confirmBlueprintId);
+    else if (action === 'delete-draft') await this.deleteDraftConfirmed(store.state.confirmDraftId);
+    else if (action === 'delete-exam') await this.deleteExamConfirmed(store.state.confirmExamId);
     else if (action === 'publish-draft') await this.publishDraftConfirmed(store.state.confirmDraftId, true);
   }
 
@@ -676,11 +750,16 @@ class App {
       activeExamId: store.state.activeExamId && exams.some((item) => item.id === store.state.activeExamId) ? store.state.activeExamId : exams[0]?.id || null,
       examProposals: [],
       draftProposals: [],
+      missedQuestions: [],
+      missedSelectedPoints: [],
+      missedSelectionReady: false,
+      groundingMode: defaultGroundingMode(sources, store.state.groundingBySubject[subjectId]),
     });
     if (store.state.activeSourceId) await this.loadSourceDetail(store.state.activeSourceId);
     if (store.state.activeAiDocumentId) await this.loadAiDocDetail(store.state.activeAiDocumentId);
     if (store.state.activeExamId) await this.loadExamDetail(store.state.activeExamId);
-    await this.restoreAttempt(store.state.activeExamId);
+    await this.loadExamAttempts(store.state.activeExamId);
+    await this.loadMissedQuestions();
     this.watchProcessingSources();
     this.watchDraft();
     this.watchGeneratingMessages();
@@ -712,6 +791,8 @@ class App {
           store.trackOperation(op);
           store.patch({ chatOp: op });
         },
+        intervalMs: 500,
+        maxIntervalMs: 500,
       });
       store.trackOperation(done);
       store.setState({ chatOp: null });
@@ -754,6 +835,29 @@ class App {
     });
     await api.activateSubject(subjectId).catch(() => {});
     await this.loadSubject(subjectId);
+  }
+
+  async exportSubject() {
+    if (!store.state.activeSubjectId) return;
+    store.setState({ openMenu: null });
+    try {
+      await api.exportSubject(store.state.activeSubjectId);
+    } catch (err) {
+      store.addToast(err.message, 'error');
+    }
+  }
+
+  async importSubject(file) {
+    if (!file) return;
+    store.setState({ openMenu: null });
+    try {
+      const subject = await api.importSubject(file);
+      store.addToast('已导入', 'success');
+      await this.bootstrap();
+      if (subject?.id) await this.switchSubject(subject.id);
+    } catch (err) {
+      store.addToast(err.message, 'error');
+    }
   }
 
   async deleteSubject() {
@@ -1090,7 +1194,6 @@ class App {
     if (!store.activeModel()) return store.addToast('请先配置模型', 'error');
     const wasDraft = !sessionVisible(store.activeSession());
     const sessionId = await this.ensureSession(content);
-    const workspace = store.state.workspace;
     const attachmentIds = [];
     for (const item of store.state.attachments) {
       const uploaded = await api.uploadAttachment(store.state.activeSubjectId, item.file);
@@ -1107,6 +1210,7 @@ class App {
     if (store.state.currentModelId) payload.model_id = store.state.currentModelId;
     if (selection) payload.selection = selection;
     if (attachmentIds.length) payload.attachment_ids = attachmentIds;
+    payload.workspace_context = this.currentWorkspaceContext();
 
     store.patch({ composerText: '' });
     store.setState({ attachments: [], selection: null, openMenu: null });
@@ -1128,9 +1232,92 @@ class App {
       /* timeout handled by generating watch */
     }
     await this.finalizeSessionAfterMessage();
+    const lastAssistant = [...(store.activeSession()?.messages || [])]
+      .reverse()
+      .find((item) => item.role === 'assistant');
+    await this.refreshAfterToolEvents(lastAssistant?.tool_events);
+    petNotify('chat');
+  }
 
-    if (workspace === 'exam' && !store.state.blueprints.length && content.length > 4) {
-      await this.parseBlueprint(content);
+  currentWorkspaceContext() {
+    const context = { workspace: store.state.workspace || 'learn' };
+    if (store.state.activeBlueprintId) context.blueprint_id = store.state.activeBlueprintId;
+    if (store.state.activeDraftId) context.draft_id = store.state.activeDraftId;
+    if (store.state.activeExamId) context.exam_id = store.state.activeExamId;
+    if (store.state.activeAiDocumentId) context.ai_document_id = store.state.activeAiDocumentId;
+    if (store.state.activeAttemptId) context.attempt_id = store.state.activeAttemptId;
+    return context;
+  }
+
+  async refreshAfterToolEvents(events) {
+    const types = new Set((events || []).map((item) => item.resource?.type).filter(Boolean));
+    if (!types.size || !store.state.activeSubjectId) return;
+    if (types.has('exam-blueprint')) {
+      const data = await api.listBlueprints(store.state.activeSubjectId);
+      store.setState({ blueprints: data.items || [] });
+    }
+    if (types.has('draft-revision-proposal') || types.has('exam-draft')) {
+      const data = await api.listDrafts(store.state.activeSubjectId);
+      store.setState({ drafts: data.items || [] });
+      if (store.state.activeDraftId) await this.loadDraftProposals(store.state.activeDraftId);
+    }
+    if (types.has('revision-proposal') || types.has('exam')) {
+      const data = await api.listExams(store.state.activeSubjectId);
+      store.setState({ exams: data.items || [] });
+      if (store.state.activeExamId) await this.loadExamDetail(store.state.activeExamId);
+    }
+    if (types.has('ai-document') || types.has('ai-document-proposal')) {
+      const data = await api.listAiDocuments(store.state.activeSubjectId);
+      store.setState({ aiDocuments: data.items || [] });
+      if (store.state.activeAiDocumentId) await this.loadAiDocDetail(store.state.activeAiDocumentId);
+    }
+  }
+
+  async openToolResource(type, id) {
+    if (!type || !id) return;
+    const examContent = { ...store.state.mobilePane, exam: 'content' };
+    const sourcesContent = { ...store.state.mobilePane, sources: 'content' };
+    if (type === 'exam-blueprint') {
+      store.setState({ workspace: 'exam', examTab: 'blueprint', mobilePane: examContent });
+      await this.selectBlueprint(id);
+      return;
+    }
+    if (type === 'draft-revision-proposal' || type === 'exam-draft') {
+      store.setState({ workspace: 'exam', examTab: 'draft', mobilePane: examContent });
+      if (type === 'exam-draft') {
+        await this.selectDraft(id);
+        return;
+      }
+      const data = await api.listDrafts(store.state.activeSubjectId);
+      store.setState({ drafts: data.items || [] });
+      const draftId = store.state.activeDraftId || data.items?.[0]?.id;
+      if (draftId) await this.selectDraft(draftId);
+      return;
+    }
+    if (type === 'revision-proposal' || type === 'exam') {
+      store.setState({ workspace: 'exam', examTab: 'exam', mobilePane: examContent });
+      if (type === 'exam') {
+        await this.selectExam(id);
+        return;
+      }
+      if (store.state.activeExamId) await this.loadExamDetail(store.state.activeExamId);
+      return;
+    }
+    if (type === 'ai-document' || type === 'ai-document-proposal') {
+      store.setState({ workspace: 'sources', sourceKind: 'docs', mobilePane: sourcesContent });
+      if (type === 'ai-document') {
+        await this.selectAiDoc(id);
+        return;
+      }
+      if (store.state.activeAiDocumentId) await this.loadAiDocDetail(store.state.activeAiDocumentId);
+      return;
+    }
+    if (type === 'attempt') {
+      store.setState({
+        workspace: 'attempt',
+        activeAttemptId: id,
+        mobilePane: { ...store.state.mobilePane, attempt: 'content' },
+      });
     }
   }
 
@@ -1443,24 +1630,87 @@ class App {
   }
 
   async selectSource(sourceId) {
-    store.setState({ activeSourceId: sourceId, sourceKind: 'files' });
+    store.setState({ activeSourceId: sourceId, sourceKind: 'files', sourceViewVersionId: null });
     await this.loadSourceDetail(sourceId);
   }
 
-  async loadSourceDetail(sourceId) {
+  async loadSourceDetail(sourceId, versionId = null, { required = false } = {}) {
     const source = await api.getSource(sourceId);
-    const versionId = source.current_version?.id;
-    const [anchorsRes, versionsRes] = await Promise.all([
-      versionId && source.status === 'ready'
-        ? api.listSourceVersionAnchors(versionId).catch(() => ({ items: [] }))
-        : Promise.resolve({ items: [] }),
-      api.listSourceVersions(sourceId).catch(() => ({ items: [] })),
-    ]);
+    const targetVersionId = versionId || source.current_version?.id;
+    let anchorsRes = { items: [] };
+    try {
+      if (targetVersionId) {
+        anchorsRes = await api.listSourceVersionAnchors(targetVersionId);
+      }
+    } catch (err) {
+      if (required && (err.status === 410 || err.code === 'SOURCE_UNAVAILABLE')) throw err;
+      anchorsRes = { items: [] };
+    }
+    const versionsRes = await api.listSourceVersions(sourceId).catch(() => ({ items: [] }));
+    const sources = store.state.sources.some((item) => item.id === sourceId)
+      ? store.state.sources.map((item) => (item.id === sourceId ? source : item))
+      : [...store.state.sources, source];
     store.setState({
-      sources: store.state.sources.map((item) => (item.id === sourceId ? source : item)),
+      sources,
+      activeSourceId: sourceId,
       sourceAnchors: anchorsRes.items || [],
       sourceVersions: versionsRes.items || [],
+      sourceViewVersionId: targetVersionId || null,
     });
+  }
+
+  async openCitation({ sourceId, versionId, anchorId, citationId } = {}) {
+    try {
+      if ((!sourceId || !versionId || !anchorId) && citationId) {
+        const citation = await api.getCitation(citationId);
+        if (citation.available === false) {
+          store.addToast('资料已不可用', 'error');
+          return;
+        }
+        sourceId = citation.source_id;
+        versionId = citation.source_version_id;
+        anchorId = citation.anchor_id;
+      }
+      if (!sourceId || !versionId || !anchorId) return;
+      const isAiDoc = store.state.aiDocuments.some((item) => item.id === sourceId);
+      if (isAiDoc) {
+        store.setState({
+          workspace: 'sources',
+          sourceKind: 'docs',
+          mobilePane: { ...store.state.mobilePane, sources: 'content' },
+          openMenu: null,
+        });
+        await this.selectAiDoc(sourceId);
+        return;
+      }
+      await this.loadSourceDetail(sourceId, versionId, { required: true });
+      store.setState({
+        workspace: 'sources',
+        sourceKind: 'files',
+        mobilePane: { ...store.state.mobilePane, sources: 'content' },
+        openMenu: null,
+      });
+      this.highlightCitedAnchor(anchorId);
+    } catch (err) {
+      if (err.status === 410 || err.code === 'SOURCE_UNAVAILABLE') {
+        store.addToast('资料已不可用', 'error');
+        return;
+      }
+      throw err;
+    }
+  }
+
+  highlightCitedAnchor(anchorId) {
+    if (this.citeHighlightTimer) window.clearTimeout(this.citeHighlightTimer);
+    const apply = () => {
+      const node = document.getElementById(`anchor-${anchorId}`);
+      if (!node) return;
+      node.scrollIntoView({ block: 'center' });
+      node.classList.add('is-cited');
+      this.citeHighlightTimer = window.setTimeout(() => node.classList.remove('is-cited'), 2000);
+    };
+    queueMicrotask(apply);
+    window.setTimeout(apply, 50);
   }
 
   async onUploadSources(files) {
@@ -1476,7 +1726,13 @@ class App {
       }
     }
     const data = await api.listSources(store.state.activeSubjectId);
-    store.setState({ sources: data.items || [], activeSourceId: data.items?.[0]?.id || null, sourceKind: 'files' });
+    const sources = data.items || [];
+    store.setState({
+      sources,
+      activeSourceId: sources[0]?.id || null,
+      sourceKind: 'files',
+      groundingMode: defaultGroundingMode(sources, store.state.groundingBySubject[store.state.activeSubjectId]),
+    });
     if (store.state.activeSourceId) await this.loadSourceDetail(store.state.activeSourceId);
   }
 
@@ -1494,7 +1750,14 @@ class App {
     if (!sourceId) return;
     await api.deleteSource(sourceId);
     const data = await api.listSources(store.state.activeSubjectId);
-    store.setState({ sources: data.items || [], activeSourceId: data.items?.[0]?.id || null, sourceAnchors: [], sourceVersions: [] });
+    const sources = data.items || [];
+    store.setState({
+      sources,
+      activeSourceId: sources[0]?.id || null,
+      sourceAnchors: [],
+      sourceVersions: [],
+      groundingMode: defaultGroundingMode(sources, store.state.groundingBySubject[store.state.activeSubjectId]),
+    });
   }
 
   async selectAiDoc(docId) {
@@ -1547,6 +1810,97 @@ class App {
       activeBlueprintId: id,
       blueprints: (list.items || []).map((item) => (item.id === id ? detail : item)),
     });
+  }
+
+  async deleteBlueprint(id) {
+    store.setState({ confirmBlueprintId: id });
+    this.askConfirm({
+      title: '删除蓝图',
+      message: '将删除这份蓝图。没有需要一并删除的关联对象。',
+      ok: '删除',
+      action: 'delete-blueprint',
+    });
+  }
+
+  async deleteBlueprintConfirmed(id) {
+    if (!id) return;
+    try {
+      await api.deleteBlueprint(id);
+      const data = await api.listBlueprints(store.state.activeSubjectId);
+      const items = data.items || [];
+      const nextId = items.find((item) => item.id === store.state.activeBlueprintId && item.id !== id)?.id || items[0]?.id || null;
+      store.setState({ blueprints: items, activeBlueprintId: nextId });
+      if (nextId) await this.selectBlueprint(nextId);
+      store.addToast('蓝图已删除');
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  async deleteDraft(id) {
+    const draft = store.state.drafts.find((item) => item.id === id) || await api.getDraft(id);
+    const proposals = await api.listDraftRevisionProposals(id).catch(() => ({ items: [] }));
+    store.setState({ confirmDraftId: id });
+    this.askConfirm({
+      title: '删除草稿',
+      message: `将删除这份草稿。题目 ${(draft.questions || []).length} 道，修改提案 ${(proposals.items || []).length} 份。`,
+      ok: '删除',
+      action: 'delete-draft',
+    });
+  }
+
+  async deleteDraftConfirmed(id) {
+    if (!id) return;
+    try {
+      await api.deleteDraft(id);
+      const data = await api.listDrafts(store.state.activeSubjectId);
+      const items = data.items || [];
+      const nextId = items.find((item) => item.id === store.state.activeDraftId && item.id !== id)?.id || items[0]?.id || null;
+      store.setState({ drafts: items, activeDraftId: nextId, draftProposals: [] });
+      if (nextId) await this.selectDraft(nextId);
+      store.addToast('草稿已删除');
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  async deleteExam(id) {
+    const [versions, proposals, attempts] = await Promise.all([
+      api.listExamVersions(id),
+      api.listRevisionProposals(id),
+      api.listExamAttempts(id),
+    ]);
+    store.setState({ confirmExamId: id });
+    this.askConfirm({
+      title: '删除试卷',
+      message: `将删除这份试卷。版本 ${(versions.items || []).length} 个，修改提案 ${(proposals.items || []).length} 份，作答 ${(attempts.items || []).length} 份。`,
+      ok: '删除',
+      action: 'delete-exam',
+    });
+  }
+
+  async deleteExamConfirmed(id) {
+    if (!id) return;
+    try {
+      await api.deleteExam(id);
+      const data = await api.listExams(store.state.activeSubjectId);
+      const items = data.items || [];
+      const nextId = items.find((item) => item.id !== id)?.id || null;
+      store.setState({
+        exams: items,
+        activeExamId: nextId,
+        examProposals: [],
+        examAttempts: [],
+        activeAttempt: null,
+        activeAttemptId: null,
+        review: null,
+      });
+      if (nextId) await this.loadExamDetail(nextId);
+      if (store.state.workspace === 'attempt') await this.loadExamAttempts(nextId);
+      store.addToast('试卷已删除');
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
   }
 
   async confirmBlueprint(id) {
@@ -1632,7 +1986,6 @@ class App {
     const messageList = session?.messages || [];
     const last = messageList[messageList.length - 1];
     const shouldWatch = !!session
-      && store.state.workspace === 'learn'
       && last?.role === 'assistant'
       && ['queued', 'generating'].includes(last.status);
 
@@ -1678,7 +2031,7 @@ class App {
         this.generatingPoll = null;
         this.generatingWatchSessionId = null;
       }
-    }, 3000);
+    }, 500);
   }
 
   watchProcessingSources() {
@@ -1694,7 +2047,11 @@ class App {
           }
           return;
         }
-        store.setState({ sources: data.items || [] });
+        const sources = data.items || [];
+        store.setState({
+          sources,
+          groundingMode: defaultGroundingMode(sources, store.state.groundingBySubject[store.state.activeSubjectId]),
+        });
         if (store.state.activeSourceId) await this.loadSourceDetail(store.state.activeSourceId);
         if (!(data.items || []).some((item) => item.status === 'processing')) {
           window.clearInterval(this.sourcePoll);
@@ -1747,12 +2104,20 @@ class App {
     store.setState({ exams: data.items || [], activeExamId: examId, examTab: 'exam' });
     if (examId) await this.loadExamDetail(examId);
     store.addToast('试卷已发布', 'success');
+    petNotify('exam-published');
   }
 
   async selectExam(id) {
-    store.setState({ activeExamId: id, renamingExamId: null });
+    store.setState({
+      activeExamId: id,
+      renamingExamId: null,
+      startAnotherOpen: false,
+      activeAttempt: store.state.workspace === 'attempt' ? null : store.state.activeAttempt,
+      activeAttemptId: store.state.workspace === 'attempt' ? null : store.state.activeAttemptId,
+      review: store.state.workspace === 'attempt' ? null : store.state.review,
+    });
     await this.loadExamDetail(id);
-    if (store.state.workspace === 'attempt') await this.restoreAttempt(id);
+    if (store.state.workspace === 'attempt') await this.loadExamAttempts(id);
   }
 
   async loadExamDetail(examId) {
@@ -1792,6 +2157,77 @@ class App {
     store.setState({ exams: store.state.exams.map((item) => (item.id === id ? exam : item)) });
   }
 
+  askExamEdition(examId, action) {
+    const titles = { print: '打印', pdf: '导出 PDF', markdown: '导出 Markdown' };
+    store.setState({
+      modal: 'exam-edition',
+      examEdition: 'questions',
+      examEditionAction: action,
+      examEditionExamId: examId,
+      examEditionTitle: titles[action] || '选择版别',
+      openMenu: null,
+    });
+  }
+
+  async confirmExamEdition(edition) {
+    const action = store.state.examEditionAction;
+    const examId = store.state.examEditionExamId;
+    const resolved = edition === 'solutions' ? 'solutions' : 'questions';
+    store.setState({
+      modal: null,
+      examEditionAction: null,
+      examEditionExamId: null,
+      examEditionTitle: '',
+      examEdition: 'questions',
+    });
+    if (!examId) return;
+    try {
+      if (action === 'print') await this.printExam(examId, resolved);
+      else if (action === 'pdf') await this.exportExam(examId, 'pdf', resolved);
+      else if (action === 'markdown') await this.exportExam(examId, 'markdown', resolved);
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  async printExam(examId, edition) {
+    const doc = await api.getExamRenderDocument(examId, edition);
+    const popup = window.open('', '_blank');
+    if (!popup) {
+      store.addToast('无法打开打印窗口', 'error');
+      return;
+    }
+    popup.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(doc.title || '试卷')}</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
+  </head>
+  <body data-theme="${escapeHtml(store.state.theme || 'paper')}">${renderExamPrintDocument(doc)}</body>
+</html>`);
+    popup.document.close();
+    const triggerPrint = () => {
+      popup.focus();
+      popup.print();
+    };
+    if (popup.document.readyState === 'complete') triggerPrint();
+    else popup.addEventListener('load', triggerPrint, { once: true });
+  }
+
+  async exportExam(examId, format, edition) {
+    store.addToast('正在导出');
+    const accepted = await api.createExamExport(examId, { format, edition });
+    store.trackOperation(accepted.operation);
+    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    const exportId = accepted.resource?.id || accepted.operation?.resource?.id;
+    if (!exportId) throw new Error('导出已完成，但没有文件');
+    await api.getExamExport(exportId);
+    await api.downloadExamExport(exportId);
+    store.addToast('已导出', 'success');
+  }
+
   canViewReview(attempt) {
     return attempt?.mode === 'practice' || attempt?.completion_status === 'completed';
   }
@@ -1807,23 +2243,75 @@ class App {
 
   async startAttempt(examId, mode) {
     const attempt = await api.createAttempt(examId, { mode, show_suggested_score: mode === 'practice' });
-    store.rememberAttempt(examId, attempt.id);
-    store.setState({ activeExamId: examId, mobilePane: { ...store.state.mobilePane, attempt: 'content' } });
+    store.setState({
+      activeExamId: examId,
+      startAnotherOpen: false,
+      mobilePane: { ...store.state.mobilePane, attempt: 'content' },
+    });
     await this.refreshAttempt(attempt.id);
+    await this.loadExamAttempts(examId);
   }
 
-  async restoreAttempt(examId) {
-    if (!examId) return store.setState({ activeAttempt: null, activeAttemptId: null, review: null });
-    const ids = store.state.attemptsByExam[examId] || [];
-    for (const id of ids) {
-      try {
-        await this.refreshAttempt(id);
-        return;
-      } catch {
-        /* stale */
-      }
+  async openAttempt(attemptId) {
+    store.setState({ startAnotherOpen: false, mobilePane: { ...store.state.mobilePane, attempt: 'content' } });
+    await this.refreshAttempt(attemptId);
+  }
+
+  async loadMissedQuestions() {
+    if (!store.state.activeSubjectId) {
+      store.setState({ missedQuestions: [] });
+      return;
     }
-    store.setState({ activeAttempt: null, activeAttemptId: null, review: null });
+    try {
+      const data = await api.listMissedQuestions(store.state.activeSubjectId);
+      const items = data.items || [];
+      const available = new Set(items.map((item) => item.knowledge_point));
+      let selected = store.state.missedSelectedPoints || [];
+      if (!store.state.missedSelectionReady) {
+        selected = items.slice(0, 5).map((item) => item.knowledge_point);
+      } else {
+        selected = selected.filter((point) => available.has(point));
+      }
+      store.setState({ missedQuestions: items, missedSelectedPoints: selected });
+    } catch {
+      store.setState({ missedQuestions: [] });
+    }
+  }
+
+  async openMissedQuestion(attemptId, questionId) {
+    store.setState({ attemptTab: 'exams' });
+    await this.openAttempt(attemptId);
+    const apply = () => {
+      const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(questionId || '') : questionId;
+      const node = document.querySelector(`[data-question-id="${escaped}"]`);
+      node?.scrollIntoView({ block: 'center' });
+    };
+    queueMicrotask(apply);
+    window.setTimeout(apply, 50);
+  }
+
+  async practiceMissedSet() {
+    const selected = store.state.missedSelectedPoints || [];
+    if (!selected.length) {
+      store.addToast('请先选择考点', 'error');
+      return;
+    }
+    const prompt = `针对以下薄弱考点出一套复习卷：${selected.join('、')}`;
+    store.setState({ workspace: 'exam', examTab: 'blueprint', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
+    await this.parseBlueprint(prompt);
+  }
+
+  async loadExamAttempts(examId) {
+    if (!examId) {
+      store.setState({ examAttempts: [], activeAttempt: null, activeAttemptId: null, review: null });
+      return;
+    }
+    try {
+      const data = await api.listExamAttempts(examId);
+      store.setState({ examAttempts: data.items || [] });
+    } catch {
+      store.setState({ examAttempts: [] });
+    }
   }
 
   async saveAnswer(attemptId, questionId, answer) {
@@ -1839,6 +2327,7 @@ class App {
     await api.completeAttempt(id);
     await this.refreshAttempt(id);
     store.addToast('已完成作答', 'success');
+    petNotify('attempt-completed');
   }
 
   async continueAttempt(id) {
@@ -1852,6 +2341,7 @@ class App {
     await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
     await this.refreshAttempt(id);
     store.addToast('批改完成', 'success');
+    petNotify('attempt-completed');
   }
 
   async askFeedback(attemptId, questionId) {
@@ -1859,6 +2349,8 @@ class App {
     store.trackOperation(accepted.operation);
     await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
     await this.refreshAttempt(attemptId);
+    const feedback = (store.state.activeAttempt?.feedback || []).find((item) => item.question_id === questionId);
+    petNotify(feedback?.correct === true ? 'correct' : 'feedback');
   }
 
   async run(fail, task, after) {

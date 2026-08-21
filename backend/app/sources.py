@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 
 from .domain import (
@@ -25,6 +27,8 @@ from .source_parsers import parse_source
 
 
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
+BM25_K1 = 1.5
+BM25_B = 0.75
 SOURCE_FORMATS = {
     ".md": ("markdown", "text/markdown"),
     ".markdown": ("markdown", "text/markdown"),
@@ -41,6 +45,60 @@ SOURCE_FORMATS = {
     ".tif": ("image", "image/tiff"),
     ".tiff": ("image", "image/tiff"),
 }
+
+
+def tokenize_terms(text: str, *, unique: bool = True) -> list[str]:
+    folded = (text or "").casefold()
+    terms = re.findall(r"[a-z0-9_]{2,}", folded)
+    han_chars = re.findall(r"[\u4e00-\u9fff]", folded)
+    if len(han_chars) < 2:
+        terms.extend(han_chars)
+    else:
+        for run in re.findall(r"[\u4e00-\u9fff]+", folded):
+            if len(run) < 2:
+                terms.append(run)
+            else:
+                terms.extend(run[index : index + 2] for index in range(len(run) - 1))
+    return list(dict.fromkeys(terms)) if unique else terms
+
+
+def bm25_scores(query_terms: list[str], documents: list[list[str]], *, k1: float = BM25_K1, b: float = BM25_B) -> list[float]:
+    if not documents:
+        return []
+    if not query_terms:
+        return [0.0] * len(documents)
+    lengths = [len(document) for document in documents]
+    avgdl = sum(lengths) / len(documents)
+    document_frequency: Counter[str] = Counter()
+    for document in documents:
+        document_frequency.update(set(document))
+    total = len(documents)
+    idf = {
+        term: math.log((total - document_frequency.get(term, 0) + 0.5) / (document_frequency.get(term, 0) + 0.5) + 1)
+        for term in query_terms
+    }
+    scores = []
+    for document, length in zip(documents, lengths):
+        term_frequency = Counter(document)
+        score = 0.0
+        for term in query_terms:
+            freq = term_frequency.get(term, 0)
+            if not freq:
+                continue
+            length_norm = k1 * (1 - b + b * (length / avgdl if avgdl else 0))
+            score += idf[term] * freq * (k1 + 1) / (freq + length_norm)
+        scores.append(score)
+    return scores
+
+
+def title_location_hit(anchor: dict, terms: list[str]) -> bool:
+    if not terms:
+        return False
+    location = anchor.get("location") or {}
+    fields = [str(location.get("label") or "")]
+    fields.extend(str(part) for part in location.get("section_path") or [])
+    haystack = "\n".join(fields).casefold()
+    return any(term in haystack for term in terms)
 
 
 class SourceLibraryError(Exception):
@@ -138,10 +196,10 @@ class SourceLibrary:
     ) -> list[dict]:
         retrieve_started_at = int(time.time() * 1000)
         retrieve_started = time.perf_counter()
-        scored = []
-        image_anchors = []
         terms = self._query_terms(query)
         priority_ids = set(priority_version_ids or [])
+        corpus: list[tuple[str, dict]] = []
+        image_anchors = []
         for version_id in version_ids:
             version = self.get_version(version_id)
             if version.get("status") != "ready":
@@ -152,15 +210,30 @@ class SourceLibrary:
                     **anchor,
                     "_upstream_citations": index.get("upstream_citations", []),
                 }
-                text = self._anchor_text(anchor).casefold()
-                score = sum(text.count(term) for term in terms)
-                if score:
-                    scored.append((int(version_id in priority_ids), score, anchor))
-                elif any(block.get("type") == "image" for block in anchor.get("content", [])):
+                corpus.append((version_id, anchor))
+                if any(block.get("type") == "image" for block in anchor.get("content", [])):
                     image_anchors.append((int(version_id in priority_ids), anchor))
+
+        documents = [tokenize_terms(self._anchor_text(anchor), unique=False) for _, anchor in corpus]
+        scores = bm25_scores(terms, documents, k1=BM25_K1, b=BM25_B)
+        scored = []
+        for (version_id, anchor), score in zip(corpus, scores):
+            if score <= 0:
+                continue
+            if title_location_hit(anchor, terms):
+                score *= 2
+            scored.append((int(version_id in priority_ids), score, anchor))
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        unique = []
+        seen: set[str] = set()
+        for item in scored:
+            key = self._anchor_text(item[2])[:200]
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
         image_anchors.sort(key=lambda item: item[0], reverse=True)
-        matches = [anchor for _, _, anchor in scored[:limit]]
+        matches = [anchor for _, _, anchor in unique[:limit]]
         if not matches:
             matches = [anchor for _, anchor in image_anchors[:limit]]
         self.operations.record_stage(
@@ -196,6 +269,24 @@ class SourceLibrary:
             raise SourceLibraryError(404, "RESOURCE_NOT_FOUND", "来源引用不存在")
         version = self.get_version(citation["source_version_id"])
         return {**citation, "available": version.get("status") != "unavailable"}
+
+    def list_citations(self) -> list[dict]:
+        return list(self._load_citations())
+
+    def merge_citations(self, incoming: list[dict]) -> None:
+        with self._citation_lock:
+            records = self._load_citations()
+            existing = {item.get("id") for item in records if item.get("id")}
+            changed = False
+            for citation in incoming:
+                citation_id = citation.get("id") if isinstance(citation, dict) else None
+                if not citation_id or citation_id in existing:
+                    continue
+                records.append(citation)
+                existing.add(citation_id)
+                changed = True
+            if changed:
+                self._write_json_atomic(self.citations_path, {"schema_version": 1, "citations": records})
 
     def create_source(self, subject_id: str, filename: str | None, display_name: str | None, content: bytes) -> dict:
         self._subject(subject_id)
@@ -455,9 +546,7 @@ class SourceLibrary:
 
     @staticmethod
     def _query_terms(query: str) -> list[str]:
-        folded = query.casefold()
-        words = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]", folded)
-        return list(dict.fromkeys(words))
+        return tokenize_terms(query)
 
     @staticmethod
     def _anchor_text(anchor: dict) -> str:

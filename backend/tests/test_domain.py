@@ -128,6 +128,27 @@ def test_normalize_workspace_recovers_generating_message_as_stopped():
     assert chat["messages"][1]["content"] == "半截"
 
 
+def test_normalize_workspace_fills_missing_pet_key():
+    raw = {
+        "schema_version": 1,
+        "active_subject_id": None,
+        "models": [],
+        "subjects": [],
+        "created_at": 1,
+        "updated_at": 1,
+    }
+    workspace, issue = normalize_workspace(raw, now=1000)
+    assert issue is None
+    assert workspace["pet"] == {
+        "name": "小墨",
+        "adopted_at": None,
+        "position_x": 78,
+        "position_y": 100,
+        "hidden": False,
+        "pats_by_date": {},
+    }
+
+
 def test_normalize_workspace_defaults_legacy_models_without_guessing_format():
     raw = initial_workspace(now=1)
     raw["models"] = [{

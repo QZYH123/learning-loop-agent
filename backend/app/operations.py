@@ -146,6 +146,7 @@ class OperationManager:
         outer_elapsed_ms: int = 0,
         model_wait_ms: int = 0,
         counters: dict | None = None,
+        attributes: dict | None = None,
     ) -> None:
         operation_id = CURRENT_OPERATION_ID.get()
         if operation_id:
@@ -159,6 +160,7 @@ class OperationManager:
                 outer_elapsed_ms=outer_elapsed_ms,
                 model_wait_ms=model_wait_ms,
                 counters=counters or {},
+                attributes=attributes or {},
             )
 
     def record_action(self, category: str, *, subject_id: str | None, resource: dict | None, stage: str, attributes: dict | None = None) -> None:

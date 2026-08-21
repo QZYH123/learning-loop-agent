@@ -423,6 +423,18 @@ class SelectionContext(ContractModel):
         return self
 
 
+WorkspaceKind = Literal["learn", "sources", "exam", "attempt"]
+
+
+class WorkspaceContext(ContractModel):
+    workspace: WorkspaceKind
+    blueprint_id: str | None = None
+    draft_id: str | None = None
+    exam_id: str | None = None
+    ai_document_id: str | None = None
+    attempt_id: str | None = None
+
+
 class MessageSourceContext(ContractModel):
     source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     focused_source_version_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
@@ -431,6 +443,7 @@ class MessageSourceContext(ContractModel):
     selection: SelectionContext | None = None
     attachment_ids: list[str] = Field(json_schema_extra={"uniqueItems": True})
     citations: list[Citation]
+    workspace_context: WorkspaceContext | None = None
 
     @field_validator("source_version_ids", "focused_source_version_ids", "attachment_ids")
     @classmethod
@@ -463,6 +476,7 @@ class ChatMessageInput(ContractModel):
     focused_source_version_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
     only_use_specified_sources: bool = False
     attachment_ids: list[str] = Field(default=None, json_schema_extra={"uniqueItems": True})
+    workspace_context: WorkspaceContext | None = None
 
     @field_validator("source_version_ids", "focused_source_version_ids", "attachment_ids")
     @classmethod
@@ -492,6 +506,15 @@ class ModelSnapshot(ContractModel):
     capabilities: ModelCapabilities
 
 
+class ToolEvent(ContractModel):
+    id: str
+    name: str = Field(min_length=1, max_length=200)
+    status: Literal["succeeded", "failed"]
+    summary: str = Field(min_length=1)
+    resource: ResourceRef | None = None
+    arguments: dict[str, Any] | None = None
+
+
 class ChatMessage(ContractModel):
     id: str
     role: Literal["user", "assistant", "system"]
@@ -506,6 +529,7 @@ class ChatMessage(ContractModel):
     selection: SelectionContext | None = None
     model: ModelSnapshot | None = None
     error: ApiError | None = None
+    tool_events: list[ToolEvent] = Field(default_factory=list)
     created_at: int
     updated_at: int
     completed_at: int | None = None
@@ -767,3 +791,58 @@ class LearningArtifact(ContractModel):
 
 class LearningArtifactList(ContractModel):
     items: list[LearningArtifact]
+
+
+class PetTodayStats(ContractModel):
+    chat_messages: int = Field(ge=0)
+    correct_answers: int = Field(ge=0)
+    feedback_received: int = Field(ge=0)
+    attempts_completed: int = Field(ge=0)
+    exams_published: int = Field(ge=0)
+    sources_ready: int = Field(ge=0)
+
+
+class PetDayInk(ContractModel):
+    date: str
+    ink: int = Field(ge=0)
+
+
+class PetBadge(ContractModel):
+    id: Literal["exam_1", "attempt_1", "streak_7", "ink_100"]
+    earned: bool
+
+
+class PetPatch(PatchModel):
+    name: str = None
+    position_x: float = None
+    position_y: float = None
+    hidden: bool = None
+
+    @field_validator("name")
+    @classmethod
+    def name_must_be_trimmed_length(cls, value):
+        if value is None:
+            return value
+        if not isinstance(value, str):
+            raise ValueError("name must be a string")
+        name = value.strip()
+        if not name or len(name) > 12:
+            raise ValueError("name must be 1-12 characters after trim")
+        return name
+
+
+class Pet(ContractModel):
+    name: str = Field(min_length=1, max_length=12)
+    adopted_at: int
+    position_x: float
+    position_y: float
+    hidden: bool
+    stage: Literal[0, 1, 2, 3]
+    ink_total: int = Field(ge=0)
+    ink_today: int = Field(ge=0)
+    ink_to_next: int | None
+    streak_days: int = Field(ge=0)
+    pats_today: int = Field(ge=0)
+    today: PetTodayStats
+    recent_days: list[PetDayInk] = Field(min_length=7, max_length=7)
+    badges: list[PetBadge] = Field(min_length=4, max_length=4)
