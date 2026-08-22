@@ -23,7 +23,13 @@ export class Store {
     this.state = {
       bootstrapped: false,
       loadError: null,
-      theme: localStorage.getItem(THEME_KEY) || 'paper',
+      theme: (() => {
+        try {
+          return localStorage.getItem(THEME_KEY);
+        } catch {
+          return null;
+        }
+      })() || 'paper',
       workspace: 'learn',
       subjects: [],
       activeSubjectId: null,
@@ -178,7 +184,11 @@ export class Store {
   }
 
   setTheme(theme) {
-    localStorage.setItem(THEME_KEY, theme);
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      /* ignore quota / disabled storage */
+    }
     document.documentElement.setAttribute('data-theme', theme);
     this.setState({ theme });
   }

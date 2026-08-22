@@ -55,6 +55,10 @@ def test_print_reuses_existing_question_renderers():
     print_fn = APP_JS.split("async printExam(", 1)[1].split("async ", 1)[0]
     assert "renderExamPrintDocument" in print_fn
     assert "<article class=\"q\"" not in print_fn
+    assert "window.open" not in print_fn
+    assert "iframe" in print_fn
+    assert "popup.print()" in print_fn
+    assert "/vendor/fonts/fonts.css" in print_fn
 
 
 def test_edition_request_uses_contract_enums_only():

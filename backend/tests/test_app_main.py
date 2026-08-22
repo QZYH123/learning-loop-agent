@@ -1,6 +1,9 @@
+import importlib
 import io
 import socket
 from pathlib import Path
+
+import pytest
 
 from backend.app.__main__ import (
     DEFAULT_PORT,
@@ -12,6 +15,7 @@ from backend.app.__main__ import (
     parse_args,
     serve_url,
 )
+from backend.app.desktop import DESKTOP_MISSING_MESSAGE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -113,6 +117,88 @@ def test_opens_browser_without_flag():
 def test_parse_args_no_browser():
     assert parse_args(["--no-browser"]).no_browser is True
     assert parse_args([]).no_browser is False
+    assert parse_args([]).desktop is False
+    assert parse_args([]).browser is False
+
+
+def test_parse_args_desktop_and_browser():
+    assert parse_args(["--desktop"]).desktop is True
+    assert parse_args(["--browser"]).browser is True
+    with pytest.raises(SystemExit):
+        parse_args(["--desktop", "--browser"])
+    with pytest.raises(SystemExit):
+        parse_args(["--desktop", "--no-browser"])
+
+
+def test_desktop_opens_window_not_browser():
+    opened_desktop = []
+    opened_browser = []
+    code = main(
+        ["--desktop"],
+        find_port=lambda: DEFAULT_PORT,
+        run_uvicorn=lambda **kwargs: None,
+        open_browser=opened_browser.append,
+        open_desktop=opened_desktop.append,
+        stdout=io.StringIO(),
+    )
+    assert code == 0
+    assert opened_desktop == [serve_url("127.0.0.1", DEFAULT_PORT)]
+    assert opened_browser == []
+
+
+def test_frozen_defaults_to_desktop():
+    opened_desktop = []
+    opened_browser = []
+    code = main(
+        [],
+        find_port=lambda: DEFAULT_PORT,
+        run_uvicorn=lambda **kwargs: None,
+        open_browser=opened_browser.append,
+        open_desktop=opened_desktop.append,
+        is_frozen_app=True,
+        stdout=io.StringIO(),
+    )
+    assert code == 0
+    assert opened_desktop == [serve_url("127.0.0.1", DEFAULT_PORT)]
+    assert opened_browser == []
+
+
+def test_frozen_browser_flag_opens_browser():
+    opened_desktop = []
+    opened_browser = []
+    code = main(
+        ["--browser"],
+        find_port=lambda: DEFAULT_PORT,
+        run_uvicorn=lambda **kwargs: None,
+        open_browser=opened_browser.append,
+        open_desktop=opened_desktop.append,
+        is_frozen_app=True,
+        stdout=io.StringIO(),
+    )
+    assert code == 0
+    assert opened_browser == [serve_url("127.0.0.1", DEFAULT_PORT)]
+    assert opened_desktop == []
+
+
+def test_desktop_missing_webview_message():
+    stdout = io.StringIO()
+    real = importlib.import_module
+
+    def importer(name):
+        if name == "webview":
+            raise ImportError(name)
+        return real(name)
+
+    code = main(
+        ["--desktop"],
+        importer=importer,
+        find_port=lambda: DEFAULT_PORT,
+        run_uvicorn=lambda **kwargs: None,
+        stdout=stdout,
+    )
+    assert code == 1
+    assert DESKTOP_MISSING_MESSAGE in stdout.getvalue()
+    assert "Traceback" not in stdout.getvalue()
 
 
 def test_readme_prefers_module_launch():
@@ -127,3 +213,47 @@ def test_run_sh_exists_and_delegates():
     text = script.read_text(encoding="utf-8")
     assert ".venv" in text
     assert 'python3 -m backend.app "$@"' in text
+
+
+def test_run_bat_exists_and_delegates():
+    script = REPO_ROOT / "run.bat"
+    assert script.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert ".venv" in text
+    assert "python -m backend.app" in text
+
+
+def test_readme_documents_desktop_packaging():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "build.ps1" in readme
+    assert "LearningLoop.exe" in readme
+    assert "requirements-desktop.txt" in readme
+    assert "--desktop" in readme
+
+
+def test_index_uses_local_fonts():
+    html = (REPO_ROOT / "frontend/index.html").read_text(encoding="utf-8")
+    assert "fonts.googleapis.com" not in html
+    assert "/vendor/fonts/fonts.css" in html
+    fonts_dir = REPO_ROOT / "frontend/vendor/fonts"
+    assert (fonts_dir / "fonts.css").is_file()
+    assert (fonts_dir / "plus-jakarta-sans-latin-wght-normal.woff2").is_file()
+    assert (fonts_dir / "patrick-hand-latin-400-normal.woff2").is_file()
+    assert (fonts_dir / "jetbrains-mono-latin-wght-normal.woff2").is_file()
+
+
+def test_packaging_entry_and_spec_exist():
+    assert (REPO_ROOT / "packaging/entry.py").is_file()
+    spec = (REPO_ROOT / "packaging/learning-loop.spec").read_text(encoding="utf-8")
+    assert "LearningLoop" in spec
+    assert "frontend" in spec
+    build_ps1 = (REPO_ROOT / "packaging/build.ps1").read_text(encoding="utf-8")
+    assert "Windows_NT" in build_ps1
+    assert ".venv-desktop" in build_ps1
+    assert "LearningLoop.exe" in build_ps1
+    assert '"3.12"' in build_ps1
+    assert '"3.13"' in build_ps1
+    assert "3.10+" in build_ps1
+    assert (REPO_ROOT / "packaging/build-macos.sh").is_file()
+    assert (REPO_ROOT / "frontend/icon.ico").is_file()
+    assert (REPO_ROOT / "frontend/icon.png").is_file()

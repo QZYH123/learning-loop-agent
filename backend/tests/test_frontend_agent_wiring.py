@@ -34,3 +34,9 @@ def test_tool_events_render_and_jump_wiring():
     assert "selectBlueprint" in APP_JS
     assert "selectAiDoc" in APP_JS
     assert "refreshAfterToolEvents" in APP_JS
+
+
+def test_app_boots_even_if_domcontentloaded_already_fired():
+    assert "document.readyState === 'loading'" in APP_JS
+    assert "function boot()" in APP_JS
+    assert "new App().init()" in APP_JS

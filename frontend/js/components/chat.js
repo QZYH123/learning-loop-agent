@@ -24,9 +24,13 @@ export function renderChatPane(state, handlers, options = {}) {
     && ['queued', 'generating'].includes(lastMessage?.status);
   const generating = (state.chatOp && ['queued', 'running', 'canceling'].includes(state.chatOp.status))
     || lastAssistantGenerating;
-  const placeholder = options.placeholder || '想学点什么？';
   const style = session?.chat_style || state.draftStyle || 'default';
   const canCompose = !!model && !!state.activeSubjectId;
+  const placeholder = !state.activeSubjectId
+    ? '请先创建科目'
+    : !model
+      ? '请先配置模型'
+      : (options.placeholder || '想学点什么？');
   const collapsed = !!state.sidebarCollapsed[state.workspace === 'learn' ? 'learn' : state.workspace];
   const isBlank = options.variant === 'learn' && !generating && (!session || messages.length === 0);
 

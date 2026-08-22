@@ -24,7 +24,7 @@
 
 ## 字体
 
-- 正文 UI：Plus Jakarta Sans + PingFang/雅黑（`--font`）。
+- 正文 UI：Plus Jakarta Sans（`frontend/vendor/fonts/`，不走 CDN）+ PingFang/雅黑（`--font`）。中文落到系统字体。
 - 衬线（`--font-serif`，Georgia/宋体）只用在三处：题号、空状态标题、学习区空白首屏大标题——书卷气点缀，不扩散。
 - 品牌名用手写体 Patrick Hand（`--font-brand`）。
 - 分数、题号等数字用 `font-variant-numeric: tabular-nums`。
@@ -70,3 +70,4 @@
 
 - 2026-08-19 初版：书桌×纸面体系落地（styles.css 全量重写两轮 + 细节修补）。
 - 2026-08-20 对话 Agent 层：工具轨迹旁注行与操作卡片（色脊呼应目的地工作区）。
+- 2026-08-22 字体改为本地 `frontend/vendor/fonts/`，不再请求 Google Fonts。

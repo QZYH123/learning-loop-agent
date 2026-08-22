@@ -2192,9 +2192,15 @@ class App {
 
   async printExam(examId, edition) {
     const doc = await api.getExamRenderDocument(examId, edition);
-    const popup = window.open('', '_blank');
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('title', '打印');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+    document.body.appendChild(iframe);
+    const popup = iframe.contentWindow;
     if (!popup) {
-      store.addToast('无法打开打印窗口', 'error');
+      iframe.remove();
+      store.addToast('无法打开打印预览', 'error');
       return;
     }
     popup.document.write(`<!doctype html>
@@ -2202,18 +2208,36 @@ class App {
   <head>
     <meta charset="utf-8" />
     <title>${escapeHtml(doc.title || '试卷')}</title>
+    <link rel="stylesheet" href="/vendor/fonts/fonts.css" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
   </head>
   <body data-theme="${escapeHtml(store.state.theme || 'paper')}">${renderExamPrintDocument(doc)}</body>
 </html>`);
     popup.document.close();
+    let printed = false;
     const triggerPrint = () => {
+      if (printed) return;
+      printed = true;
       popup.focus();
       popup.print();
+      setTimeout(() => iframe.remove(), 1000);
     };
-    if (popup.document.readyState === 'complete') triggerPrint();
-    else popup.addEventListener('load', triggerPrint, { once: true });
+    const links = [...popup.document.querySelectorAll('link[rel="stylesheet"]')];
+    if (!links.length) {
+      triggerPrint();
+      return;
+    }
+    let remaining = links.length;
+    const done = () => {
+      remaining -= 1;
+      if (remaining <= 0) triggerPrint();
+    };
+    links.forEach((link) => {
+      link.addEventListener('load', done, { once: true });
+      link.addEventListener('error', done, { once: true });
+    });
+    setTimeout(triggerPrint, 1500);
   }
 
   async exportExam(examId, format, edition) {
@@ -2371,6 +2395,12 @@ function spin() {
   return `<svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/></svg>`;
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+function boot() {
   new App().init();
-});
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+  boot();
+}

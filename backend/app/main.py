@@ -1,6 +1,7 @@
 """FastAPI application assembled from the static HTTP contract."""
 from __future__ import annotations
 
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,12 +38,19 @@ from .pet import PetService
 from .pet_api import create_pet_router
 from .rendering import ExamRenderingService
 from .rendering_api import create_rendering_router
+from .paths import default_data_dir, frontend_dir
 from .sources import MAX_SOURCE_BYTES, SourceLibrary, SourceLibraryError
 from .store import WorkspaceService, WorkspaceStore
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
-FRONTEND_DIR = PROJECT_ROOT / "frontend"
+
+def _ensure_static_mimetypes() -> None:
+    # Windows registry often maps .js to text/plain; Chromium then refuses ES modules.
+    mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("text/javascript", ".mjs")
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("font/woff2", ".woff2")
+    mimetypes.add_type("font/woff", ".woff")
+    mimetypes.add_type("image/svg+xml", ".svg")
 
 
 def _error_response(
@@ -68,7 +76,8 @@ def _error_response(
 
 
 def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now=None) -> FastAPI:
-    data_path = Path(data_dir or os.environ.get("LEARNING_LOOP_DATA_DIR") or DEFAULT_DATA_DIR)
+    _ensure_static_mimetypes()
+    data_path = Path(data_dir or default_data_dir())
     store = WorkspaceStore(data_path / "workspace.json")
     workspace = WorkspaceService(store)
     operations = OperationManager(storage_path=data_path / "operations.json")
@@ -325,9 +334,9 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():
-        return FileResponse(FRONTEND_DIR / "favicon.svg", media_type="image/svg+xml")
+        return FileResponse(frontend_dir() / "favicon.svg", media_type="image/svg+xml")
 
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    app.mount("/", StaticFiles(directory=str(frontend_dir()), html=True), name="frontend")
     return app
 
 
