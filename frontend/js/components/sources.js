@@ -43,7 +43,7 @@ export function sourcesRightHtml(state) {
   const proposal = pendingProposal(state.aiDocumentProposals);
   return `
         <div class="task">
-          ${renderHeader(kind, source, doc, proposal, collapsed)}
+          ${renderHeader(state, kind, source, doc, proposal, collapsed)}
           <div class="local-nav">
             <button type="button" class="seg ${kind === 'files' ? 'is-active' : ''}" data-action="source-kind" data-kind="files">资料</button>
             <button type="button" class="seg ${kind === 'docs' ? 'is-active' : ''}" data-action="source-kind" data-kind="docs">AI 文档</button>
@@ -73,7 +73,7 @@ function expandBtn(collapsed) {
     : '';
 }
 
-function renderHeader(kind, source, doc, proposal, collapsed) {
+function renderHeader(state, kind, source, doc, proposal, collapsed) {
   if (kind === 'docs') {
     if (!doc) {
       return `
@@ -96,7 +96,11 @@ function renderHeader(kind, source, doc, proposal, collapsed) {
             proposal?.status === 'ready'
               ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-doc-proposal" data-id="${proposal.id}">应用修改</button>
                  <button type="button" class="icon-btn" data-action="discard-doc-proposal" data-id="${proposal.id}" title="放弃">${icons.x(15)}</button>`
-              : `<button type="button" class="btn btn-primary btn-sm" data-action="create-ai-doc">生成文档</button>`
+              : `<button type="button" class="btn btn-primary btn-sm" data-action="revise-ai-doc">修改当前</button>
+                 <div class="dropdown">
+                   <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="doc-more" title="更多" aria-expanded="${state.openMenu === 'doc-more'}">${icons.moreHorizontal(15)}</button>
+                   ${state.openMenu === 'doc-more' ? docMoreMenu(doc, state) : ''}
+                 </div>`
           }
         </div>
       </div>`;
@@ -149,26 +153,20 @@ function renderFiles(state, source) {
           ? `<div class="boot"><div>${icons.rotateCw(18, 'spin')}</div><h3>处理中</h3></div>`
           : source.status === 'failed'
             ? `<div class="fail"><h3>处理失败</h3><p>${escapeHtml(source.failure?.message || '')}</p><button type="button" class="btn btn-ghost" data-action="upload-source">重新上传</button></div>`
-            : (state.sourceAnchors || []).length
-              ? `${
-                  (state.sourceVersions || []).length > 1
-                    ? `<p class="item-sub" style="margin-bottom:10px">共 ${(state.sourceVersions || []).length} 个版本，当前 v${
-                        (state.sourceVersions || []).find((item) => item.id === state.sourceViewVersionId)?.number
-                        || source.current_version?.number
-                        || 1
-                      }</p>`
-                    : ''
-                }${state.sourceAnchors
-                  .map(
-                    (anchor, index) => `
+            : `${renderSourceVersions(state, source)}${
+                (state.sourceAnchors || []).length
+                  ? state.sourceAnchors
+                      .map(
+                        (anchor, index) => `
           <section class="anchor" id="anchor-${anchor.id}" data-question-id="">
             <div class="anchor-label">${escapeHtml(sourceAnchorLabel(anchor, index))}</div>
             ${renderBlocks(anchor.content)}
           </section>
         `,
-                  )
-                  .join('')}`
-              : `<div class="empty"><h3>暂无正文</h3></div>`
+                      )
+                      .join('')
+                  : `<div class="empty"><h3>暂无正文</h3></div>`
+              }`
     }
   `;
 }
@@ -178,7 +176,7 @@ function renderDocs(state, doc, proposal) {
   if (!docs.length && !proposal) {
     return `<div class="empty"><h3>还没有文档</h3><button type="button" class="btn btn-primary" data-action="create-ai-doc">生成文档</button></div>`;
   }
-  const version = currentAiVersion(doc);
+  const version = viewedAiVersion(doc, state);
   return `
     ${
       docs.length
@@ -201,8 +199,63 @@ function renderDocs(state, doc, proposal) {
             <div class="diff-col diff-after"><h4>修改预览</h4>${renderBlocks(proposal.changes?.[0]?.after || [])}</div>
           </section>`
         : version
-          ? renderBlocks(version.content)
+          ? `${renderAiDocumentVersions(doc, version)}${renderBlocks(version.content)}`
           : `<div class="empty"><h3>选择一份文档</h3></div>`
     }
   `;
+}
+
+function viewedAiVersion(doc, state) {
+  const versions = doc?.versions || [];
+  return versions.find((item) => item.id === state.aiDocumentViewVersionId) || currentAiVersion(doc);
+}
+
+function docMoreMenu() {
+  return `
+    <div class="menu menu-right" role="menu">
+      <button type="button" class="menu-item" data-action="create-ai-doc">${icons.plus(14)}<span>生成文档</span></button>
+    </div>
+  `;
+}
+
+function renderSourceVersions(state, source) {
+  const versions = (state.sourceVersions || []).slice().sort((a, b) => (b.number || 0) - (a.number || 0));
+  if (versions.length < 2) return '';
+  const currentId = source.current_version?.id;
+  const viewing = state.sourceViewVersionId || currentId;
+  return `
+    <div class="version-row">
+      <span class="solution-label">版本</span>
+      <div class="cite-row">
+        ${versions
+          .map((item) => {
+            const current = item.id === currentId;
+            const active = item.id === viewing;
+            return `<button type="button" class="cite ${active ? 'is-active' : ''}" data-action="view-source-version" data-id="${source.id}" data-version-id="${item.id}">v${item.number}${current ? ' · 当前' : ''}</button>`;
+          })
+          .join('')}
+      </div>
+    </div>`;
+}
+
+function renderAiDocumentVersions(doc, viewing) {
+  const versions = (doc?.versions || []).slice().sort((a, b) => (b.number || 0) - (a.number || 0));
+  if (versions.length < 2) return '';
+  return `
+    <div class="version-row">
+      <span class="solution-label">版本</span>
+      <div class="cite-row">
+        ${versions
+          .map((item) => {
+            const current = item.id === doc.current_version_id;
+            const active = item.id === viewing?.id;
+            return `<button type="button" class="cite ${active ? 'is-active' : ''}" data-action="view-ai-doc-version" data-id="${doc.id}" data-version-id="${item.id}">v${item.number}${current ? ' · 当前' : ''}</button>${
+              !current && active
+                ? `<button type="button" class="btn btn-ghost btn-sm" data-action="restore-ai-doc-version" data-id="${doc.id}" data-version-id="${item.id}">恢复此版</button>`
+                : ''
+            }`;
+          })
+          .join('')}
+      </div>
+    </div>`;
 }

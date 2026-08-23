@@ -10,7 +10,7 @@ import {
   renderBlocks,
   statusLabel,
 } from '../util.js';
-import { attemptElapsedMs, attemptTimerRunning, formatElapsed } from '../attempt-timer.js';
+import { attemptElapsedMs, attemptLimitMs, attemptRemainingMs, attemptTimerRunning, examDurationMinutes, formatElapsed } from '../attempt-timer.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 import { renderMiniCard } from './exam.js';
 import { renderReview, renderSolution } from './solution.js';
@@ -49,7 +49,7 @@ export function attemptRightHtml(state) {
   const attempt = state.activeAttempt;
   return `
         <div class="task">
-          ${tab === 'missed' ? renderMissedHeader(collapsed) : renderHeader(exam, attempt, collapsed)}
+          ${tab === 'missed' ? renderMissedHeader(collapsed) : renderHeader(state, exam, attempt, collapsed)}
           <div class="local-nav">
             <button type="button" class="seg ${tab === 'exams' ? 'is-active' : ''}" data-action="attempt-tab" data-tab="exams">试卷</button>
             <button type="button" class="seg ${tab === 'missed' ? 'is-active' : ''}" data-action="attempt-tab" data-tab="missed">错题</button>
@@ -80,7 +80,7 @@ export function bindAttemptRight(root, handlers, attempt) {
   }
 }
 
-function renderHeader(exam, attempt, collapsed) {
+function renderHeader(state, exam, attempt, collapsed) {
   const expand = collapsed
     ? `<button type="button" class="icon-btn" data-action="collapse-left" title="展开">${icons.panelLeftOpen(15)}</button>`
     : '';
@@ -102,7 +102,12 @@ function renderHeader(exam, attempt, collapsed) {
       </div>
       <div class="pane-actions">
         ${primary}
-        ${attemptTimerHtml(attempt)}
+        ${attemptTimerHtml(state, exam, attempt)}
+        ${
+          attempt?.mode === 'practice' && attempt?.completion_status !== 'completed'
+            ? `<button type="button" class="icon-btn ${attempt.show_suggested_score ? 'is-active' : ''}" data-action="toggle-suggested-score" data-id="${attempt.id}" title="${attempt.show_suggested_score ? '隐藏建议分' : '显示建议分'}" aria-label="${attempt.show_suggested_score ? '隐藏建议分' : '显示建议分'}">${icons.tag(15)}</button>`
+            : ''
+        }
         ${
           attempt?.status === 'in-progress' && attempt?.completion_status !== 'completed'
             ? `<button type="button" class="icon-btn" data-action="pause-attempt" data-id="${attempt.id}" title="暂停">${icons.pause(15)}</button>`
@@ -165,10 +170,16 @@ function renderMissed(state) {
     .join('');
 }
 
-function attemptTimerHtml(attempt) {
+function attemptTimerHtml(state, exam, attempt) {
   if (!attempt) return '';
   const running = attemptTimerRunning(attempt);
-  return `<span class="attempt-timer" data-attempt-timer data-elapsed-ms="${Number(attempt.elapsed_ms) || 0}" data-timing-started-at="${attempt.timing_started_at || ''}" data-running="${running ? '1' : '0'}" title="作答用时">${formatElapsed(attemptElapsedMs(attempt))}</span>`;
+  const minutes = examDurationMinutes(exam || state.exams.find((item) => item.id === attempt.exam_id), state.blueprints);
+  const limitMs = attempt.mode === 'exam' ? attemptLimitMs(minutes) : 0;
+  const remaining = limitMs ? attemptRemainingMs(attempt, limitMs) : null;
+  const display = remaining == null ? formatElapsed(attemptElapsedMs(attempt)) : formatElapsed(remaining);
+  const title = remaining == null ? '作答用时' : '剩余时间';
+  const hint = attempt.mode === 'practice' && minutes ? `<span class="item-sub">建议 ${minutes} 分钟</span>` : '';
+  return `<span class="attempt-timer ${limitMs ? 'is-countdown' : ''}" data-attempt-timer data-elapsed-ms="${Number(attempt.elapsed_ms) || 0}" data-timing-started-at="${attempt.timing_started_at || ''}" data-running="${running ? '1' : '0'}" data-limit-ms="${limitMs || ''}" title="${title}">${display}</span>${hint}`;
 }
 
 function isOpenAttempt(item) {

@@ -20,6 +20,7 @@ import {
   examLeftHtml,
   examRightHtml,
   examShellHtml,
+  questionFromEditor,
   renderExamPrintDocument,
 } from './components/exam.js';
 import {
@@ -39,12 +40,14 @@ import {
   officialSelection,
   readySourceVersionIds,
   defaultGroundingMode,
+  nextOptionId,
   sessionVisible,
   titleFromMessage,
   draftPublishState,
   sanitizeErrorMessage,
+  textToMarkdownBlocks,
 } from './util.js';
-import { formatElapsed } from './attempt-timer.js';
+import { attemptLimitMs, attemptRemainingMs, examDurationMinutes, formatElapsed } from './attempt-timer.js';
 import { initPet, petNotify } from './pet.js';
 
 class App {
@@ -165,7 +168,12 @@ class App {
         store.setState({ workspace: id, openMenu: null });
         if (id === 'attempt') this.loadMissedQuestions();
       },
-      onToggleMenu: (name) => store.setState({ openMenu: store.state.openMenu === name ? null : name }),
+      onToggleMenu: (name) => store.setState({
+        openMenu: store.state.openMenu === name ? null : name,
+        menuFocusIndex: -1,
+      }),
+      onOpenRuns: () => this.openRuns(),
+      onRunEvaluation: (id) => this.runEvaluation(id),
       onToggleTheme: () => store.setTheme(store.state.theme === 'paper' ? 'chalkboard' : 'paper'),
       onOpenModal: (modal) => store.setState({
         modal,
@@ -347,6 +355,7 @@ class App {
     this.restoreUi();
     this.bindRename();
     this.startAttemptTimer();
+    this.highlightMenuFocus();
     this.watchGeneratingMessages();
   }
 
@@ -397,8 +406,11 @@ class App {
       const elapsed = Number(el.dataset.elapsedMs) || 0;
       const started = el.dataset.timingStartedAt ? Number(el.dataset.timingStartedAt) : 0;
       const running = el.dataset.running === '1';
+      const limitMs = Number(el.dataset.limitMs) || 0;
       const ms = running && started ? elapsed + Math.max(0, Date.now() - started) : elapsed;
-      el.textContent = formatElapsed(ms);
+      const remaining = limitMs ? Math.max(0, limitMs - ms) : null;
+      el.textContent = formatElapsed(remaining == null ? ms : remaining);
+      if (limitMs && running && remaining === 0) this.expireExamAttempt();
     };
     tick();
     if (document.querySelector('[data-attempt-timer][data-running="1"]')) {
@@ -421,7 +433,12 @@ class App {
         store.setState({ workspace: target.dataset.workspace, openMenu: null });
         if (target.dataset.workspace === 'attempt') await this.loadMissedQuestions();
       }
-      else if (action === 'toggle-menu') store.setState({ openMenu: store.state.openMenu === target.dataset.menu ? null : target.dataset.menu });
+      else if (action === 'toggle-menu') {
+        store.setState({
+          openMenu: store.state.openMenu === target.dataset.menu ? null : target.dataset.menu,
+          menuFocusIndex: -1,
+        });
+      } else if (action === 'open-runs') await this.openRuns();
       else if (action === 'mobile-pane') this.setMobilePane(target.dataset.pane);
       else if (action === 'collapse-left') store.toggleSidebar(store.state.workspace);
       else if (action === 'create-session') await this.createSession();
@@ -462,6 +479,10 @@ class App {
       else if (action === 'delete-source') await this.deleteSource(id);
       else if (action === 'select-ai-doc') await this.selectAiDoc(id);
       else if (action === 'create-ai-doc') await this.createAiDocumentFromPrompt();
+      else if (action === 'revise-ai-doc') this.reviseCurrentAiDocument();
+      else if (action === 'view-source-version') await this.loadSourceDetail(id, target.dataset.versionId);
+      else if (action === 'view-ai-doc-version') store.setState({ aiDocumentViewVersionId: target.dataset.versionId });
+      else if (action === 'restore-ai-doc-version') await this.restoreAiDocumentVersion(id, target.dataset.versionId);
       else if (action === 'apply-doc-proposal') await this.applyDocProposal(id);
       else if (action === 'discard-doc-proposal') await this.discardDocProposal(id);
       else if (action === 'exam-tab') store.setState({ examTab: target.dataset.tab });
@@ -490,6 +511,8 @@ class App {
       }
       else if (action === 'create-blueprint') await this.createDefaultBlueprint();
       else if (action === 'remove-blueprint-point') await this.removeBlueprintPoint(id, target.dataset.index);
+      else if (action === 'add-plan-row') await this.addBlueprintPlanRow(id);
+      else if (action === 'remove-plan-row') await this.removeBlueprintPlanRow(id, target.dataset.index);
       else if (action === 'confirm-blueprint') await this.confirmBlueprint(id);
       else if (action === 'generate-draft') await this.generateDraft(id);
       else if (action === 'select-draft') await this.selectDraft(id);
@@ -499,9 +522,18 @@ class App {
       }
       else if (action === 'open-question-revise') {
         if (this.revising || store.state.draftQuestionBusyId) return;
-        store.setState({ draftQuestionEditId: id, draftQuestionPrompt: '' });
+        store.setState({ draftQuestionEditId: id, draftQuestionPrompt: '', draftHandEditId: null });
         queueMicrotask(() => document.getElementById('question-revise-input')?.focus());
-      } else if (action === 'cancel-question-revise') {
+      } else if (action === 'toggle-question-edit') {
+        store.setState({
+          draftHandEditId: store.state.draftHandEditId === id ? null : id,
+          draftQuestionEditId: null,
+        });
+      } else if (action === 'save-question-edit') await this.saveDraftQuestionEdit(target.dataset.draftId, id);
+      else if (action === 'add-option') this.addDraftOption(id);
+      else if (action === 'move-question') await this.moveDraftQuestion(target.dataset.draftId, id, Number(target.dataset.delta));
+      else if (action === 'delete-question') await this.deleteDraftQuestion(target.dataset.draftId, id);
+      else if (action === 'cancel-question-revise') {
         if (this.revising) return;
         store.setState({ draftQuestionEditId: null, draftQuestionPrompt: '' });
       } else if (action === 'revise-question') {
@@ -522,6 +554,8 @@ class App {
       else if (action === 'discard-exam-proposal') await this.discardExamProposal(id);
       else if (action === 'undo-exam') await this.undoExam(id);
       else if (action === 'redo-exam') await this.redoExam(id);
+      else if (action === 'restore-exam-version') await this.restoreExamVersion(id, target.dataset.versionId);
+      else if (action === 'toggle-suggested-score') await this.toggleSuggestedScore(id);
       else if (action === 'print-exam') this.askExamEdition(id, 'print');
       else if (action === 'export-exam-pdf') this.askExamEdition(id, 'pdf');
       else if (action === 'export-exam-markdown') this.askExamEdition(id, 'markdown');
@@ -571,8 +605,11 @@ class App {
     const id = target.dataset.id;
     const index = Number(target.dataset.index);
     try {
-      if (action === 'plan-count' || action === 'plan-score') {
-        await this.updateBlueprintPlan(id, index, action === 'plan-count' ? 'count' : 'score_each', target.value);
+      if (action === 'plan-count' || action === 'plan-score' || action === 'plan-type' || action === 'plan-difficulty') {
+        const field = action === 'plan-count' ? 'count' : action === 'plan-score' ? 'score_each' : action === 'plan-type' ? 'type' : 'difficulty';
+        await this.updateBlueprintPlan(id, index, field, target.value);
+      } else if (action === 'plan-duration') {
+        await this.updateBlueprintDuration(id, target.value);
       } else if (action === 'toggle-missed-point') {
         const point = target.dataset.point;
         const selected = new Set(store.state.missedSelectedPoints || []);
@@ -592,12 +629,15 @@ class App {
   }
 
   onKeyDown(event) {
+    if (this.handleMenuKeys(event)) return;
     if (event.key === 'Escape') {
       store.setState({
         openMenu: null,
         modal: null,
         draftQuestionEditId: null,
+        draftHandEditId: null,
         draftQuestionPrompt: '',
+        menuFocusIndex: -1,
       });
       return;
     }
@@ -631,6 +671,7 @@ class App {
     else if (action === 'delete-draft') await this.deleteDraftConfirmed(store.state.confirmDraftId);
     else if (action === 'delete-exam') await this.deleteExamConfirmed(store.state.confirmExamId);
     else if (action === 'publish-draft') await this.publishDraftConfirmed(store.state.confirmDraftId, true);
+    else if (action === 'delete-question') await this.deleteDraftQuestionConfirmed(store.state.confirmDraftId, store.state.confirmQuestionId);
   }
 
   setMobilePane(pane) {
@@ -1761,8 +1802,90 @@ class App {
   }
 
   async selectAiDoc(docId) {
-    store.setState({ activeAiDocumentId: docId, sourceKind: 'docs' });
+    store.setState({ activeAiDocumentId: docId, sourceKind: 'docs', aiDocumentViewVersionId: null });
     await this.loadAiDocDetail(docId);
+  }
+
+  reviseCurrentAiDocument() {
+    this.focusComposer();
+    const text = store.state.composerText.trim();
+    if (!text.startsWith('/改文档')) store.setState({ composerText: text ? `/改文档 ${text}` : '/改文档 ' });
+  }
+
+  async restoreAiDocumentVersion(documentId, versionId) {
+    await api.restoreAiDocumentVersion(documentId, versionId);
+    store.setState({ aiDocumentViewVersionId: null });
+    await this.loadAiDocDetail(documentId);
+    store.addToast('已恢复版本', 'success');
+  }
+
+  async openRuns() {
+    store.setState({ modal: 'runs', openMenu: null });
+    try {
+      const [runs, suites] = await Promise.all([
+        api.listOrchestrationRuns({ subject_id: store.state.activeSubjectId || undefined }),
+        api.listEvaluationSuites().catch(() => ({ items: [] })),
+      ]);
+      store.setState({
+        orchestrationRuns: runs.items || [],
+        evaluationSuites: suites.items || [],
+      });
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  async runEvaluation(suiteId) {
+    const modelId = store.state.currentModelId;
+    if (!modelId) return store.addToast('请先配置模型', 'error');
+    store.setState({ runsBusy: suiteId });
+    try {
+      const accepted = await api.runEvaluationSuite(suiteId, { model_id: modelId });
+      store.trackOperation(accepted.operation);
+      await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+      const runId = accepted.resource?.id || accepted.operation?.resource?.id;
+      const evaluation = runId ? await api.getEvaluationRun(runId) : null;
+      const runs = await api.listOrchestrationRuns({ subject_id: store.state.activeSubjectId || undefined });
+      store.setState({
+        evaluationRun: evaluation,
+        orchestrationRuns: runs.items || [],
+        runsBusy: null,
+      });
+      store.addToast('评估完成', 'success');
+    } catch (err) {
+      store.setState({ runsBusy: null });
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    }
+  }
+
+  handleMenuKeys(event) {
+    if (!store.state.openMenu) return false;
+    if (!['ArrowDown', 'ArrowUp', 'Enter', 'Home', 'End'].includes(event.key)) return false;
+    const menu = document.querySelector('.menu[role="menu"]');
+    if (!menu) return false;
+    const items = [...menu.querySelectorAll('.menu-item:not([disabled])')];
+    if (!items.length) return false;
+    event.preventDefault();
+    let index = store.state.menuFocusIndex;
+    if (event.key === 'ArrowDown') index = index < 0 ? 0 : (index + 1) % items.length;
+    else if (event.key === 'ArrowUp') index = index <= 0 ? items.length - 1 : index - 1;
+    else if (event.key === 'Home') index = 0;
+    else if (event.key === 'End') index = items.length - 1;
+    else if (event.key === 'Enter' && index >= 0) {
+      items[index]?.click();
+      return true;
+    }
+    store.setState({ menuFocusIndex: index });
+    return true;
+  }
+
+  highlightMenuFocus() {
+    if (!store.state.openMenu) return;
+    const menu = document.querySelector('.menu[role="menu"]');
+    if (!menu) return;
+    const items = [...menu.querySelectorAll('.menu-item:not([disabled])')];
+    items.forEach((item, index) => item.classList.toggle('is-focused', index === store.state.menuFocusIndex));
+    items[store.state.menuFocusIndex]?.scrollIntoView({ block: 'nearest' });
   }
 
   async loadAiDocDetail(docId) {
@@ -1932,6 +2055,7 @@ class App {
       drafts: store.state.drafts.map((item) => (item.id === id ? draft : item)),
       examTab: 'draft',
       draftQuestionEditId: id === store.state.activeDraftId ? store.state.draftQuestionEditId : null,
+      draftHandEditId: id === store.state.activeDraftId ? store.state.draftHandEditId : null,
       draftQuestionPrompt: id === store.state.activeDraftId ? store.state.draftQuestionPrompt : '',
     });
     await this.loadDraftProposals(id).catch(() => store.setState({ draftProposals: [] }));
@@ -1941,17 +2065,110 @@ class App {
   async updateBlueprintPlan(blueprintId, index, field, rawValue) {
     const current = store.state.blueprints.find((item) => item.id === blueprintId);
     if (!current || current.status !== 'draft') return;
-    const plan = (current.question_plan || []).map((row, rowIndex) => ({ ...row }));
+    const plan = (current.question_plan || []).map((row) => ({ ...row }));
     if (!plan[index]) return;
-    const value = Number(rawValue);
-    if (!Number.isFinite(value) || value <= 0) return;
-    plan[index][field] = field === 'count' ? Math.max(1, Math.round(value)) : value;
+    if (field === 'type' || field === 'difficulty') {
+      plan[index][field] = rawValue;
+    } else {
+      const value = Number(rawValue);
+      if (!Number.isFinite(value) || value <= 0) return;
+      plan[index][field] = field === 'count' ? Math.max(1, Math.round(value)) : value;
+    }
     const total = plan.reduce((sum, row) => sum + row.count * row.score_each, 0);
-    await api.updateBlueprint(blueprintId, { question_plan: plan, total_score: total });
+    await this.commitBlueprint(blueprintId, { question_plan: plan, total_score: total });
+  }
+
+  async updateBlueprintDuration(blueprintId, rawValue) {
+    const current = store.state.blueprints.find((item) => item.id === blueprintId);
+    if (!current || current.status !== 'draft') return;
+    const trimmed = String(rawValue || '').trim();
+    const duration = trimmed === '' ? null : Number(trimmed);
+    if (duration != null && (!Number.isFinite(duration) || duration < 1)) return;
+    await this.commitBlueprint(blueprintId, { duration_minutes: duration });
+  }
+
+  async addBlueprintPlanRow(blueprintId) {
+    const current = store.state.blueprints.find((item) => item.id === blueprintId);
+    if (!current || current.status !== 'draft') return;
+    const plan = [...(current.question_plan || []), { type: 'single-choice', count: 2, difficulty: 'medium', score_each: 2 }];
+    const total = plan.reduce((sum, row) => sum + row.count * row.score_each, 0);
+    await this.commitBlueprint(blueprintId, { question_plan: plan, total_score: total });
+  }
+
+  async removeBlueprintPlanRow(blueprintId, index) {
+    const current = store.state.blueprints.find((item) => item.id === blueprintId);
+    if (!current || current.status !== 'draft') return;
+    const plan = (current.question_plan || []).filter((_, rowIndex) => rowIndex !== Number(index));
+    if (!plan.length) return;
+    const total = plan.reduce((sum, row) => sum + row.count * row.score_each, 0);
+    await this.commitBlueprint(blueprintId, { question_plan: plan, total_score: total });
+  }
+
+  async commitBlueprint(blueprintId, patch) {
+    await api.updateBlueprint(blueprintId, patch);
     const detail = await api.getBlueprint(blueprintId);
     store.setState({
       blueprints: store.state.blueprints.map((item) => (item.id === blueprintId ? detail : item)),
     });
+  }
+
+  async saveDraftQuestionEdit(draftId, questionId) {
+    const form = document.querySelector(`[data-question-edit="${questionId}"]`);
+    const draft = store.state.drafts.find((item) => item.id === draftId);
+    const slot = draft?.questions?.find((item) => item.id === questionId);
+    if (!form || !slot?.question) return;
+    const payload = questionFromEditor(slot.question, form);
+    await api.replaceDraftQuestion(draftId, questionId, payload);
+    store.setState({ draftHandEditId: null });
+    await this.selectDraft(draftId);
+    store.addToast('已保存', 'success');
+  }
+
+  addDraftOption(slotId) {
+    const form = document.querySelector(`[data-question-edit="${slotId}"]`);
+    const drafts = store.state.drafts.map((draft) => {
+      if (draft.id !== store.state.activeDraftId) return draft;
+      return {
+        ...draft,
+        questions: (draft.questions || []).map((slot) => {
+          if (slot.id !== slotId || !slot.question) return slot;
+          const question = form ? questionFromEditor(slot.question, form) : slot.question;
+          const options = [...(question.options || [])];
+          const id = nextOptionId(options);
+          options.push({ id, content: textToMarkdownBlocks('') });
+          return { ...slot, question: { ...question, options } };
+        }),
+      };
+    });
+    store.setState({ drafts });
+  }
+
+  async moveDraftQuestion(draftId, questionId, delta) {
+    const draft = store.state.drafts.find((item) => item.id === draftId);
+    const ids = (draft?.questions || []).map((item) => item.id);
+    const index = ids.indexOf(questionId);
+    const next = index + delta;
+    if (index < 0 || next < 0 || next >= ids.length) return;
+    [ids[index], ids[next]] = [ids[next], ids[index]];
+    await api.updateDraft(draftId, { question_order: ids });
+    await this.selectDraft(draftId);
+  }
+
+  async deleteDraftQuestion(draftId, questionId) {
+    store.setState({ confirmDraftId: draftId, confirmQuestionId: questionId });
+    this.askConfirm({
+      title: '删题',
+      message: '将从这份草稿删除这道题。',
+      ok: '删除',
+      action: 'delete-question',
+    });
+  }
+
+  async deleteDraftQuestionConfirmed(draftId, questionId) {
+    if (!draftId || !questionId) return;
+    await api.deleteDraftQuestion(draftId, questionId);
+    store.setState({ draftHandEditId: null, confirmDraftId: null, confirmQuestionId: null });
+    await this.selectDraft(draftId);
   }
 
   watchDraft() {
@@ -2121,10 +2338,15 @@ class App {
   }
 
   async loadExamDetail(examId) {
-    const [exam, proposals] = await Promise.all([api.getExam(examId), api.listRevisionProposals(examId)]);
+    const [exam, proposals, versions] = await Promise.all([
+      api.getExam(examId),
+      api.listRevisionProposals(examId),
+      api.listExamVersions(examId).catch(() => ({ items: [] })),
+    ]);
     store.setState({
       exams: store.state.exams.map((item) => (item.id === examId ? exam : item)),
       examProposals: proposals.items || [],
+      examVersions: versions.items || [],
     });
   }
 
@@ -2155,6 +2377,38 @@ class App {
   async redoExam(id) {
     const exam = await api.redoExamChange(id);
     store.setState({ exams: store.state.exams.map((item) => (item.id === id ? exam : item)) });
+  }
+
+  async restoreExamVersion(examId, versionId) {
+    const exam = store.state.exams.find((item) => item.id === examId);
+    if (!versionId || versionId === exam?.current_version_id) return;
+    await api.restoreExamVersion(examId, versionId);
+    await this.loadExamDetail(examId);
+    store.addToast('已恢复版本', 'success');
+  }
+
+  async toggleSuggestedScore(attemptId) {
+    const attempt = store.state.activeAttempt;
+    if (!attempt || attempt.id !== attemptId) return;
+    const updated = await api.updateAttempt(attemptId, { show_suggested_score: !attempt.show_suggested_score });
+    store.setState({ activeAttempt: updated });
+  }
+
+  async expireExamAttempt() {
+    const attempt = store.state.activeAttempt;
+    if (!attempt || this.expiringAttempt || attempt.completion_status === 'completed') return;
+    const exam = store.state.exams.find((item) => item.id === attempt.exam_id);
+    const minutes = examDurationMinutes(exam, store.state.blueprints);
+    const remaining = attemptRemainingMs(attempt, attemptLimitMs(minutes));
+    if (remaining !== 0) return;
+    this.expiringAttempt = true;
+    try {
+      await this.completeAttempt(attempt.id, { timedOut: true });
+    } catch (err) {
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
+    } finally {
+      this.expiringAttempt = false;
+    }
   }
 
   askExamEdition(examId, action) {
@@ -2266,7 +2520,7 @@ class App {
   }
 
   async startAttempt(examId, mode) {
-    const attempt = await api.createAttempt(examId, { mode, show_suggested_score: mode === 'practice' });
+    const attempt = await api.createAttempt(examId, { mode, show_suggested_score: false });
     store.setState({
       activeExamId: examId,
       startAnotherOpen: false,
@@ -2347,10 +2601,10 @@ class App {
     }
   }
 
-  async completeAttempt(id) {
+  async completeAttempt(id, { timedOut = false } = {}) {
     await api.completeAttempt(id);
     await this.refreshAttempt(id);
-    store.addToast('已完成作答', 'success');
+    store.addToast(timedOut ? '时间到，已完成作答' : '已完成作答', 'success');
     petNotify('attempt-completed');
   }
 

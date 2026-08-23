@@ -55,6 +55,7 @@ export const LUCIDE_ICONS = {
   list: `<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>`,
   chevronRight: `<polyline points="9 18 15 12 9 6"/>`,
   chevronDown: `<polyline points="6 9 12 15 18 9"/>`,
+  chevronUp: `<polyline points="18 15 12 9 6 15"/>`,
   chevronLeft: `<polyline points="15 18 9 12 15 6"/>`,
   folder: `<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>`,
   code: `<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>`,

@@ -82,12 +82,12 @@ function modelsDialogHtml(state) {
           <label class="field"><span class="field-label">API 格式</span>
             <input type="hidden" name="api_format" value="${escapeHtml(form.api_format)}" />
             <div class="dropdown field-dropdown">
-              <button type="button" class="select select-trigger" data-action="toggle-format" title="${escapeHtml(formatMeta.hint)}">
+              <button type="button" class="select select-trigger" data-action="toggle-format" title="${escapeHtml(formatMeta.hint)}" aria-expanded="false">
                 <span class="select-value">${escapeHtml(formatMeta.label)}</span>
                 ${icons.chevronDown(14)}
               </button>
-              <div class="menu format-menu" hidden>
-                ${API_FORMATS.map((item) => `<button type="button" class="menu-item ${item.id === form.api_format ? 'is-active' : ''}" data-action="pick-format" data-format="${escapeHtml(item.id)}"><span>${escapeHtml(item.label)}</span></button>`).join('')}
+              <div class="menu format-menu" role="menu" hidden>
+                ${API_FORMATS.map((item) => `<button type="button" class="menu-item ${item.id === form.api_format ? 'is-active' : ''}" role="menuitem" data-action="pick-format" data-format="${escapeHtml(item.id)}"><span>${escapeHtml(item.label)}</span></button>`).join('')}
               </div>
             </div>
             <span class="field-hint" data-format-hint>${escapeHtml(formatMeta.hint)}，示例 ${escapeHtml(formatMeta.baseUrl)}</span>
@@ -115,6 +115,7 @@ function modelsDialogHtml(state) {
         }
         ${state.discoverError ? `<p class="model-error">${escapeHtml(state.discoverError)}</p>` : ''}
         <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" data-action="open-runs">运行记录</button>
           <button type="button" class="btn btn-ghost" data-action="discover-models" ${busy ? 'disabled' : ''}>${busy === 'discover' ? '发现中' : '发现模型'}</button>
           <button type="button" class="btn btn-ghost" data-action="close">关闭</button>
           <button type="button" class="btn btn-primary" data-action="save-model" ${busy ? 'disabled' : ''}>${editingId ? '保存' : '添加'}</button>
@@ -157,6 +158,31 @@ function bindModelDialog(root, state, handlers) {
   const syncForm = () => handlers.onModelFormChange(readForm(formEl));
   formEl.addEventListener('change', syncForm);
   formEl.addEventListener('input', syncForm);
+  overlay.addEventListener('keydown', (event) => {
+    if (formatMenu?.hidden !== false) return;
+    const items = [...formatMenu.querySelectorAll('.menu-item')];
+    const focused = items.findIndex((item) => item.classList.contains('is-focused'));
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      formatMenu.hidden = true;
+      formatTrigger?.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      items.forEach((item) => item.classList.remove('is-focused'));
+      const next = event.key === 'ArrowDown'
+        ? (focused + 1) % items.length
+        : (focused <= 0 ? items.length - 1 : focused - 1);
+      items[next]?.classList.add('is-focused');
+      items[next]?.focus();
+      return;
+    }
+    if (event.key === 'Enter' && focused >= 0) {
+      event.preventDefault();
+      items[focused]?.click();
+    }
+  });
 
   let closeArmed = false;
   overlay.addEventListener('pointerdown', (event) => {
@@ -167,7 +193,14 @@ function bindModelDialog(root, state, handlers) {
     const action = event.target.closest('[data-action]')?.dataset.action;
     const id = event.target.closest('[data-id]')?.dataset.id;
     if (action === 'toggle-format') {
-      if (formatMenu) formatMenu.hidden = !formatMenu.hidden;
+      if (formatMenu) {
+        formatMenu.hidden = !formatMenu.hidden;
+        formatTrigger?.setAttribute('aria-expanded', formatMenu.hidden ? 'false' : 'true');
+      }
+      return;
+    }
+    if (action === 'open-runs') {
+      handlers.onOpenRuns();
       return;
     }
     if (action === 'pick-format') {

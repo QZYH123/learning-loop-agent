@@ -1,16 +1,20 @@
 import { icons } from '../icons.js';
 import {
   DIFFICULTY,
+  QUESTION_TYPE_ORDER,
   QUESTION_TYPES,
+  blocksArePlainText,
   blocksToText,
   escapeHtml,
   formatTime,
   pendingProposal,
   renderBlocks,
+  renderMarkdown,
   statusLabel,
-  truncate,
   sanitizeErrorMessage,
   draftPublishState,
+  textToMarkdownBlocks,
+  truncate,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 import { formatKey, renderSolution } from './solution.js';
@@ -141,12 +145,13 @@ function examMoreMenu(exam, state) {
       ${
         state.openMenu === 'exam-more'
           ? `<div class="menu menu-right" role="menu">
-              <button type="button" class="menu-item" data-action="print-exam" data-id="${exam.id}">${icons.printer(14)}<span>打印</span></button>
-              <button type="button" class="menu-item" data-action="export-exam-pdf" data-id="${exam.id}">${icons.download(14)}<span>导出 PDF</span></button>
-              <button type="button" class="menu-item" data-action="export-exam-markdown" data-id="${exam.id}">${icons.fileText(14)}<span>导出 Markdown</span></button>
+              <button type="button" class="menu-item" role="menuitem" data-action="print-exam" data-id="${exam.id}">${icons.printer(14)}<span>打印</span></button>
+              <button type="button" class="menu-item" role="menuitem" data-action="export-exam-pdf" data-id="${exam.id}">${icons.download(14)}<span>导出 PDF</span></button>
+              <button type="button" class="menu-item" role="menuitem" data-action="export-exam-markdown" data-id="${exam.id}">${icons.fileText(14)}<span>导出 Markdown</span></button>
               ${exam.can_undo || exam.can_redo ? '<div class="menu-split"></div>' : ''}
-              ${exam.can_undo ? `<button type="button" class="menu-item" data-action="undo-exam" data-id="${exam.id}">${icons.undo(14)}<span>撤销</span></button>` : ''}
-              ${exam.can_redo ? `<button type="button" class="menu-item" data-action="redo-exam" data-id="${exam.id}">${icons.redo(14)}<span>重做</span></button>` : ''}
+              ${exam.can_undo ? `<button type="button" class="menu-item" role="menuitem" data-action="undo-exam" data-id="${exam.id}">${icons.undo(14)}<span>撤销</span></button>` : ''}
+              ${exam.can_redo ? `<button type="button" class="menu-item" role="menuitem" data-action="redo-exam" data-id="${exam.id}">${icons.redo(14)}<span>重做</span></button>` : ''}
+              ${examVersionMenu(exam, state)}
             </div>`
           : ''
       }
@@ -196,26 +201,81 @@ function renderBlueprint(state, blueprint) {
                 ${renderSyllabus(blueprint)}
                 <div class="plan">
                   ${(blueprint.question_plan || [])
-                    .map(
-                      (row, index) => `
-                    <div class="plan-row">
-                      <strong>${QUESTION_TYPES[row.type] || row.type}</strong>
-                      <span>${DIFFICULTY[row.difficulty] || row.difficulty}</span>
-                      ${
-                        blueprint.status === 'draft'
-                          ? `<input class="input" type="number" min="1" value="${row.count}" data-action="plan-count" data-id="${blueprint.id}" data-index="${index}" title="题量" />
-                             <input class="input" type="number" min="1" step="0.5" value="${row.score_each}" data-action="plan-score" data-id="${blueprint.id}" data-index="${index}" title="每题分值" />`
-                          : `<span>${row.count} 题</span><span>${row.score_each} 分</span>`
-                      }
-                    </div>
-                  `,
-                    )
+                    .map((row, index) => renderPlanRow(blueprint, row, index))
                     .join('')}
                 </div>
-                <p class="item-sub" style="margin-top:10px">总分 ${blueprint.total_score}${blueprint.duration_minutes ? ` · ${blueprint.duration_minutes} 分钟` : ''}</p>
+                ${
+                  blueprint.status === 'draft'
+                    ? `<button type="button" class="btn btn-ghost btn-sm" data-action="add-plan-row" data-id="${blueprint.id}" style="margin-top:8px">${icons.plus(14)} 题型</button>`
+                    : ''
+                }
+                <p class="item-sub" style="margin-top:10px">总分 ${blueprint.total_score}</p>
+                ${renderDurationField(blueprint)}
               </div>`
     }
   `;
+}
+
+function examVersionMenu(exam, state) {
+  const versions = (state.examVersions || []).slice().sort((a, b) => (b.number || 0) - (a.number || 0));
+  if (versions.length < 2) return '';
+  const actor = { user: '人工', ai: 'AI', restore: '恢复', undo: '撤销', redo: '重做' };
+  return `
+    <div class="menu-split"></div>
+    <div class="menu-title">版本</div>
+    ${versions
+      .map((item) => {
+        const current = item.id === exam.current_version_id;
+        return `<button type="button" class="menu-item ${current ? 'is-active' : ''}" role="menuitem" data-action="restore-exam-version" data-id="${exam.id}" data-version-id="${item.id}" ${current ? 'disabled' : ''} title="${escapeHtml(item.summary || '')}">
+          <span>v${item.number} · ${actor[item.actor] || item.actor}${current ? ' · 当前' : ''}</span>
+        </button>`;
+      })
+      .join('')}
+  `;
+}
+
+function renderPlanRow(blueprint, row, index) {
+  const draft = blueprint.status === 'draft';
+  const canRemove = draft && (blueprint.question_plan || []).length > 1;
+  if (!draft) {
+    return `
+      <div class="plan-row">
+        <strong>${QUESTION_TYPES[row.type] || row.type}</strong>
+        <span>${DIFFICULTY[row.difficulty] || row.difficulty}</span>
+        <span>${row.count} 题</span>
+        <span>${row.score_each} 分</span>
+      </div>`;
+  }
+  return `
+    <div class="plan-row is-editing">
+      <select class="input" data-action="plan-type" data-id="${blueprint.id}" data-index="${index}" title="题型">
+        ${QUESTION_TYPE_ORDER.map((type) => `<option value="${type}" ${row.type === type ? 'selected' : ''}>${QUESTION_TYPES[type]}</option>`).join('')}
+      </select>
+      <select class="input" data-action="plan-difficulty" data-id="${blueprint.id}" data-index="${index}" title="难度">
+        ${Object.entries(DIFFICULTY).map(([id, label]) => `<option value="${id}" ${row.difficulty === id ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+      <input class="input" type="number" min="1" value="${row.count}" data-action="plan-count" data-id="${blueprint.id}" data-index="${index}" title="题量" />
+      <input class="input" type="number" min="1" step="0.5" value="${row.score_each}" data-action="plan-score" data-id="${blueprint.id}" data-index="${index}" title="每题分值" />
+      ${
+        canRemove
+          ? `<button type="button" class="icon-btn" data-action="remove-plan-row" data-id="${blueprint.id}" data-index="${index}" title="删除题型">${icons.x(14)}</button>`
+          : '<span></span>'
+      }
+    </div>`;
+}
+
+function renderDurationField(blueprint) {
+  if (blueprint.status === 'draft') {
+    return `
+      <label class="field duration-field">
+        <span class="field-label">建议用时</span>
+        <input class="input" type="number" min="1" placeholder="分钟，可空" value="${blueprint.duration_minutes || ''}" data-action="plan-duration" data-id="${blueprint.id}" title="建议用时" />
+        <span class="item-sub">分钟</span>
+      </label>`;
+  }
+  return blueprint.duration_minutes
+    ? `<p class="item-sub">建议用时 ${blueprint.duration_minutes} 分钟</p>`
+    : '';
 }
 
 function renderSyllabus(blueprint) {
@@ -270,32 +330,46 @@ function renderDraft(state, draft) {
       !draft
         ? `<div class="empty"><h3>选择一份草稿</h3></div>`
         : `${
-            proposal?.status === 'ready'
-              ? `<section class="diff">
-            ${(proposal.changes || [])
-              .map(
-                (change) => `
-              <div class="diff-col diff-before"><h4>当前</h4><p>${escapeHtml(stringifyChange(change.before))}</p></div>
-              <div class="diff-col diff-after"><h4>修改预览${change.summary ? ` · ${escapeHtml(change.summary)}` : ''}</h4><p>${escapeHtml(stringifyChange(change.after))}</p></div>
-            `,
-              )
-              .join('')}
-          </section>`
-              : ''
+            proposal?.status === 'ready' ? renderProposalDiff(proposal) : ''
           }${(draft.questions || [])
             .map((slot) => {
               const q = slot.question;
               const retryable = slot.status === 'failed' || slot.status === 'needs-review';
+              const editing = state.draftHandEditId === slot.id;
+              const canEdit = draft.status === 'editable' && q && !proposal;
+              const slots = draft.questions || [];
               return `
           <article class="q" data-question-id="${slot.id}">
             <div class="q-head">
               <span>${slot.ordinal}.</span>
               <span>${QUESTION_TYPES[slot.planned_type] || slot.planned_type}</span>
               <span class="status ${slot.status === 'complete' ? 'status-ok' : slot.status === 'failed' ? 'status-bad' : 'status-warn'}">${statusLabel('draft', slot.status)}</span>
-              ${retryable ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试" ${state.retryingQuestionId === slot.id || slot.status === 'generating' || slot.status === 'queued' ? 'disabled' : ''}>${icons.rotateCw(14)}</button>` : ''}
+              ${
+                canEdit
+                  ? `<div class="q-ops">
+                      <button type="button" class="icon-btn" data-action="move-question" data-draft-id="${draft.id}" data-id="${slot.id}" data-delta="-1" title="上移" ${slot.ordinal <= 1 ? 'disabled' : ''}>${icons.chevronUp(14)}</button>
+                      <button type="button" class="icon-btn" data-action="move-question" data-draft-id="${draft.id}" data-id="${slot.id}" data-delta="1" title="下移" ${slot.ordinal >= slots.length ? 'disabled' : ''}>${icons.chevronDown(14)}</button>
+                      ${retryable ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试" ${state.retryingQuestionId === slot.id || slot.status === 'generating' || slot.status === 'queued' ? 'disabled' : ''}>${icons.rotateCw(14)}</button>` : ''}
+                      <button type="button" class="icon-btn ${editing ? 'is-active' : ''}" data-action="toggle-question-edit" data-id="${slot.id}" title="手改">${icons.edit3(14)}</button>
+                      ${
+                        slots.length > 1
+                          ? `<button type="button" class="icon-btn" data-action="delete-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="删题">${icons.trash2(14)}</button>`
+                          : ''
+                      }
+                    </div>`
+                  : retryable
+                    ? `<button type="button" class="icon-btn" data-action="retry-question" data-draft-id="${draft.id}" data-id="${slot.id}" title="重试" ${state.retryingQuestionId === slot.id || slot.status === 'generating' || slot.status === 'queued' ? 'disabled' : ''}>${icons.rotateCw(14)}</button>`
+                    : ''
+              }
             </div>
-            ${q ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}${renderSolution(q)}` : `<p class="item-sub">${escapeHtml(sanitizeErrorMessage(slot.error?.message || (slot.status === 'generating' || slot.status === 'queued' ? '生成中' : '待生成')))}</p>`}
-            ${renderQuestionRevise(state, draft, slot, q, proposal)}
+            ${
+              editing && q
+                ? renderQuestionEditor(draft, slot, q)
+                : q
+                  ? `${renderBlocks(q.stem)}${renderOptions(q)}${q.answer ? `<div class="answer-key">${escapeHtml(formatKey(q.answer))}</div>` : ''}${renderSolution(q)}`
+                  : `<p class="item-sub">${escapeHtml(sanitizeErrorMessage(slot.error?.message || (slot.status === 'generating' || slot.status === 'queued' ? '生成中' : '待生成')))}</p>`
+            }
+            ${editing ? '' : renderQuestionRevise(state, draft, slot, q, proposal)}
           </article>
         `;
             })
@@ -329,16 +403,7 @@ function renderExamDoc(state, exam, proposal) {
     </div>
     ${
       proposal?.status === 'ready'
-        ? `<section class="diff">
-            ${(proposal.changes || [])
-              .map(
-                (change) => `
-              <div class="diff-col diff-before"><h4>当前</h4><p>${escapeHtml(stringifyChange(change.before))}</p></div>
-              <div class="diff-col diff-after"><h4>修改预览${change.summary ? ` · ${escapeHtml(change.summary)}` : ''}</h4><p>${escapeHtml(stringifyChange(change.after))}</p></div>
-            `,
-              )
-              .join('')}
-          </section>`
+        ? renderProposalDiff(proposal)
         : !exam
           ? `<div class="empty"><h3>选择一份试卷</h3></div>`
           : questions.map((q, index) => renderExamQuestion(q, { index, showSolution: true })).join('')
@@ -424,11 +489,130 @@ export function renderExamPrintDocument(doc) {
   `;
 }
 
-function stringifyChange(value) {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return blocksToText(value) || JSON.stringify(value);
-  if (value.stem) return blocksToText(value.stem);
-  if (value.text) return value.text;
-  return truncate(JSON.stringify(value), 240);
+function renderProposalDiff(proposal) {
+  return `
+    <section class="diff">
+      ${(proposal.changes || [])
+        .map(
+          (change) => `
+        <div class="diff-col diff-before"><h4>当前</h4>${renderChangeSide(change.before)}</div>
+        <div class="diff-col diff-after"><h4>修改预览${change.summary ? ` · ${escapeHtml(change.summary)}` : ''}</h4>${renderChangeSide(change.after)}</div>
+      `,
+        )
+        .join('')}
+    </section>`;
+}
+
+function renderChangeSide(value) {
+  if (value == null || value === '') return '<p class="item-sub">无</p>';
+  if (typeof value === 'string') return `<div class="prose">${renderMarkdown(value)}</div>`;
+  if (Array.isArray(value)) {
+    if (!value.length) return '<p class="item-sub">无</p>';
+    if (value[0]?.type || value[0]?.text) return renderBlocks(value);
+    if (value[0]?.stem) return value.map((item) => renderChangeSide(item)).join('');
+  }
+  if (typeof value === 'object') {
+    if (value.stem) {
+      return `${renderBlocks(value.stem)}${renderOptions(value)}${
+        value.answer ? `<div class="answer-key">${escapeHtml(formatKey(value.answer))}</div>` : ''
+      }${value.score != null ? `<p class="item-sub">${escapeHtml(String(value.score))} 分</p>` : ''}`;
+    }
+    if (value.text) return renderBlocks([{ type: 'markdown', id: value.id || 'block', text: value.text }]);
+    const parts = [];
+    if (value.title) parts.push(value.title);
+    if (value.type) parts.push(QUESTION_TYPES[value.type] || value.type);
+    if (value.score != null) parts.push(`${value.score} 分`);
+    if (parts.length) return `<p>${escapeHtml(parts.join(' · '))}</p>`;
+  }
+  return '<p class="item-sub">结构化修改</p>';
+}
+
+function renderQuestionEditor(draft, slot, question) {
+  const stemOk = blocksArePlainText(question.stem);
+  const options = question.options || [];
+  const selected = new Set(question.answer?.kind === 'choice' ? question.answer.option_ids || [] : []);
+  const choice = question.type === 'single-choice' || question.type === 'multiple-choice';
+  return `
+    <form class="q-editor" data-question-edit="${slot.id}" data-draft-id="${draft.id}">
+      ${
+        stemOk
+          ? `<label class="field"><span class="field-label">题干</span><textarea class="textarea" name="stem" rows="4">${escapeHtml(blocksToText(question.stem))}</textarea></label>`
+          : `<p class="item-sub">本题含图片或表格，题干请用「改这题」</p>${renderBlocks(question.stem)}`
+      }
+      <label class="field"><span class="field-label">分值</span><input class="input" type="number" min="0.5" step="0.5" name="score" value="${question.score}" /></label>
+      ${
+        choice
+          ? `<div class="q-options-edit">${options
+              .map(
+                (opt, index) => `
+            <label class="option">
+              <input type="${question.type === 'single-choice' ? 'radio' : 'checkbox'}" name="correct" value="${escapeHtml(opt.id)}" ${selected.has(opt.id) ? 'checked' : ''} />
+              <span>${escapeHtml(opt.id)}</span>
+              <input class="input" name="option-${index}" data-option-id="${escapeHtml(opt.id)}" value="${escapeHtml(blocksToText(opt.content))}" ${blocksArePlainText(opt.content) ? '' : 'disabled'} />
+            </label>`,
+              )
+              .join('')}
+            <button type="button" class="btn btn-ghost btn-sm" data-action="add-option" data-id="${slot.id}">加选项</button>
+          </div>`
+          : ''
+      }
+      ${
+        question.type === 'true-false'
+          ? `<div class="q-options-edit">
+              <label class="option"><input type="radio" name="tf" value="true" ${question.answer?.value === true ? 'checked' : ''} /><span>对</span></label>
+              <label class="option"><input type="radio" name="tf" value="false" ${question.answer?.value === false ? 'checked' : ''} /><span>错</span></label>
+            </div>`
+          : ''
+      }
+      ${
+        question.type === 'fill-blank'
+          ? (question.answer?.blanks || [])
+              .map(
+                (blank, index) => `
+            <label class="field"><span class="field-label">空 ${index + 1} 答案</span>
+              <input class="input" name="blank-${index}" value="${escapeHtml((blank.acceptable_answers || []).join(' / '))}" />
+            </label>`,
+              )
+              .join('')
+          : ''
+      }
+      <div class="q-revise">
+        <button type="button" class="btn btn-primary btn-sm" data-action="save-question-edit" data-draft-id="${draft.id}" data-id="${slot.id}">保存</button>
+        <button type="button" class="icon-btn" data-action="toggle-question-edit" data-id="${slot.id}" title="取消">${icons.x(14)}</button>
+      </div>
+    </form>`;
+}
+
+export function questionFromEditor(question, formEl) {
+  const form = new FormData(formEl);
+  const next = JSON.parse(JSON.stringify(question));
+  const score = Number(form.get('score'));
+  if (Number.isFinite(score) && score > 0) next.score = score;
+  if (form.has('stem') && blocksArePlainText(question.stem)) {
+    next.stem = textToMarkdownBlocks(form.get('stem'), question.stem);
+  }
+  if (next.type === 'single-choice' || next.type === 'multiple-choice') {
+    next.options = (next.options || []).map((opt, index) => {
+      const input = formEl.querySelector(`[name="option-${index}"]`);
+      if (!input || input.disabled) return opt;
+      return { ...opt, content: textToMarkdownBlocks(input.value, opt.content) };
+    });
+    const checked = form.getAll('correct');
+    if (checked.length) next.answer = { kind: 'choice', option_ids: checked };
+  }
+  if (next.type === 'true-false') {
+    const value = form.get('tf');
+    if (value === 'true' || value === 'false') next.answer = { kind: 'true-false', value: value === 'true' };
+  }
+  if (next.type === 'fill-blank' && Array.isArray(next.answer?.blanks)) {
+    next.answer = {
+      ...next.answer,
+      blanks: next.answer.blanks.map((blank, index) => {
+        const raw = String(form.get(`blank-${index}`) || '');
+        const answers = raw.split(/[/；;]+/).map((item) => item.trim()).filter(Boolean);
+        return { ...blank, acceptable_answers: answers.length ? answers : blank.acceptable_answers };
+      }),
+    };
+  }
+  return next;
 }

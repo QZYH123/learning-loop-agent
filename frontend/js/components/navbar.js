@@ -16,7 +16,7 @@ export function navbarHtml(state) {
         </button>
         <span class="v-split"></span>
         <div class="dropdown">
-          <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="subject" aria-expanded="${menu === 'subject'}" title="科目">
+          <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="subject" aria-expanded="${menu === 'subject'}" title="科目" aria-label="科目">
             ${icons.book(15)}
             <span class="chip-label">${escapeHtml(subject?.name || '选择科目')}</span>
             ${icons.chevronDown(14)}
@@ -34,12 +34,12 @@ export function navbarHtml(state) {
       </nav>
 
       <div class="nav-side nav-end">
-        <button type="button" class="chip-btn ${model ? '' : 'is-warn'}" data-action="open-models" title="模型服务">
+        <button type="button" class="chip-btn ${model ? '' : 'is-warn'}" data-action="open-models" title="模型服务" aria-label="模型服务">
           ${icons.cpu(15)}
           <span class="chip-label">${escapeHtml(model?.model || '配置模型')}</span>
         </button>
-        ${busy ? `<div class="busy">${icons.rotateCw(13, 'spin')}<span>${busy}</span></div>` : ''}
-        <button type="button" class="icon-btn" data-action="toggle-theme" title="${state.theme === 'paper' ? '切换深色' : '切换浅色'}">
+        ${busy ? `<button type="button" class="busy" data-action="open-runs" title="运行记录" aria-label="运行记录">${icons.rotateCw(13, 'spin')}<span>${busy}</span></button>` : ''}
+        <button type="button" class="icon-btn" data-action="toggle-theme" title="${state.theme === 'paper' ? '切换深色' : '切换浅色'}" aria-label="${state.theme === 'paper' ? '切换深色' : '切换浅色'}">
           ${state.theme === 'paper' ? icons.moon(16) : icons.sun(16)}
         </button>
       </div>
@@ -74,13 +74,14 @@ export function renderNavbar(state, root, handlers) {
     if (action === 'export-subject') handlers.onExportSubject();
     if (action === 'import-subject') importInput?.click();
     if (action === 'open-models') handlers.onOpenModal('models');
+    if (action === 'open-runs') handlers.onOpenRuns();
     if (action === 'toggle-theme') handlers.onToggleTheme();
   };
 }
 
 function tab(id, label, icon, active) {
   return `
-    <button type="button" class="tab tab-${id} ${active ? 'is-active' : ''}" data-action="select-workspace" data-workspace="${id}">
+    <button type="button" class="tab tab-${id} ${active ? 'is-active' : ''}" data-action="select-workspace" data-workspace="${id}" title="${label}" aria-label="${label}">
       ${icon}<span>${label}</span>
     </button>
   `;
@@ -90,7 +91,7 @@ function subjectMenu(state) {
   const items = (state.subjects || [])
     .map(
       (item) => `
-      <button type="button" class="menu-item ${item.id === state.activeSubjectId ? 'is-active' : ''}" data-action="switch-subject" data-id="${item.id}" title="${escapeHtml(item.name)}">
+      <button type="button" class="menu-item ${item.id === state.activeSubjectId ? 'is-active' : ''}" role="menuitem" data-action="switch-subject" data-id="${item.id}" title="${escapeHtml(item.name)}">
         <span>${escapeHtml(item.name)}</span>
         ${item.id === state.activeSubjectId ? icons.check(14) : ''}
       </button>
@@ -104,13 +105,13 @@ function subjectMenu(state) {
       <div class="menu-split"></div>
       ${
         state.activeSubjectId
-          ? `<button type="button" class="menu-item" data-action="rename-subject">${icons.edit3(14)}<span>重命名</span></button>
-             <button type="button" class="menu-item" data-action="delete-subject">${icons.trash2(14)}<span>删除科目</span></button>
-             <button type="button" class="menu-item" data-action="export-subject">${icons.download(14)}<span>导出</span></button>`
+          ? `<button type="button" class="menu-item" role="menuitem" data-action="rename-subject">${icons.edit3(14)}<span>重命名</span></button>
+             <button type="button" class="menu-item" role="menuitem" data-action="delete-subject">${icons.trash2(14)}<span>删除科目</span></button>
+             <button type="button" class="menu-item" role="menuitem" data-action="export-subject">${icons.download(14)}<span>导出</span></button>`
           : ''
       }
-      <button type="button" class="menu-item" data-action="import-subject">${icons.upload(14)}<span>导入</span></button>
-      <button type="button" class="menu-item" data-action="create-subject">${icons.plus(14)}<span>新建科目</span></button>
+      <button type="button" class="menu-item" role="menuitem" data-action="import-subject">${icons.upload(14)}<span>导入</span></button>
+      <button type="button" class="menu-item" role="menuitem" data-action="create-subject">${icons.plus(14)}<span>新建科目</span></button>
     </div>
   `;
 }

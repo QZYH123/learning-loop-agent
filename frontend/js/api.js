@@ -337,6 +337,15 @@ export const api = {
   deleteDraft(draftId) {
     return request(`/api/exam-drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' });
   },
+  updateDraft(draftId, patch) {
+    return json('PATCH', `/api/exam-drafts/${encodeURIComponent(draftId)}`, patch);
+  },
+  replaceDraftQuestion(draftId, questionId, payload) {
+    return json('PUT', `/api/exam-drafts/${encodeURIComponent(draftId)}/questions/${encodeURIComponent(questionId)}`, payload);
+  },
+  deleteDraftQuestion(draftId, questionId) {
+    return request(`/api/exam-drafts/${encodeURIComponent(draftId)}/questions/${encodeURIComponent(questionId)}`, { method: 'DELETE' });
+  },
   retryDraftQuestion(draftId, questionId) {
     return json('POST', `/api/exam-drafts/${encodeURIComponent(draftId)}/questions/${encodeURIComponent(questionId)}/retry`);
   },
@@ -373,6 +382,9 @@ export const api = {
   },
   listExamVersions(examId) {
     return request(`/api/exams/${encodeURIComponent(examId)}/versions`);
+  },
+  restoreExamVersion(examId, versionId) {
+    return json('POST', `/api/exams/${encodeURIComponent(examId)}/versions/${encodeURIComponent(versionId)}/restore`);
   },
   undoExamChange(examId) {
     return json('POST', `/api/exams/${encodeURIComponent(examId)}/undo`);
@@ -418,6 +430,9 @@ export const api = {
   getAttempt(attemptId) {
     return request(`/api/attempts/${encodeURIComponent(attemptId)}`);
   },
+  updateAttempt(attemptId, patch) {
+    return json('PATCH', `/api/attempts/${encodeURIComponent(attemptId)}`, patch);
+  },
   saveAttemptAnswer(attemptId, questionId, answer) {
     return json('PUT', `/api/attempts/${encodeURIComponent(attemptId)}/answers/${encodeURIComponent(questionId)}`, { answer });
   },
@@ -441,6 +456,26 @@ export const api = {
   },
   resumeAttempt(attemptId) {
     return json('POST', `/api/attempts/${encodeURIComponent(attemptId)}/resume`);
+  },
+
+  listOrchestrationRuns(params = {}) {
+    const query = new URLSearchParams();
+    if (params.subject_id) query.set('subject_id', params.subject_id);
+    if (params.category) query.set('category', params.category);
+    const suffix = query.toString();
+    return request(`/api/orchestration-runs${suffix ? `?${suffix}` : ''}`);
+  },
+  getOrchestrationRun(runId) {
+    return request(`/api/orchestration-runs/${encodeURIComponent(runId)}`);
+  },
+  listEvaluationSuites() {
+    return request('/api/evaluation-suites');
+  },
+  runEvaluationSuite(suiteId, payload) {
+    return json('POST', `/api/evaluation-suites/${encodeURIComponent(suiteId)}/runs`, payload);
+  },
+  getEvaluationRun(runId) {
+    return request(`/api/evaluation-runs/${encodeURIComponent(runId)}`);
   },
 
   getPet() {

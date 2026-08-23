@@ -169,6 +169,36 @@ export function blocksToText(blocks) {
     .join('\n');
 }
 
+export function blocksArePlainText(blocks) {
+  if (!Array.isArray(blocks) || !blocks.length) return true;
+  return blocks.every((block) => !block || block.type === 'markdown' || (!block.type && block.text != null));
+}
+
+export function textToMarkdownBlocks(text, existing) {
+  const value = String(text ?? '');
+  const first = Array.isArray(existing) ? existing.find((block) => block?.type === 'markdown' || block?.text != null) : null;
+  return [{ id: first?.id || crypto.randomUUID().replaceAll('-', ''), type: 'markdown', text: value }];
+}
+
+export function nextOptionId(options) {
+  const used = new Set((options || []).map((item) => item.id));
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for (const letter of letters) {
+    if (!used.has(letter)) return letter;
+  }
+  return `opt-${(options || []).length + 1}`;
+}
+
+export const QUESTION_TYPE_ORDER = [
+  'single-choice',
+  'multiple-choice',
+  'fill-blank',
+  'true-false',
+  'short-answer',
+  'argumentation',
+  'extended-response',
+];
+
 export function renderMarkdown(text) {
   const source = String(text || '').replace(/\r\n/g, '\n');
   if (!source.trim()) return '';
@@ -292,6 +322,7 @@ export function statusLabel(kind, value) {
     proposal: { generating: '生成中', ready: '待确认', applied: '已应用', discarded: '已放弃', failed: '失败' },
     message: { queued: '排队中', generating: '生成中', complete: '', stopped: '已停止', error: '失败' },
     validation: { unknown: '未验证', checking: '验证中', ok: '可用', error: '失败' },
+    run: { running: '进行中', succeeded: '完成', failed: '失败', canceled: '已取消', queued: '排队中', complete: '完成' },
   };
   const label = maps[kind]?.[value];
   return label !== undefined ? label : value || '';

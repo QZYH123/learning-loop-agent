@@ -46,7 +46,7 @@ export function renderChatPane(state, handlers, options = {}) {
           ${
             options.variant === 'task'
               ? `<div class="dropdown">
-                  <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="session" title="切换会话" aria-expanded="${state.openMenu === 'session'}">
+                  <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="session" title="切换会话" aria-label="切换会话" aria-expanded="${state.openMenu === 'session'}">
                     ${icons.messageSquare(14)}
                     <span class="chip-label">${escapeHtml(session && sessionVisible(session) ? session.title : '新对话')}</span>
                     ${icons.chevronDown(14)}
@@ -60,13 +60,13 @@ export function renderChatPane(state, handlers, options = {}) {
           ${
             options.variant === 'learn'
               ? `<div class="dropdown">
-                  <button type="button" class="icon-btn ${state.openMenu === 'sources' ? 'is-active' : ''}" data-action="toggle-menu" data-menu="sources" title="资料" aria-expanded="${state.openMenu === 'sources'}">${icons.folder(15)}</button>
+                  <button type="button" class="icon-btn ${state.openMenu === 'sources' ? 'is-active' : ''}" data-action="toggle-menu" data-menu="sources" title="资料" aria-label="资料" aria-expanded="${state.openMenu === 'sources'}">${icons.folder(15)}</button>
                   ${state.openMenu === 'sources' ? sourcesDrawer(state) : ''}
                 </div>`
               : ''
           }
           <div class="dropdown">
-            <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="style" title="对话风格" aria-expanded="${state.openMenu === 'style'}">
+            <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="style" title="对话风格" aria-label="对话风格" aria-expanded="${state.openMenu === 'style'}">
               ${icons.sparkles(14)}
               <span class="chip-label">${styleLabel(style)}</span>
             </button>
@@ -75,7 +75,7 @@ export function renderChatPane(state, handlers, options = {}) {
           ${
             options.variant === 'learn'
               ? `<div class="dropdown">
-                  <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="model" title="模型" aria-expanded="${state.openMenu === 'model'}">
+                  <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="model" title="模型" aria-label="模型" aria-expanded="${state.openMenu === 'model'}">
                     ${icons.cpu(14)}
                     <span class="chip-label">${escapeHtml(model?.model || '模型')}</span>
                   </button>
@@ -117,7 +117,7 @@ export function renderChatPane(state, handlers, options = {}) {
           <textarea id="composer-input" rows="2" placeholder="${escapeHtml(placeholder)}" ${canCompose ? '' : 'disabled'}>${escapeHtml(state.composerText)}</textarea>
           <div class="composer-tools">
             <div class="dropdown composer-grounding">
-              <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="grounding" title="依据：${groundingLabel(state.groundingMode)}" aria-expanded="${state.openMenu === 'grounding'}">${icons.shield(15)}</button>
+              <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="grounding" title="依据：${groundingLabel(state.groundingMode)}" aria-label="依据：${groundingLabel(state.groundingMode)}" aria-expanded="${state.openMenu === 'grounding'}">${icons.shield(15)}</button>
               ${state.openMenu === 'grounding' ? groundingMenu(state.groundingMode) : ''}
             </div>
             <button type="button" class="icon-btn" data-action="pick-attach" title="附件" ${canCompose ? '' : 'disabled'}>${icons.paperclip(15)}</button>
@@ -412,29 +412,29 @@ function renderToolEvents(events) {
 
 function sessionMenu(state) {
   return `
-    <div class="menu">
+    <div class="menu" role="menu">
       ${(state.sessions || [])
         .filter((item) => sessionVisible(item))
         .map(
           (item) => `
-        <button type="button" class="menu-item ${item.id === state.activeSessionId ? 'is-active' : ''}" data-action="select-session" data-id="${item.id}">
+        <button type="button" class="menu-item ${item.id === state.activeSessionId ? 'is-active' : ''}" role="menuitem" data-action="select-session" data-id="${item.id}">
           <span>${escapeHtml(item.title || '学习会话')}</span>
         </button>
       `,
         )
         .join('')}
       <div class="menu-split"></div>
-      <button type="button" class="menu-item" data-action="create-session">${icons.plus(14)}<span>新建</span></button>
+      <button type="button" class="menu-item" role="menuitem" data-action="create-session">${icons.plus(14)}<span>新建</span></button>
     </div>
   `;
 }
 
 function styleMenu(current) {
   return `
-    <div class="menu menu-right menu-style">
+    <div class="menu menu-right menu-style" role="menu">
       ${CHAT_STYLES.map(
         (item) => `
-        <button type="button" class="menu-item ${item.id === current ? 'is-active' : ''}" data-action="set-style" data-id="${item.id}">
+        <button type="button" class="menu-item ${item.id === current ? 'is-active' : ''}" role="menuitem" data-action="set-style" data-id="${item.id}">
           <span>${item.label}</span>
         </button>
       `,
@@ -445,28 +445,29 @@ function styleMenu(current) {
 
 function modelMenu(state) {
   return `
-    <div class="menu menu-right">
+    <div class="menu menu-right" role="menu">
       ${(state.models || [])
         .map(
           (item) => `
-        <button type="button" class="menu-item ${item.id === state.currentModelId ? 'is-active' : ''}" data-action="select-model" data-id="${item.id}">
+        <button type="button" class="menu-item ${item.id === state.currentModelId ? 'is-active' : ''}" role="menuitem" data-action="select-model" data-id="${item.id}">
           <span>${escapeHtml(item.model)}</span>
         </button>
       `,
         )
         .join('')}
       <div class="menu-split"></div>
-      <button type="button" class="menu-item" data-action="open-models">${icons.sliders(14)}<span>配置</span></button>
+      <button type="button" class="menu-item" role="menuitem" data-action="open-runs">${icons.activity(14)}<span>运行记录</span></button>
+      <button type="button" class="menu-item" role="menuitem" data-action="open-models">${icons.sliders(14)}<span>配置</span></button>
     </div>
   `;
 }
 
 function groundingMenu(current) {
   return `
-    <div class="menu">
+    <div class="menu" role="menu">
       ${GROUNDING_MODES.map(
         (item) => `
-        <button type="button" class="menu-item ${item.id === current ? 'is-active' : ''}" data-action="set-grounding" data-id="${item.id}">
+        <button type="button" class="menu-item ${item.id === current ? 'is-active' : ''}" role="menuitem" data-action="set-grounding" data-id="${item.id}">
           <span>${item.label}</span>
         </button>
       `,
@@ -493,7 +494,7 @@ function sourcesDrawer(state) {
   });
   const counts = new Map();
   return `
-    <div class="menu menu-right">
+    <div class="menu menu-right" role="menu">
       <div class="menu-title">会话资料</div>
       ${
         ready.length
@@ -505,7 +506,7 @@ function sourcesDrawer(state) {
                 const dup = (seen.get(key) || 0) > 1;
                 const n = dup ? (counts.set(key, (counts.get(key) || 0) + 1), counts.get(key)) : 0;
                 const extra = dup ? ` · v${src.current_version?.number || n}` : (src.current_version?.number > 1 ? ` · v${src.current_version.number}` : '');
-                return `<button type="button" class="menu-item ${on ? 'is-active' : ''}" data-action="${on ? 'unpin-source' : 'pin-source'}" data-id="${versionId}" title="${escapeHtml(src.display_name)}">
+                return `<button type="button" class="menu-item ${on ? 'is-active' : ''}" role="menuitem" data-action="${on ? 'unpin-source' : 'pin-source'}" data-id="${versionId}" title="${escapeHtml(src.display_name)}">
                   <span>${escapeHtml(src.display_name)}${extra}</span>${on ? icons.check(14) : ''}
                 </button>`;
               })

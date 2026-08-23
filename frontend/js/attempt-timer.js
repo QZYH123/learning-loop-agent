@@ -20,3 +20,21 @@ export function attemptElapsedMs(attempt, now = Date.now()) {
   }
   return elapsed;
 }
+
+export function attemptLimitMs(minutes) {
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value < 1) return 0;
+  return Math.round(value * 60 * 1000);
+}
+
+export function attemptRemainingMs(attempt, limitMs, now = Date.now()) {
+  if (!limitMs) return null;
+  return Math.max(0, limitMs - attemptElapsedMs(attempt, now));
+}
+
+export function examDurationMinutes(exam, blueprints) {
+  if (!exam?.source_blueprint_id) return null;
+  const blueprint = (blueprints || []).find((item) => item.id === exam.source_blueprint_id);
+  const minutes = Number(blueprint?.duration_minutes);
+  return Number.isFinite(minutes) && minutes >= 1 ? minutes : null;
+}
