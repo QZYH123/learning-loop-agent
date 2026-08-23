@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from .api_models import ContractModel, ModelSnapshot, ResourceRef
+from .api_models import ContractModel, ModelSnapshot, OperationKind, ResourceRef
 from .learning import LearningError
 from .model_client import ModelClientError
 from .operations import OperationFailure
@@ -23,20 +23,7 @@ from .operations import OperationFailure
 
 STAGE_NAMES = Literal["parse", "retrieve", "model-call", "structure-validation", "retry", "apply-change", "undo", "render", "export", "tool-call"]
 RUN_STATUSES = Literal["running", "succeeded", "failed", "canceled"]
-OPERATION_KINDS = Literal[
-    "model-verification",
-    "source-parsing",
-    "chat-generation",
-    "crash-course-generation",
-    "blueprint-parsing",
-    "exam-generation",
-    "question-retry",
-    "subjective-feedback",
-    "attempt-grading",
-    "exam-revision",
-    "exam-export",
-    "evaluation",
-]
+OPERATION_KINDS = OperationKind
 
 
 class OrchestrationCounters(ContractModel):
@@ -142,6 +129,8 @@ DEFAULT_STAGES = {
     "subjective-feedback": ["model-call", "structure-validation"],
     "attempt-grading": ["model-call", "structure-validation"],
     "exam-revision": ["model-call", "structure-validation"],
+    "ai-document-generation": ["retrieve", "model-call"],
+    "ai-document-revision": ["model-call", "structure-validation"],
     "exam-export": ["render", "export"],
     "evaluation": ["model-call", "structure-validation"],
 }
