@@ -1907,7 +1907,53 @@ class ExamService:
         validated = QuestionInput.model_validate(candidate).model_dump()
         if validated["evidence"]["status"] != "complete":
             validated["reliability"] = "needs-review"
+        quality_note = self._item_quality_note(validated)
+        if quality_note:
+            validated["reliability"] = "needs-review"
+            if validated["evidence"]["status"] == "complete":
+                validated["evidence"] = {**validated["evidence"], "note": quality_note}
         return validated
+
+    WEAK_CHOICE_OPTION = re.compile(
+        r"^(以上都是|以上都不对|以上皆[非对是]|全部都是|all of the above|none of the above)\.?$",
+        re.IGNORECASE,
+    )
+
+    def _plain_option_text(self, option: dict) -> str:
+        content = option.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            if content and isinstance(content[0], dict):
+                return self.learning._content_text(content)
+            return " ".join(str(item) for item in content)
+        if isinstance(content, dict):
+            return self.learning._content_text([content])
+        return ""
+
+    @staticmethod
+    def _compact_text(value: str) -> str:
+        return re.sub(r"\s+", "", value).casefold()
+
+    def _item_quality_note(self, question: dict) -> str | None:
+        if question.get("type") not in {"single-choice", "multiple-choice"}:
+            return None
+        options = question.get("options") or []
+        texts = [self._plain_option_text(item) for item in options]
+        issues = []
+        if any(self.WEAK_CHOICE_OPTION.match(text.strip()) for text in texts):
+            issues.append("选项含“以上都是/以上都不对”这类凑选项")
+        compacted = [self._compact_text(text) for text in texts if self._compact_text(text)]
+        if len(compacted) != len(set(compacted)):
+            issues.append("选项正文重复")
+        stem = self._compact_text(self.learning._content_text(question.get("stem") or []))
+        answer_ids = set((question.get("answer") or {}).get("option_ids") or [])
+        for option, text in zip(options, texts):
+            compact = self._compact_text(text)
+            if option.get("id") in answer_ids and len(compact) >= 6 and compact in stem:
+                issues.append("题干含有正确选项正文")
+                break
+        return "；".join(issues) if issues else None
 
     def _validate_question_resources(
         self,
