@@ -154,6 +154,8 @@ def test_socratic_style_is_prompt_only_and_accepts_freeform_messages(tmp_path):
         assert chat["messages"][-1]["content"][0]["text"] == "依据资料回答。"
         prompt = fake.chat_calls[-1]["messages"][-1]["content"]
         assert "使用苏格拉底式交流" in prompt
+        assert "先让学习者尝试作答" in prompt
+        assert "直接讲解" in prompt
         assert '"assessment"' not in prompt
 
 
