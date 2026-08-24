@@ -2181,17 +2181,14 @@ class ExamService:
         text = self.learning._content_text(question.get("stem") or [])
         return re.sub(r"\s+", " ", text).strip()[:80]
 
-    def _collect_missed_questions(self, subject_id: str) -> list[dict]:
-        subject = self.learning._subject(subject_id)
-        attempts = [item for item in subject.get("data", {}).get("attempts", []) if item.get("feedback")]
-        ranked = sorted(
-            enumerate(attempts),
-            key=lambda pair: (pair[1].get("updated_at", 0), pair[0]),
-            reverse=True,
-        )
-        collected: list[dict] = []
-        seen: set[tuple[str, str]] = set()
-        for _, attempt in ranked:
+    def _feedback_events(self, subject: dict) -> list[dict]:
+        events = []
+        attempts = subject.get("data", {}).get("attempts", [])
+        for sequence, attempt in enumerate(attempts):
+            if not attempt.get("feedback"):
+                continue
+            if attempt.get("mode") == "exam" and attempt.get("completion_status") != "completed":
+                continue
             try:
                 document = self._version_document(subject, attempt["exam_id"], attempt["exam_version_id"])
             except LearningError:
@@ -2199,26 +2196,67 @@ class ExamService:
             questions = {item["id"]: item for item in document.get("questions", [])}
             exam_title = str(document.get("title") or "").strip() or "试卷"
             for feedback in attempt.get("feedback") or []:
-                if not self._is_missed_feedback(feedback):
-                    continue
                 question = questions.get(feedback.get("question_id"))
                 if not question:
                     continue
-                key = (attempt["exam_id"], question["id"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                collected.append({
+                occurred_at = feedback.get("created_at") or attempt.get("updated_at") or 0
+                events.append({
+                    "time": occurred_at,
+                    "sequence": sequence,
                     "exam_id": attempt["exam_id"],
                     "exam_version_id": attempt["exam_version_id"],
                     "exam_title": exam_title,
                     "question_id": question["id"],
-                    "question_type": question.get("type"),
-                    "stem_preview": self._stem_preview(question),
+                    "question": question,
                     "attempt_id": attempt["id"],
-                    "missed_at": feedback.get("created_at") or attempt.get("updated_at") or 0,
+                    "missed": self._is_missed_feedback(feedback),
                     "knowledge_points": [point for point in question.get("knowledge_points") or [] if point],
                 })
+        return events
+
+    @staticmethod
+    def _later_than(left: dict, right: dict) -> bool:
+        return (left["time"], left["sequence"]) > (right["time"], right["sequence"])
+
+    def _collect_missed_questions(self, subject_id: str) -> list[dict]:
+        subject = self.learning._subject(subject_id)
+        events = self._feedback_events(subject)
+        latest: dict[tuple[str, str], dict] = {}
+        for event in sorted(events, key=lambda item: (item["time"], item["sequence"])):
+            latest[(event["exam_id"], event["question_id"])] = event
+        mastered_after = [
+            event for event in events
+            if not event["missed"]
+        ]
+        collected: list[dict] = []
+        for event in latest.values():
+            if not event["missed"]:
+                continue
+            kept_points = []
+            points = event["knowledge_points"] or [self.UNMARKED_KNOWLEDGE_POINT]
+            for point in points:
+                if point != self.UNMARKED_KNOWLEDGE_POINT and any(
+                    self._later_than(other, event) and point in other["knowledge_points"]
+                    for other in mastered_after
+                ):
+                    continue
+                kept_points.append(point)
+            if not kept_points:
+                continue
+            collected.append({
+                "exam_id": event["exam_id"],
+                "exam_version_id": event["exam_version_id"],
+                "exam_title": event["exam_title"],
+                "question_id": event["question_id"],
+                "question_type": event["question"].get("type"),
+                "stem_preview": self._stem_preview(event["question"]),
+                "attempt_id": event["attempt_id"],
+                "missed_at": event["time"],
+                "knowledge_points": [
+                    point for point in kept_points
+                    if point != self.UNMARKED_KNOWLEDGE_POINT
+                ],
+            })
         return collected
 
     def list_missed_questions(self, subject_id: str) -> list[dict]:

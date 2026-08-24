@@ -87,14 +87,27 @@ def _publish_second_exam(client, subject_id, version_id):
     return publish_exam_from_blueprint(client, blueprint_id)
 
 
-def _wrong_choice(client, exam_id, question_id):
+def _answer_choice(client, exam_id, question_id, option_id):
     practice = client.post(f"/api/exams/{exam_id}/attempts", json={"mode": "practice"}).json()
     saved = client.put(
         f"/api/attempts/{practice['id']}/answers/{question_id}",
-        json={"answer": {"kind": "choice", "option_ids": ["B"]}},
+        json={"answer": {"kind": "choice", "option_ids": [option_id]}},
     )
     assert saved.status_code == 200
     return practice
+
+
+def _wrong_choice(client, exam_id, question_id):
+    return _answer_choice(client, exam_id, question_id, "B")
+
+
+def _listed_question_ids(payload, knowledge_point=None):
+    ids = []
+    for group in payload["items"]:
+        if knowledge_point is not None and group["knowledge_point"] != knowledge_point:
+            continue
+        ids.extend(item["question_id"] for item in group["questions"])
+    return ids
 
 
 def test_missed_questions_group_across_exams_and_hide_answers(tmp_path):
@@ -191,6 +204,45 @@ def test_missed_questions_group_across_exams_and_hide_answers(tmp_path):
         unmarked = client.get(f"/api/subjects/{subject_id}/missed-questions").json()
         names = [item["knowledge_point"] for item in unmarked["items"]]
         assert "未标考点" in names
+
+
+def test_later_correct_attempt_drops_same_question(tmp_path):
+    client, _ = make_client(tmp_path, model_client=MissedQuestionsFake())
+    with client:
+        subject_id, _, _, blueprint_id = build_exam(client)
+        exam = publish_ready_exam(client, blueprint_id)
+        choice = next(item for item in exam["document"]["questions"] if item["type"] == "single-choice")
+        exam = _replace_points(client, exam["id"], {choice["id"]: ["Limits"]})
+        choice = next(item for item in exam["document"]["questions"] if item["id"] == choice["id"])
+
+        _wrong_choice(client, exam["id"], choice["id"])
+        listed = client.get(f"/api/subjects/{subject_id}/missed-questions").json()
+        assert choice["id"] in _listed_question_ids(listed, "Limits")
+
+        _answer_choice(client, exam["id"], choice["id"], "A")
+        listed = client.get(f"/api/subjects/{subject_id}/missed-questions").json()
+        assert choice["id"] not in _listed_question_ids(listed)
+
+
+def test_later_correct_on_same_point_drops_earlier_miss(tmp_path):
+    client, _ = make_client(tmp_path, model_client=MissedQuestionsFake())
+    with client:
+        subject_id, _, version_id, blueprint_id = build_exam(client)
+        exam_a = publish_ready_exam(client, blueprint_id)
+        exam_b = _publish_second_exam(client, subject_id, version_id)
+        choice_a = next(item for item in exam_a["document"]["questions"] if item["type"] == "single-choice")
+        choice_b = next(item for item in exam_b["document"]["questions"] if item["type"] == "single-choice")
+        exam_a = _replace_points(client, exam_a["id"], {choice_a["id"]: ["Limits"]})
+        exam_b = _replace_points(client, exam_b["id"], {choice_b["id"]: ["Limits"]})
+        choice_a = next(item for item in exam_a["document"]["questions"] if item["id"] == choice_a["id"])
+        choice_b = next(item for item in exam_b["document"]["questions"] if item["id"] == choice_b["id"])
+
+        _wrong_choice(client, exam_a["id"], choice_a["id"])
+        _answer_choice(client, exam_b["id"], choice_b["id"], "A")
+
+        listed = client.get(f"/api/subjects/{subject_id}/missed-questions").json()
+        assert choice_a["id"] not in _listed_question_ids(listed, "Limits")
+        assert "Limits" not in {item["knowledge_point"] for item in listed["items"]}
 
 
 def test_missed_questions_unknown_subject_is_404(tmp_path):
