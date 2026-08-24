@@ -36,3 +36,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Process research dumps. Notes cited by spec or ADR stay tracked.
+docs/research/*
+!docs/research/ai-web-notebooklm-patterns.md
