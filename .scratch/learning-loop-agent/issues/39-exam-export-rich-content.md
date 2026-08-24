@@ -17,3 +17,7 @@
 2. Markdown 题目版含公式和表格，不含「答案与解析」；答案版含解析。
 3. 两种 edition 的 PDF 都是合法 PDF，能抽出公式原文和表头。
 4. 打印路径继续复用 `renderBlocks`（含 KaTeX 样式）。
+
+## Answer
+
+现有渲染/导出管线已能保留 LaTeX、表格、图片，题目版不含解析。补了带这三种块的回归：`render-document` 题序与 edition、Markdown/PDF 题目版与答案版。打印仍走 `renderBlocks` + KaTeX CSS。未改导出实现。
