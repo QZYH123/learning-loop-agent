@@ -12,7 +12,7 @@ export function navbarHtml(state) {
       <div class="nav-side nav-start">
         <button type="button" class="brand" data-action="go-learn" title="学习">
           <span class="brand-mark">${icons.feather(18)}</span>
-          <span class="brand-name">AI 学习工具</span>
+          <span class="brand-name">静案</span>
         </button>
         <span class="v-split"></span>
         <div class="dropdown">

@@ -141,7 +141,7 @@ def test_index_page_is_served(tmp_path):
     client, _ = make_client(tmp_path)
     response = client.get("/")
     assert response.status_code == 200
-    assert "AI 学习工具" in response.text
+    assert "静案" in response.text
 
 
 def test_update_model_resets_validation_to_unknown(tmp_path):

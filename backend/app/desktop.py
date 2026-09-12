@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-WINDOW_TITLE = "AI 学习工具"
+WINDOW_TITLE = "静案"
 DESKTOP_MISSING_MESSAGE = "缺少桌面窗口依赖，请先运行 pip install -r requirements-desktop.txt"
 WEBVIEW2_MESSAGE = (
     "需要 Microsoft Edge WebView2 才能打开窗口。"

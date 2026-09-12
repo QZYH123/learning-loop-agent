@@ -102,7 +102,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now
         yield
         await operations.shutdown()
 
-    app = FastAPI(title="Learning Loop Agent", lifespan=lifespan)
+    app = FastAPI(title="静案", lifespan=lifespan)
 
     @app.middleware("http")
     async def disable_frontend_cache(request, call_next):

@@ -281,7 +281,7 @@ class LearningService:
         headers = {
             "Accept": "application/json",
             "HTTP-Referer": "http://127.0.0.1:4173",
-            "X-Title": "Learning Loop",
+            "X-Title": "Stilldesk",
         }
         if payload.get("api_key"):
             headers["Authorization"] = f"Bearer {payload['api_key']}"

@@ -148,7 +148,7 @@ code, pre { font-family: var(--font-mono); }
 }
 .brand:hover { background: var(--bg-hover); }
 .brand-mark { color: var(--blue); display: flex; }
-.brand-name { font-family: var(--font-brand); font-size: 18px; letter-spacing: 0.2px; }
+.brand-name { font-family: var(--font-serif); font-size: 18px; letter-spacing: 0.18em; }
 .v-split { width: 1px; height: 18px; background: var(--border-strong); opacity: 0.6; }
 
 /* 工作区 tab：四色药丸 */

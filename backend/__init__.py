@@ -1,1 +1,1 @@
-"""AI 学习工具 backend package."""
+"""静案 backend package."""

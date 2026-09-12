@@ -68,7 +68,7 @@ def find_available_port(
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="启动 AI 学习工具")
+    parser = argparse.ArgumentParser(description="启动静案")
     ui = parser.add_mutually_exclusive_group()
     ui.add_argument(
         "--desktop",
@@ -149,11 +149,11 @@ def show_fatal_error(message: str) -> None:
     if sys.platform == "win32":
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(0, message, "AI 学习工具", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, message, "静案", 0x10)
         return
     if sys.platform == "darwin":
         subprocess.run(
-            ["osascript", "-e", f'display alert "AI 学习工具" message {json.dumps(message)} as critical'],
+            ["osascript", "-e", f'display alert "静案" message {json.dumps(message)} as critical'],
             check=False,
         )
         return

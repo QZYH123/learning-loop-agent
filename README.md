@@ -1,6 +1,6 @@
-# AI 学习工具
+# 静案
 
-对着自己的讲义出卷、作答、改错。本地运行，不用注册。
+Stilldesk. 对着自己的讲义出卷、作答、改错。本地运行，不用注册。
 
 一个人学一门课：资料上传一次，问答能点回原文，先确认题型再组卷，练习或考试，错了再练。网页、打印和 PDF 用同一份试卷。开发时也可以在浏览器里打开。
 
@@ -92,7 +92,7 @@ pip install -r requirements-desktop.txt
 bash packaging/build-macos.sh
 ```
 
-产物是 `dist/LearningLoop.app`（菜单栏显示「AI 学习工具」）。也可以在 GitHub Actions 里用 `desktop-build` workflow 打出 Windows / macOS 工件。
+产物是 `dist/LearningLoop.app`（菜单栏显示「静案」）。也可以在 GitHub Actions 里用 `desktop-build` workflow 打出 Windows / macOS 工件。
 
 开发时可用热重载：
 

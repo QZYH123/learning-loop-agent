@@ -95,7 +95,7 @@ if sys.platform == "darwin":
         icon=str(bundle_icon) if bundle_icon.is_file() else None,
         bundle_identifier="app.learningloop.desktop",
         info_plist={
-            "CFBundleDisplayName": "AI 学习工具",
+            "CFBundleDisplayName": "静案",
             "CFBundleName": "LearningLoop",
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
