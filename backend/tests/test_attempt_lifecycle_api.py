@@ -106,6 +106,24 @@ def test_list_exam_attempts_visible_to_new_client(tmp_path):
         assert any(item["id"] == attempt_id for item in listed.json()["items"])
 
 
+def test_attempt_paper_exposes_fill_blank_ids_without_answers(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        exam = _publish_exam(client)
+        fill = next(question for question in exam["document"]["questions"] if question["type"] == "fill-blank")
+        expected = [item["id"] for item in fill["answer"]["blanks"]]
+        attempt = client.post(f"/api/exams/{exam['id']}/attempts", json={"mode": "practice"}).json()
+        paper_fill = next(question for question in attempt["paper"]["questions"] if question["id"] == fill["id"])
+        assert paper_fill["blank_ids"] == expected
+        assert "answer" not in paper_fill
+        saved = client.put(
+            f"/api/attempts/{attempt['id']}/answers/{fill['id']}",
+            json={"answer": {"kind": "fill-blank", "blanks": [{"blank_id": expected[0], "value": "limit"}]}},
+        )
+        assert saved.status_code == 200
+
+
 def test_delete_exam_cascades_attempts_and_lists_404(tmp_path):
     fake = ExamFakeModel()
     client, _ = make_client(tmp_path, model_client=fake)

@@ -424,6 +424,46 @@ def test_session_agent_propose_revision_routes_to_ai_document(tmp_path):
         )
 
 
+def test_session_agent_propose_revision_ignores_draft_outside_exam_workspace(tmp_path):
+    exam_fake = ExamFakeModel()
+    client, app = make_client(tmp_path, model_client=exam_fake)
+    with client:
+        subject_id, model_id, _, blueprint_id = build_exam(client)
+        draft = _editable_draft(client, blueprint_id)
+        created = client.post(
+            f"/api/subjects/{subject_id}/documents",
+            json={
+                "instruction": "整理极限",
+                "source_version_ids": [],
+                "grounding_mode": "general-knowledge",
+                "model_id": model_id,
+            },
+        )
+        assert created.status_code == 202
+        wait_for(lambda: client.get(f"/api/operations/{created.json()['operation']['id']}").json()["status"] == "succeeded")
+        doc_id = created.json()["resource"]["id"]
+        app.state.learning_service.model_client = ImmediateFakeModelClient(
+            script=_script_tool_then_text("propose_revision", {"instruction": "写短一点"}, "提案已创建。"),
+        )
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "改文档"}).json()
+        message = _send_session_message(
+            client,
+            session["id"],
+            model_id,
+            "把文档写短一点",
+            workspace_context={
+                "workspace": "sources",
+                "draft_id": draft["id"],
+                "ai_document_id": doc_id,
+            },
+        )
+        assert message["status"] == "complete"
+        event = message["tool_events"][0]
+        assert event["resource"]["type"] == "ai-document-proposal"
+        data = app.state.learning_service._subject(subject_id)["data"]
+        assert data.get("draft_revision_proposals", []) == []
+
+
 def test_session_agent_propose_revision_without_context_creates_nothing(tmp_path):
     fake = ImmediateFakeModelClient(script=_script_tool_then_text(
         "propose_revision",

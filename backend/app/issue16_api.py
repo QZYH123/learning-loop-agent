@@ -149,6 +149,11 @@ def create_issue16_router(learning, attachments, documents) -> APIRouter:
     def get_ai_document(document_id: str):
         return documents.get_document(document_id)
 
+    @router.delete("/api/documents/{document_id}", operation_id="deleteAiDocument", status_code=204, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+    def delete_ai_document(document_id: str):
+        documents.delete_document(document_id)
+        return Response(status_code=204)
+
     @router.get("/api/documents/{document_id}/versions", operation_id="listAiDocumentVersions", response_model=AiDocumentVersionList, responses={404: {"model": ErrorResponse}})
     def list_ai_document_versions(document_id: str):
         return {"items": documents.list_versions(document_id)}

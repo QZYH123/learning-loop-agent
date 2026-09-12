@@ -39,7 +39,7 @@ export function examLeftHtml(state, handlers) {
     ? ''
     : renderChatPane(state, handlers, {
         variant: 'task',
-        placeholder: '例如 /组卷 出一套简单计网小测',
+        placeholder: '想出一套什么卷？',
         emptyTitle: '开始新对话',
       });
 }
@@ -161,7 +161,7 @@ function examMoreMenu(exam, state) {
 function renderBlueprint(state, blueprint) {
   const items = state.blueprints || [];
   if (!items.length) {
-    return `<div class="empty"><h3>还没有蓝图</h3><p class="item-sub">可以先用默认题型，再改题量和分值</p><button type="button" class="btn btn-primary" data-action="create-blueprint">新建蓝图</button></div>`;
+    return `<div class="empty"><h3>还没有蓝图</h3><button type="button" class="btn btn-primary" data-action="create-blueprint">新建蓝图</button></div>`;
   }
   return `
     <div class="resource-row">
@@ -524,7 +524,7 @@ function renderChangeSide(value) {
     if (value.score != null) parts.push(`${value.score} 分`);
     if (parts.length) return `<p>${escapeHtml(parts.join(' · '))}</p>`;
   }
-  return '<p class="item-sub">结构化修改</p>';
+  return '<p class="item-sub">无法预览这次修改</p>';
 }
 
 function renderQuestionEditor(draft, slot, question) {

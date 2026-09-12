@@ -1,15 +1,6 @@
 # AI 学习工具
 
-单用户、本地优先的桌面学习工具（开发时仍可在浏览器中运行）。当前实现覆盖：
-
-- `01-app-shell-and-subject-spaces.md`：应用壳、科目空间和本地恢复
-- `02-basic-chat-and-model-switching.md`：基础问答、模型服务配置/验证、停止生成和模型切换
-- `03-basic-source-library.md` 后端：Markdown/TXT 资料上传、异步解析、版本、缓存和删除；前端入口尚未实现
-- `04`–`07` 后端：富文档与图片解析、来源检索和引用、学习会话与对话风格；保留章节速成产物兼容接口
-- `08`–`12` 后端：组卷蓝图、增量试卷、发布、考试/练习作答、主观反馈和固定版本选区问答
-- `13`–`15` 后端：试卷版本与 AI 修改提案、统一渲染与导出、编排运行和固定评估
-- `16` 契约：多会话、消息资料上下文、模型发现、AI 资料文档和独立作答/批改状态
-- `17`–`21` 后端：多会话与临时附件、模型配置与发现、AI 资料文档版本、作答完成与批改解耦
+单用户、本地优先的桌面学习工具（开发时仍可在浏览器中运行）。当前实现覆盖资料库、依据资料的问答、三种对话风格、组卷蓝图、增量组卷、练习/考试作答、错题再练、题目版/答案版导出，以及 Windows/macOS 桌面窗口。
 
 ## 技术栈
 
@@ -105,8 +96,8 @@ pytest -q
 ## 结构
 
 ```
-backend/app/main.py          FastAPI 路由、应用壳和 API 响应
-backend/app/domain.py        纯领域规则：科目、模型服务、会话状态
+backend/app/main.py          FastAPI 应用装配和静态前端托管
+backend/app/domain.py        纯领域规则：科目、模型服务、资料库状态
 backend/app/store.py          工作区文件持久化
 backend/app/model_client.py   Chat Completions、Responses 和 Ollama 模型客户端
 backend/app/operations.py     可持久化的通用异步任务生命周期

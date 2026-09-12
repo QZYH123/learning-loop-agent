@@ -1997,6 +1997,10 @@ components:
           items: {$ref: '#/components/schemas/ChoiceOption'}
         score: {type: number, exclusiveMinimum: 0}
         answer_area: {$ref: '#/components/schemas/AnswerArea'}
+        blank_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Identifier'}
+          description: 填空题作答空位 id，不含答案。
 
     AttemptPaper:
       type: object

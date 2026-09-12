@@ -31,6 +31,8 @@ def test_attempt_list_and_continue_actions_are_wired():
     assert "continueAttempt" not in open_fn
     assert "listExamAttempts" in API_JS
     assert "this.loadExamAttempts" in APP_JS
+    assert 'data-action="close-attempt"' in ATTEMPT_JS
+    assert "action === 'close-attempt'" in APP_JS
 
 
 def test_exam_object_delete_actions_use_in_app_confirm():

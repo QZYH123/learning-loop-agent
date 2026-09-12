@@ -207,3 +207,28 @@ def test_crash_course_artifact_persists_as_compatibility_endpoint(tmp_path):
     reopened, _ = make_client(tmp_path, model_client=fake)
     with reopened:
         assert reopened.get(f"/api/artifacts/{artifact_id}").status_code == 200
+
+
+def test_unpinned_session_uses_library_sources_for_grounded_chat(tmp_path):
+    fake = LearningFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id, model_id = create_subject_and_model(client)
+        uploaded = upload_source(client, subject_id, "limits.md", b"# Limits\n\nA limit describes nearby behavior.")
+        version_id = wait_for_operation(client, uploaded.json()["operation"]["id"])["result"]["id"]
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "未钉选"}).json()
+        assert session["source_version_ids"] == []
+        sent = client.post(
+            f"/api/sessions/{session['id']}/messages",
+            json={
+                "intent": "ask",
+                "content": "What does a limit describe?",
+                "model_id": model_id,
+                "grounding_mode": "supplemental",
+            },
+        )
+        assert sent.status_code == 202
+        assert wait_for_operation(client, sent.json()["operation"]["id"])["status"] == "succeeded"
+        message = client.get(f"/api/sessions/{session['id']}").json()["messages"][-1]
+        assert message["status"] == "complete"
+        assert version_id in message["source_context"]["source_version_ids"]

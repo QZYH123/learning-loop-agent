@@ -2078,6 +2078,17 @@ paths:
               schema: {$ref: ./schemas.yaml#/components/schemas/AiDocument}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      operationId: deleteAiDocument
+      tags: [Artifacts]
+      summary: 删除 AI 资料文档
+      description: 停止后续检索；已被会话或试卷引用的版本和来源引用仍可识别。
+      x-tickets: ['16']
+      responses:
+        '204': {description: 已删除}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /api/documents/{document_id}/versions:
     parameters:

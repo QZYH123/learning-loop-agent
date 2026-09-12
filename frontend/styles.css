@@ -638,8 +638,13 @@ code, pre { font-family: var(--font-mono); }
 }
 .composer-box textarea::placeholder { color: var(--ink-4); }
 .composer-tools { display: flex; flex-direction: row; align-items: center; gap: 2px; }
-.composer-tools .icon-btn { border-color: transparent; background: transparent; width: 30px; height: 30px; color: var(--ink-3); }
-.composer-tools .icon-btn:hover { background: var(--bg-hover); color: var(--ink); }
+.composer-tools .icon-btn,
+.composer-tools .chip-btn { border-color: transparent; background: transparent; height: 30px; color: var(--ink-3); }
+.composer-tools .icon-btn { width: 30px; }
+.composer-tools .chip-btn { padding: 0 8px; }
+.composer-tools .icon-btn:hover,
+.composer-tools .chip-btn:hover { background: var(--bg-hover); color: var(--ink); }
+.q-feedback-btn { margin-top: 8px; }
 .composer-tools [data-action="send"], .composer-tools [data-action="stop-chat"] {
   margin-left: auto; width: 36px; height: 32px; border-radius: 99px;
 }
@@ -947,7 +952,8 @@ code, pre { font-family: var(--font-mono); }
 
 /* ---------- 移动端 ---------- */
 @media (max-width: 768px) {
-  .brand-name, .tab span, .chip-label { display: none; }
+  .brand, .brand-name, .v-split, .chip-label { display: none; }
+  .tab svg { display: none; }
   .tab { padding: 6px 10px; }
   .nav { padding: 0 8px; }
   .main { padding: 0 8px 8px; }

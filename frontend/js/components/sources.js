@@ -3,10 +3,12 @@ import {
   currentAiVersion,
   escapeHtml,
   formatTime,
+  isUploadedSource,
   pendingProposal,
   renderBlocks,
   sourceAnchorLabel,
   statusLabel,
+  uploadedSources,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 
@@ -30,7 +32,7 @@ export function sourcesLeftHtml(state, handlers) {
     ? ''
     : renderChatPane(state, handlers, {
         variant: 'task',
-        placeholder: '要整理或修改哪份资料？输入 / 用命令',
+        placeholder: '要整理哪份资料？',
         emptyTitle: '开始新对话',
       });
 }
@@ -38,7 +40,9 @@ export function sourcesLeftHtml(state, handlers) {
 export function sourcesRightHtml(state) {
   const collapsed = !!state.sidebarCollapsed.sources;
   const kind = state.sourceKind || 'files';
-  const source = state.sources.find((item) => item.id === state.activeSourceId) || null;
+  const source = uploadedSources(state.sources).find((item) => item.id === state.activeSourceId)
+    || uploadedSources(state.sources)[0]
+    || null;
   const doc = state.aiDocuments.find((item) => item.id === state.activeAiDocumentId) || null;
   const proposal = pendingProposal(state.aiDocumentProposals);
   return `
@@ -97,6 +101,7 @@ function renderHeader(state, kind, source, doc, proposal, collapsed) {
               ? `<button type="button" class="btn btn-primary btn-sm" data-action="apply-doc-proposal" data-id="${proposal.id}">应用修改</button>
                  <button type="button" class="icon-btn" data-action="discard-doc-proposal" data-id="${proposal.id}" title="放弃">${icons.x(15)}</button>`
               : `<button type="button" class="btn btn-primary btn-sm" data-action="revise-ai-doc">修改当前</button>
+                 <button type="button" class="icon-btn" data-action="delete-ai-doc" data-id="${doc.id}" title="删除">${icons.trash2(15)}</button>
                  <div class="dropdown">
                    <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="doc-more" title="更多" aria-expanded="${state.openMenu === 'doc-more'}">${icons.moreHorizontal(15)}</button>
                    ${state.openMenu === 'doc-more' ? docMoreMenu(doc, state) : ''}
@@ -129,7 +134,8 @@ function renderHeader(state, kind, source, doc, proposal, collapsed) {
 }
 
 function renderFiles(state, source) {
-  const sources = state.sources || [];
+  const sources = uploadedSources(state.sources);
+  const current = source && isUploadedSource(source) ? source : null;
   if (!sources.length) {
     return `<div class="empty"><h3>还没有资料</h3><button type="button" class="btn btn-primary" data-action="upload-source">${icons.upload(14)} 上传资料</button></div>`;
   }
@@ -147,13 +153,13 @@ function renderFiles(state, source) {
         .join('')}
     </div>
     ${
-      !source
+      !current
         ? `<div class="empty"><h3>选择一份资料</h3></div>`
-        : source.status === 'processing'
+        : current.status === 'processing'
           ? `<div class="boot"><div>${icons.rotateCw(18, 'spin')}</div><h3>处理中</h3></div>`
-          : source.status === 'failed'
-            ? `<div class="fail"><h3>处理失败</h3><p>${escapeHtml(source.failure?.message || '')}</p><button type="button" class="btn btn-ghost" data-action="upload-source">重新上传</button></div>`
-            : `${renderSourceVersions(state, source)}${
+          : current.status === 'failed'
+            ? `<div class="fail"><h3>处理失败</h3><p>${escapeHtml(current.failure?.message || '')}</p><button type="button" class="btn btn-ghost" data-action="upload-source">重新上传</button></div>`
+            : `${renderSourceVersions(state, current)}${
                 (state.sourceAnchors || []).length
                   ? state.sourceAnchors
                       .map(
@@ -210,10 +216,11 @@ function viewedAiVersion(doc, state) {
   return versions.find((item) => item.id === state.aiDocumentViewVersionId) || currentAiVersion(doc);
 }
 
-function docMoreMenu() {
+function docMoreMenu(doc) {
   return `
     <div class="menu menu-right" role="menu">
       <button type="button" class="menu-item" data-action="create-ai-doc">${icons.plus(14)}<span>生成文档</span></button>
+      ${doc ? `<button type="button" class="menu-item" data-action="delete-ai-doc" data-id="${doc.id}">${icons.trash2(14)}<span>删除</span></button>` : ''}
     </div>
   `;
 }

@@ -31,6 +31,16 @@ export function renderChatPane(state, handlers, options = {}) {
     : !model
       ? '请先配置模型'
       : (options.placeholder || '想学点什么？');
+  const emptyTitle = !state.activeSubjectId
+    ? '还没有科目'
+    : !model
+      ? '还没有模型'
+      : (options.emptyTitle || '开始新对话');
+  const emptyAction = !state.activeSubjectId
+    ? '<button type="button" class="btn btn-primary" data-action="open-subject">新建科目</button>'
+    : !model
+      ? '<button type="button" class="btn btn-primary" data-action="open-models">配置模型</button>'
+      : (options.emptyAction || '');
   const collapsed = !!state.sidebarCollapsed[state.workspace === 'learn' ? 'learn' : state.workspace];
   const isBlank = options.variant === 'learn' && !generating && (!session || messages.length === 0);
 
@@ -96,7 +106,7 @@ export function renderChatPane(state, handlers, options = {}) {
       <div class="chat-stream" id="chat-stream">
         ${
           messages.length === 0
-            ? emptyChat(options)
+            ? emptyChat({ emptyTitle, emptyAction })
             : messages.map((msg) => renderMessage(msg)).join('')
         }
         ${commandBusyRow(state, session)}
@@ -117,7 +127,10 @@ export function renderChatPane(state, handlers, options = {}) {
           <textarea id="composer-input" rows="2" placeholder="${escapeHtml(placeholder)}" ${canCompose ? '' : 'disabled'}>${escapeHtml(state.composerText)}</textarea>
           <div class="composer-tools">
             <div class="dropdown composer-grounding">
-              <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="grounding" title="依据：${groundingLabel(state.groundingMode)}" aria-label="依据：${groundingLabel(state.groundingMode)}" aria-expanded="${state.openMenu === 'grounding'}">${icons.shield(15)}</button>
+              <button type="button" class="chip-btn" data-action="toggle-menu" data-menu="grounding" title="依据：${groundingLabel(state.groundingMode)}" aria-label="依据：${groundingLabel(state.groundingMode)}" aria-expanded="${state.openMenu === 'grounding'}">
+                ${icons.shield(15)}
+                <span class="chip-label">${groundingLabel(state.groundingMode)}</span>
+              </button>
               ${state.openMenu === 'grounding' ? groundingMenu(state.groundingMode) : ''}
             </div>
             <button type="button" class="icon-btn" data-action="pick-attach" title="附件" ${canCompose ? '' : 'disabled'}>${icons.paperclip(15)}</button>
@@ -325,7 +338,8 @@ function commandBusyRow(state, session) {
 }
 
 function emptyChat(options) {
-  return `<div class="empty"><h3>${escapeHtml(options.emptyTitle || '开始新对话')}</h3></div>`;
+  const action = options.emptyAction || '';
+  return `<div class="empty"><h3>${escapeHtml(options.emptyTitle || '开始新对话')}</h3>${action}</div>`;
 }
 
 function renderMessage(msg) {
@@ -335,7 +349,7 @@ function renderMessage(msg) {
   const plainText = blocksToText(msg.content);
   const status = statusLabel('message', msg.status);
   const grounding = msg.grounding_result
-    ? { covered: '依据资料', 'not-covered': '未覆盖', 'general-knowledge': '常识', supplemental: '补充' }[msg.grounding_result]
+    ? { covered: '依据资料', 'not-covered': '未覆盖', 'general-knowledge': '常识', supplemental: '资料+补充' }[msg.grounding_result]
     : '';
   const cites = (msg.citations || [])
     .slice(0, 3)

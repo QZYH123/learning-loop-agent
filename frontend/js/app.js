@@ -40,6 +40,7 @@ import {
   officialSelection,
   readySourceVersionIds,
   defaultGroundingMode,
+  uploadedSources,
   nextOptionId,
   sessionVisible,
   titleFromMessage,
@@ -345,7 +346,7 @@ class App {
       workspaceRoot.querySelector('#retry-boot').onclick = () => this.bootstrap();
     } else if (!state.activeSubjectId) {
       this.resetWorkspaceRegions();
-      workspaceRoot.innerHTML = `<div class="empty"><h3>开始新对话</h3><button type="button" class="btn btn-primary" data-action="open-subject">新建科目</button></div>`;
+      workspaceRoot.innerHTML = `<div class="empty"><h3>还没有科目</h3><button type="button" class="btn btn-primary" data-action="open-subject">新建科目</button></div>`;
     } else {
       this.renderWorkspace(state, workspaceRoot, handlers);
     }
@@ -480,6 +481,7 @@ class App {
       else if (action === 'select-ai-doc') await this.selectAiDoc(id);
       else if (action === 'create-ai-doc') await this.createAiDocumentFromPrompt();
       else if (action === 'revise-ai-doc') this.reviseCurrentAiDocument();
+      else if (action === 'delete-ai-doc') await this.deleteAiDocument(id);
       else if (action === 'view-source-version') await this.loadSourceDetail(id, target.dataset.versionId);
       else if (action === 'view-ai-doc-version') store.setState({ aiDocumentViewVersionId: target.dataset.versionId });
       else if (action === 'restore-ai-doc-version') await this.restoreAiDocumentVersion(id, target.dataset.versionId);
@@ -573,11 +575,15 @@ class App {
         await this.loadExamAttempts(examId);
         await this.loadMissedQuestions();
       }
-      else if (action === 'go-exam') store.setState({ workspace: 'exam', examTab: 'blueprint', mobilePane: { ...store.state.mobilePane, exam: 'ai' } });
+      else if (action === 'go-exam') store.setState({ workspace: 'exam', examTab: 'blueprint', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
       else if (action === 'focus-composer') this.focusComposer();
       else if (action === 'start-attempt') await this.startAttempt(id, target.dataset.mode);
       else if (action === 'start-another') store.setState({ startAnotherOpen: !store.state.startAnotherOpen });
       else if (action === 'open-attempt') await this.openAttempt(id);
+      else if (action === 'close-attempt') {
+        store.setState({ activeAttempt: null, activeAttemptId: null, review: null, startAnotherOpen: false });
+        if (store.state.activeExamId) await this.loadExamAttempts(store.state.activeExamId);
+      }
       else if (action === 'complete-attempt') await this.completeAttempt(id);
       else if (action === 'continue-attempt') await this.continueAttempt(id);
       else if (action === 'grade-attempt') await this.gradeAttempt(id);
@@ -667,6 +673,7 @@ class App {
     if (action === 'delete-subject') await this.deleteSubjectConfirmed();
     else if (action === 'delete-session') await this.deleteSessionConfirmed(store.state.confirmSessionId);
     else if (action === 'delete-source') await this.deleteSourceConfirmed(store.state.confirmSourceId);
+    else if (action === 'delete-ai-doc') await this.deleteAiDocumentConfirmed(store.state.confirmAiDocumentId);
     else if (action === 'delete-blueprint') await this.deleteBlueprintConfirmed(store.state.confirmBlueprintId);
     else if (action === 'delete-draft') await this.deleteDraftConfirmed(store.state.confirmDraftId);
     else if (action === 'delete-exam') await this.deleteExamConfirmed(store.state.confirmExamId);
@@ -752,6 +759,7 @@ class App {
         activeSubjectId: workspace.active_subject_id || subjects[0]?.id || null,
         currentModelId: current?.id || models[0]?.id || null,
       });
+      if (workspace.load_issue) store.addToast(workspace.load_issue, 'error');
       if (store.state.activeSubjectId) await this.loadSubject(store.state.activeSubjectId);
     } catch (err) {
       store.setState({ bootstrapped: true, loadError: err.message });
@@ -772,6 +780,7 @@ class App {
     const preferred = visible.find((item) => item.id === sessionsData.active_session_id);
     const activeSessionId = preferred?.id || visible[0]?.id || null;
     const sources = sourcesData.items || [];
+    const files = uploadedSources(sources);
     const docs = docsData.items || [];
     const blueprints = blueprintsData.items || [];
     const drafts = draftsData.items || [];
@@ -780,7 +789,7 @@ class App {
       sessions,
       activeSessionId,
       sources,
-      activeSourceId: store.state.activeSourceId && sources.some((item) => item.id === store.state.activeSourceId) ? store.state.activeSourceId : sources[0]?.id || null,
+      activeSourceId: store.state.activeSourceId && files.some((item) => item.id === store.state.activeSourceId) ? store.state.activeSourceId : files[0]?.id || null,
       aiDocuments: docs,
       activeAiDocumentId: store.state.activeAiDocumentId && docs.some((item) => item.id === store.state.activeAiDocumentId) ? store.state.activeAiDocumentId : docs[0]?.id || null,
       blueprints,
@@ -1118,7 +1127,7 @@ class App {
       try {
         await this.runCommand(command.def, command.args, content);
       } catch (err) {
-        store.addToast(err.message, 'error');
+        store.addToast(sanitizeErrorMessage(err.message), 'error');
       } finally {
         this.sending = false;
       }
@@ -1129,7 +1138,7 @@ class App {
     try {
       await this.send();
     } catch (err) {
-      store.addToast(err.message, 'error');
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
     } finally {
       this.sending = false;
     }
@@ -1281,12 +1290,18 @@ class App {
   }
 
   currentWorkspaceContext() {
-    const context = { workspace: store.state.workspace || 'learn' };
-    if (store.state.activeBlueprintId) context.blueprint_id = store.state.activeBlueprintId;
-    if (store.state.activeDraftId) context.draft_id = store.state.activeDraftId;
-    if (store.state.activeExamId) context.exam_id = store.state.activeExamId;
-    if (store.state.activeAiDocumentId) context.ai_document_id = store.state.activeAiDocumentId;
-    if (store.state.activeAttemptId) context.attempt_id = store.state.activeAttemptId;
+    const workspace = store.state.workspace || 'learn';
+    const context = { workspace };
+    if (workspace === 'exam') {
+      const tab = store.state.examTab || 'blueprint';
+      if (tab === 'draft' && store.state.activeDraftId) context.draft_id = store.state.activeDraftId;
+      else if (tab === 'exam' && store.state.activeExamId) context.exam_id = store.state.activeExamId;
+      else if (store.state.activeBlueprintId) context.blueprint_id = store.state.activeBlueprintId;
+    } else if (workspace === 'sources' && (store.state.sourceKind || 'files') === 'docs' && store.state.activeAiDocumentId) {
+      context.ai_document_id = store.state.activeAiDocumentId;
+    } else if (workspace === 'attempt' && store.state.activeAttemptId) {
+      context.attempt_id = store.state.activeAttemptId;
+    }
     return context;
   }
 
@@ -1808,8 +1823,31 @@ class App {
 
   reviseCurrentAiDocument() {
     this.focusComposer();
-    const text = store.state.composerText.trim();
-    if (!text.startsWith('/改文档')) store.setState({ composerText: text ? `/改文档 ${text}` : '/改文档 ' });
+  }
+
+  async deleteAiDocument(documentId) {
+    store.setState({ confirmAiDocumentId: documentId });
+    this.askConfirm({
+      title: '删除文档',
+      message: '将删除这份 AI 文档。已引用它的会话仍会保留历史来源。',
+      ok: '删除',
+      action: 'delete-ai-doc',
+    });
+  }
+
+  async deleteAiDocumentConfirmed(documentId) {
+    if (!documentId) return;
+    await api.deleteAiDocument(documentId);
+    const data = await api.listAiDocuments(store.state.activeSubjectId);
+    const docs = data.items || [];
+    store.setState({
+      aiDocuments: docs,
+      activeAiDocumentId: docs[0]?.id || null,
+      aiDocumentProposals: [],
+      confirmAiDocumentId: null,
+    });
+    if (store.state.activeAiDocumentId) await this.loadAiDocDetail(store.state.activeAiDocumentId);
+    store.addToast('文档已删除', 'success');
   }
 
   async restoreAiDocumentVersion(documentId, versionId) {
@@ -2194,6 +2232,7 @@ class App {
       } catch {
         window.clearInterval(this.draftPoll);
         this.draftPoll = null;
+        store.addToast('组题进度中断，请稍后重试', 'error');
       }
     }, 1500);
   }
@@ -2247,6 +2286,7 @@ class App {
         window.clearInterval(this.generatingPoll);
         this.generatingPoll = null;
         this.generatingWatchSessionId = null;
+        store.addToast('回答进度中断，请稍后重试', 'error');
       }
     }, 500);
   }
@@ -2277,6 +2317,7 @@ class App {
       } catch {
         window.clearInterval(this.sourcePoll);
         this.sourcePoll = null;
+        store.addToast('资料处理进度中断，请稍后重试', 'error');
       }
     }, 1500);
   }
@@ -2597,7 +2638,7 @@ class App {
       await api.saveAttemptAnswer(attemptId, questionId, answer);
       await this.refreshAttempt(attemptId);
     } catch (err) {
-      store.addToast(err.message, 'error');
+      store.addToast(sanitizeErrorMessage(err.message), 'error');
     }
   }
 

@@ -2,8 +2,8 @@ import { icons } from '../icons.js';
 import {
   QUESTION_TYPES,
   answerForQuestion,
+  blankIdsForQuestion,
   buildAnswerPayload,
-  countBlanks,
   escapeHtml,
   feedbackForQuestion,
   formatTime,
@@ -49,7 +49,7 @@ export function attemptRightHtml(state) {
   const attempt = state.activeAttempt;
   return `
         <div class="task">
-          ${tab === 'missed' ? renderMissedHeader(collapsed) : renderHeader(state, exam, attempt, collapsed)}
+          ${tab === 'missed' ? renderMissedHeader(state, collapsed) : renderHeader(state, exam, attempt, collapsed)}
           <div class="local-nav">
             <button type="button" class="seg ${tab === 'exams' ? 'is-active' : ''}" data-action="attempt-tab" data-tab="exams">试卷</button>
             <button type="button" class="seg ${tab === 'missed' ? 'is-active' : ''}" data-action="attempt-tab" data-tab="missed">错题</button>
@@ -97,38 +97,51 @@ function renderHeader(state, exam, attempt, collapsed) {
     <div class="pane-head">
       <div class="head-meta">
         ${expand}
+        ${attempt ? `<button type="button" class="icon-btn" data-action="close-attempt" title="返回试卷">${icons.chevronLeft(15)}</button>` : ''}
         <div class="pane-title"><span>${escapeHtml(title)}</span></div>
-        ${attempt ? `<span class="status ${attempt.status === 'submitted' ? 'status-ok' : 'status-info'}">${statusLabel('attempt', attempt.status)}</span>` : ''}
+        ${attempt ? attemptStatusPill(attempt) : ''}
       </div>
       <div class="pane-actions">
         ${primary}
         ${attemptTimerHtml(state, exam, attempt)}
-        ${
-          attempt?.mode === 'practice' && attempt?.completion_status !== 'completed'
-            ? `<button type="button" class="icon-btn ${attempt.show_suggested_score ? 'is-active' : ''}" data-action="toggle-suggested-score" data-id="${attempt.id}" title="${attempt.show_suggested_score ? '隐藏建议分' : '显示建议分'}" aria-label="${attempt.show_suggested_score ? '隐藏建议分' : '显示建议分'}">${icons.tag(15)}</button>`
-            : ''
-        }
-        ${
-          attempt?.status === 'in-progress' && attempt?.completion_status !== 'completed'
-            ? `<button type="button" class="icon-btn" data-action="pause-attempt" data-id="${attempt.id}" title="暂停">${icons.pause(15)}</button>`
-            : attempt?.status === 'paused'
-              ? `<button type="button" class="icon-btn" data-action="resume-attempt" data-id="${attempt.id}" title="继续">${icons.play(15)}</button>`
-              : ''
-        }
+        ${attemptMoreMenu(state, attempt)}
       </div>
     </div>`;
 }
 
-function renderMissedHeader(collapsed) {
+function renderMissedHeader(state, collapsed) {
   const expand = collapsed
     ? `<button type="button" class="icon-btn" data-action="collapse-left" title="展开">${icons.panelLeftOpen(15)}</button>`
     : '';
+  const hasMissed = (state.missedQuestions || []).length > 0;
   return `
     <div class="pane-head">
       <div class="head-meta">${expand}<div class="pane-title"><span>错题</span></div></div>
       <div class="pane-actions">
-        <button type="button" class="btn btn-primary btn-sm" data-action="practice-missed-set">再练一套</button>
+        ${hasMissed ? '<button type="button" class="btn btn-primary btn-sm" data-action="practice-missed-set">再练一套</button>' : ''}
       </div>
+    </div>`;
+}
+
+function attemptMoreMenu(state, attempt) {
+  if (!attempt) return '';
+  const items = [];
+  if (attempt.mode === 'practice' && attempt.completion_status !== 'completed') {
+    items.push(`<button type="button" class="menu-item" role="menuitem" data-action="toggle-suggested-score" data-id="${attempt.id}">${icons.tag(14)}<span>${attempt.show_suggested_score ? '隐藏建议分' : '显示建议分'}</span></button>`);
+  }
+  if (attempt.status === 'in-progress' && attempt.completion_status !== 'completed') {
+    items.push(`<button type="button" class="menu-item" role="menuitem" data-action="pause-attempt" data-id="${attempt.id}">${icons.pause(14)}<span>暂停</span></button>`);
+  } else if (attempt.status === 'paused') {
+    items.push(`<button type="button" class="menu-item" role="menuitem" data-action="resume-attempt" data-id="${attempt.id}">${icons.play(14)}<span>继续</span></button>`);
+  }
+  if (attempt.completion_status === 'completed' && attempt.grading_status !== 'completed') {
+    items.push(`<button type="button" class="menu-item" role="menuitem" data-action="continue-attempt" data-id="${attempt.id}">${icons.play(14)}<span>继续作答</span></button>`);
+  }
+  if (!items.length) return '';
+  return `
+    <div class="dropdown">
+      <button type="button" class="icon-btn" data-action="toggle-menu" data-menu="attempt-more" title="更多" aria-expanded="${state.openMenu === 'attempt-more'}">${icons.moreHorizontal(15)}</button>
+      ${state.openMenu === 'attempt-more' ? `<div class="menu menu-right" role="menu">${items.join('')}</div>` : ''}
     </div>`;
 }
 
@@ -231,6 +244,19 @@ function renderAttemptList(state) {
   `;
 }
 
+function attemptStatusPill(attempt) {
+  if (attempt.completion_status === 'completed') {
+    if (attempt.grading_status === 'completed') return '<span class="status status-ok">已批改</span>';
+    if (attempt.grading_status === 'failed') return '<span class="status status-bad">批改失败</span>';
+    if (attempt.grading_status === 'grading' || attempt.grading_status === 'queued') {
+      return '<span class="status status-info">批改中</span>';
+    }
+    return '<span class="status status-ok">已完成</span>';
+  }
+  const kind = attempt.status === 'paused' ? 'status-warn' : 'status-info';
+  return `<span class="status ${kind}">${statusLabel('attempt', attempt.status)}</span>`;
+}
+
 function attemptPrimary(attempt) {
   if (!attempt) return '';
   if (attempt.completion_status !== 'completed') {
@@ -239,10 +265,7 @@ function attemptPrimary(attempt) {
   if (attempt.grading_status === 'completed') {
     return `<button type="button" class="btn btn-ghost btn-sm" data-action="continue-attempt" data-id="${attempt.id}">继续作答</button>`;
   }
-  return `
-    <button type="button" class="btn btn-ghost btn-sm" data-action="continue-attempt" data-id="${attempt.id}">继续作答</button>
-    <button type="button" class="btn btn-primary btn-sm" data-action="grade-attempt" data-id="${attempt.id}" ${attempt.grading_status === 'grading' || attempt.grading_status === 'queued' ? 'disabled' : ''}>提交批改</button>
-  `;
+  return `<button type="button" class="btn btn-primary btn-sm" data-action="grade-attempt" data-id="${attempt.id}" ${attempt.grading_status === 'grading' || attempt.grading_status === 'queued' ? 'disabled' : ''}>提交批改</button>`;
 }
 
 function renderBody(state, exam, attempt) {
@@ -307,7 +330,7 @@ function renderQuestion(question, attempt, locked, hideFeedback, reviewedQuestio
       ${renderInput(question, saved, locked)}
       ${
         attempt.mode === 'practice' && !locked && SUBJECTIVE_TYPES.has(question.type)
-          ? `<button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" data-action="ask-feedback" data-attempt-id="${attempt.id}" data-id="${question.id}">本题反馈</button>`
+          ? `<button type="button" class="btn btn-ghost btn-sm q-feedback-btn" data-action="ask-feedback" data-attempt-id="${attempt.id}" data-id="${question.id}">本题反馈</button>`
           : ''
       }
       ${reviewedQuestion ? renderSolution(reviewedQuestion, { showAnswer: true }) : ''}
@@ -340,10 +363,10 @@ function renderInput(question, saved, locked) {
     `;
   }
   if (question.type === 'fill-blank') {
-    const count = countBlanks(question);
+    const ids = blankIdsForQuestion(question);
     const blanks = answer?.blanks || [];
-    return `<div class="fb">${Array.from({ length: count }, (_, index) => {
-      const current = blanks[index]?.value || '';
+    return `<div class="fb">${ids.map((blankId, index) => {
+      const current = blanks.find((item) => item.blank_id === blankId)?.value || blanks[index]?.value || '';
       return `<input class="input" name="q-${question.id}-b${index}" value="${escapeHtml(current)}" ${locked ? 'disabled' : ''} placeholder="空 ${index + 1}" />`;
     }).join('')}</div>`;
   }

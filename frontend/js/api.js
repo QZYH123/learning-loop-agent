@@ -36,7 +36,7 @@ async function request(endpoint, options = {}) {
     response = await fetch(endpoint, { ...options, headers });
   } catch (err) {
     throw new ApiError(
-      '无法连接本地服务，请先运行 python3 -m backend.app（http://127.0.0.1:4173）',
+      '无法连接本地服务，请确认应用已打开',
       'NETWORK_ERROR',
       0,
       { cause: String(err?.message || err) },
@@ -92,7 +92,7 @@ async function downloadFile(endpoint, { accept, fallbackName }) {
     response = await fetch(endpoint, { headers: { Accept: accept } });
   } catch (err) {
     throw new ApiError(
-      '无法连接本地服务，请先运行 python3 -m backend.app（http://127.0.0.1:4173）',
+      '无法连接本地服务，请确认应用已打开',
       'NETWORK_ERROR',
       0,
       { cause: String(err?.message || err) },
@@ -304,6 +304,9 @@ export const api = {
   },
   restoreAiDocumentVersion(documentId, versionId) {
     return json('POST', `/api/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}/restore`);
+  },
+  deleteAiDocument(documentId) {
+    return request(`/api/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
   },
 
   listBlueprints(subjectId) {

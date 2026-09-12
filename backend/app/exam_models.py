@@ -337,6 +337,7 @@ class AttemptQuestion(ContractModel):
     options: list[ChoiceOption] = Field(default_factory=list)
     score: float = Field(gt=0)
     answer_area: AnswerArea
+    blank_ids: list[str] = Field(default_factory=list)
 
 
 class AttemptPaper(ContractModel):

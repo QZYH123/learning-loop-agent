@@ -46,7 +46,7 @@ def test_revision_preview_renders_question_structure():
     assert "function renderChangeSide(" in EXAM_JS
     assert "renderBlocks(value.stem)" in EXAM_JS
     assert "stringifyChange" not in EXAM_JS
-    assert "结构化修改" in EXAM_JS
+    assert "无法预览这次修改" in EXAM_JS
 
 
 def test_source_document_and_exam_versions_are_restorable():
@@ -56,6 +56,8 @@ def test_source_document_and_exam_versions_are_restorable():
     assert "恢复此版" in SOURCES_JS
     assert "修改当前" in SOURCES_JS
     assert 'data-action="revise-ai-doc"' in SOURCES_JS
+    assert 'data-action="delete-ai-doc"' in SOURCES_JS
+    assert "deleteAiDocument(" in API_JS
     assert "restoreExamVersion(" in API_JS
     assert "restoreAiDocumentVersion(" in API_JS
     assert 'data-action="restore-exam-version"' in EXAM_JS

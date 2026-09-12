@@ -265,8 +265,8 @@ export const CHAT_STYLES = [
 
 export const GROUNDING_MODES = [
   { id: 'general-knowledge', label: '常识' },
-  { id: 'strict', label: '严格' },
-  { id: 'supplemental', label: '补充' },
+  { id: 'strict', label: '只用资料' },
+  { id: 'supplemental', label: '资料+补充' },
 ];
 
 export const API_FORMATS = [
@@ -334,6 +334,14 @@ export function groundingLabel(value) {
 
 export function styleLabel(value) {
   return CHAT_STYLES.find((item) => item.id === value)?.label || '普通问答';
+}
+
+export function isUploadedSource(source) {
+  return !String(source?.id || '').startsWith('ai-document-');
+}
+
+export function uploadedSources(sources) {
+  return (sources || []).filter(isUploadedSource);
 }
 
 export function readySourceVersionIds(sources) {
@@ -410,10 +418,18 @@ export function feedbackForQuestion(attempt, questionId) {
   return (attempt?.feedback || []).find((item) => item.question_id === questionId) || null;
 }
 
-export function countBlanks(question) {
+export function blankIdsForQuestion(question) {
+  if (Array.isArray(question?.blank_ids) && question.blank_ids.length) return question.blank_ids;
+  const fromAnswer = (question?.answer?.blanks || []).map((item) => item.id).filter(Boolean);
+  if (fromAnswer.length) return fromAnswer;
   const text = blocksToText(question?.stem);
   const marks = text.match(/_{3,}|（\s*）|\(\s*\)/g);
-  return Math.max(1, marks?.length || question?.answer_area?.lines || 1);
+  const count = Math.max(1, marks?.length || 1);
+  return Array.from({ length: count }, (_, index) => `blank-${index + 1}`);
+}
+
+export function countBlanks(question) {
+  return blankIdsForQuestion(question).length;
 }
 
 export function buildAnswerPayload(question, form) {
@@ -430,15 +446,14 @@ export function buildAnswerPayload(question, form) {
     return { kind: 'true-false', value: value === 'true' };
   }
   if (type === 'fill-blank') {
-    const blanks = [];
-    const count = countBlanks(question);
-    for (let index = 0; index < count; index += 1) {
-      blanks.push({
-        blank_id: `blank-${index + 1}`,
+    const ids = blankIdsForQuestion(question);
+    return {
+      kind: 'fill-blank',
+      blanks: ids.map((blankId, index) => ({
+        blank_id: blankId,
         value: String(form.get(`q-${question.id}-b${index}`) || ''),
-      });
-    }
-    return { kind: 'fill-blank', blanks };
+      })),
+    };
   }
   return { kind: 'text', text: String(form.get(`q-${question.id}`) || '') };
 }

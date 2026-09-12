@@ -437,7 +437,9 @@ class LearningService:
         if not model_id:
             raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
         profile = self._model(model_id)
-        source_ids = payload.get("source_version_ids", chat["source_version_ids"])
+        source_ids = list(payload.get("source_version_ids", chat.get("source_version_ids") or []))
+        if not source_ids:
+            source_ids = self._ready_source_version_ids(subject_id)
         grounding_mode = payload.get("grounding_mode", chat["grounding_mode"])
         if payload.get("only_use_specified_sources"):
             source_ids = list(payload.get("source_version_ids") or payload.get("focused_source_version_ids") or [])
@@ -725,18 +727,19 @@ class LearningService:
         if not model_id:
             raise LearningError(409, "CHAT_MODEL_NOT_SELECTED", "请先选择模型服务")
         profile = self._model(model_id)
-        session_source_ids = list(session.get("source_version_ids", []))
+        session_pins = list(session.get("source_version_ids") or [])
+        scope_ids = session_pins or self._ready_source_version_ids(subject["id"])
         requested_ids = list(payload.get("source_version_ids") or [])
-        if not set(requested_ids) <= set(session_source_ids):
+        if requested_ids and not set(requested_ids) <= set(scope_ids):
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "消息资料必须属于当前会话资料范围")
-        selected_ids = session_source_ids
+        selected_ids = list(scope_ids)
         if payload.get("only_use_specified_sources"):
             selected_ids = list(requested_ids or payload.get("focused_source_version_ids") or [])
             if not selected_ids:
                 raise LearningError(422, "VALIDATION_FAILED", "仅使用指定资料时必须提供资料版本")
-        if not set(selected_ids) <= set(session_source_ids):
-            raise LearningError(409, "SOURCE_VERSION_MISMATCH", "消息资料必须属于当前会话资料范围")
-        grounding_mode = payload.get("grounding_mode") or ("strict" if selected_ids else "general-knowledge")
+            if not set(selected_ids) <= set(scope_ids):
+                raise LearningError(409, "SOURCE_VERSION_MISMATCH", "消息资料必须属于当前会话资料范围")
+        grounding_mode = payload.get("grounding_mode") or ("supplemental" if selected_ids else "general-knowledge")
         focused_ids = [item for item in payload.get("focused_source_version_ids") or [] if item in selected_ids]
         if payload.get("focused_source_version_ids") and len(focused_ids) != len(payload["focused_source_version_ids"]):
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
@@ -1247,20 +1250,24 @@ class LearningService:
             "updated_at": model["updated_at"],
         }
 
-    def _new_chat(self, subject: dict) -> dict:
-        timestamp = self._now()
-        source_ids = [
+    def _ready_source_version_ids(self, subject_id: str) -> list[str]:
+        subject = self._subject(subject_id)
+        return [
             item["current_version"]["id"]
             for item in subject.get("data", {}).get("sources", [])
-            if item.get("status") == "ready" and item.get("current_version")
+            if item.get("status") == "ready" and (item.get("current_version") or {}).get("id")
         ]
+
+    def _new_chat(self, subject: dict) -> dict:
+        timestamp = self._now()
+        source_ids = self._ready_source_version_ids(subject["id"])
         return {
             "id": self._ids("chat"),
             "subject_id": subject["id"],
             "learning_mode": "chat",
             "chat_style": "default",
             "goal": None,
-            "grounding_mode": "strict" if source_ids else "general-knowledge",
+            "grounding_mode": "supplemental" if source_ids else "general-knowledge",
             "source_version_ids": source_ids,
             "active_model_id": self.workspace_service.snapshot().get("current_model_id"),
             "socratic_state": None,
@@ -1756,9 +1763,19 @@ class LearningService:
         model_id: str | None,
     ) -> tuple[str, dict | None, str]:
         context = workspace_context if isinstance(workspace_context, dict) else {}
+        workspace = context.get("workspace")
         draft_id = context.get("draft_id")
         exam_id = context.get("exam_id")
         ai_document_id = context.get("ai_document_id")
+        if workspace == "sources":
+            draft_id = None
+            exam_id = None
+        elif workspace == "exam":
+            ai_document_id = None
+            if draft_id:
+                exam_id = None
+        elif workspace in {"learn", "attempt"}:
+            draft_id = exam_id = ai_document_id = None
         if draft_id:
             if self.exams is None:
                 raise RuntimeError("组卷服务尚未就绪")

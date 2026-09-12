@@ -806,15 +806,7 @@ class ExamService:
             "title": document["title"],
             "instructions": document["instructions"],
             "questions": [
-                {
-                    "id": question["id"],
-                    "ordinal": index + 1,
-                    "type": question["type"],
-                    "stem": question["stem"],
-                    "options": question.get("options", []),
-                    "score": question["score"],
-                    "answer_area": question["answer_area"],
-                }
+                self._attempt_paper_question(question, index)
                 for index, question in enumerate(document["questions"])
             ],
             "total_score": sum(question["score"] for question in document["questions"]),
@@ -2194,6 +2186,25 @@ class ExamService:
         if viewed["mode"] == "exam" and viewed.get("completion_status") != "completed":
             return {**viewed, "feedback": []}
         return viewed
+
+    @staticmethod
+    def _attempt_paper_question(question: dict, index: int) -> dict:
+        item = {
+            "id": question["id"],
+            "ordinal": index + 1,
+            "type": question["type"],
+            "stem": question["stem"],
+            "options": question.get("options", []),
+            "score": question["score"],
+            "answer_area": question["answer_area"],
+        }
+        if question.get("type") == "fill-blank":
+            item["blank_ids"] = [
+                blank["id"]
+                for blank in (question.get("answer") or {}).get("blanks") or []
+                if blank.get("id")
+            ]
+        return item
 
     def _attempt_summary(self, attempt: dict) -> dict:
         viewed = self._attempt_view(attempt)

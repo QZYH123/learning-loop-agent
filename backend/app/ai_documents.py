@@ -79,6 +79,35 @@ class AiDocumentService:
         operation = self.operations.start("ai-document-generation", worker, subject_id=subject_id, resource=resource)
         return {"operation": operation, "resource": resource}
 
+    def delete_document(self, document_id: str) -> None:
+        subject, document = self._find(document_id)
+        if self.operations.has_active("ai-document", document_id):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "文档仍在生成或修改中")
+        proposals = [
+            item
+            for item in subject.get("data", {}).get("ai_document_proposals", [])
+            if item.get("document_id") == document_id
+        ]
+        if any(item.get("status") == "generating" for item in proposals):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "文档仍在生成或修改中")
+        if any(self.operations.has_active("ai-document-proposal", item["id"]) for item in proposals):
+            raise LearningError(409, "OPERATION_IN_PROGRESS", "文档仍在生成或修改中")
+        self._mutate(
+            subject["id"],
+            lambda data: {
+                **data,
+                "ai_documents": [item for item in data.get("ai_documents", []) if item.get("id") != document_id],
+                "ai_document_proposals": [
+                    item for item in data.get("ai_document_proposals", []) if item.get("document_id") != document_id
+                ],
+            },
+        )
+        try:
+            self.sources.delete_source(document_id)
+        except SourceLibraryError as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise LearningError(exc.status_code, exc.code, str(exc)) from exc
+
     def restore_version(self, document_id: str, version_id: str) -> dict:
         subject, document = self._find(document_id)
         version = next((item for item in document.get("versions", []) if item["id"] == version_id), None)

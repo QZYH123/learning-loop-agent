@@ -528,6 +528,10 @@ def test_attachment_and_ai_document_lifecycle(tmp_path):
             f"/api/document-revision-proposals/{discarded['resource']['id']}"
         ).json()
         assert proposal["status"] == "discarded"
+        assert client.delete(f"/api/documents/{document['id']}").status_code == 204
+        assert client.get(f"/api/documents/{document['id']}").status_code == 404
+        remaining = client.get(f"/api/subjects/{subject_id}/sources").json()["items"]
+        assert all(item["id"] != document["id"] for item in remaining)
 
 
 def test_failed_ai_document_generation_does_not_leave_ready_document(tmp_path):
