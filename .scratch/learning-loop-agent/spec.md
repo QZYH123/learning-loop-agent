@@ -200,3 +200,4 @@
 - NotebookLM 官方资料库、聊天记录、引用和学习产物模式的调研结论已作为设计依据保存。
 - 当前代码已有 FastAPI 后端和原生浏览器前端，但既有实现不是不可变前提；布局以 ADR 0006 和 `docs/frontend-workspaces.md` 为准。
 - 实现工作拆为 `.scratch/learning-loop-agent/issues/` 下的 tracer-bullet tickets，按 `Blocked by` 的依赖关系从无阻塞 ticket 开始。
+- 2026-09-12：功能闭环已齐，先交付使用。不为宣传加码出处对准、出卷路径或本机模型入门，除非使用中证明它们挡住闭环。
