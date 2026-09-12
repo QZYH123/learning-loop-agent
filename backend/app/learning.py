@@ -449,19 +449,9 @@ class LearningService:
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
         attachment_ids = list(payload.get("attachment_ids") or [])
         attachment_inputs = self._attachment_inputs(subject_id, attachment_ids, profile)
-        selection = payload.get("selection")
-        selection_context = None
+        selection, selection_context = self._resolve_selection(payload.get("selection"), profile)
         if selection:
-            if self.selection_resolver is None:
-                raise LearningError(409, "CHAT_SELECTION_INVALID", "选区问答服务尚未就绪")
-            resolved = self.selection_resolver(selection, include_context=True)
-            if isinstance(resolved, tuple):
-                selection, selection_context = resolved
-            else:
-                selection = resolved
             payload = {**payload, "selection": selection}
-        if selection and selection.get("image_asset") and not profile.get("capabilities", {}).get("vision"):
-            raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入，请更换具备视觉能力的模型")
         if not profile.get("capabilities", {}).get("vision"):
             image_only = any(
                 self.source_library.get_source(self.source_library.get_version(version_id)["source_id"])["media_kind"] == "image"
@@ -475,52 +465,26 @@ class LearningService:
         user_id = self._ids("message")
         if attachment_ids:
             self.attachments.claim(subject_id, attachment_ids, user_id)
-        source_context = {
-            "source_version_ids": source_ids,
-            "focused_source_version_ids": focused_ids,
-            "only_use_specified_sources": bool(payload.get("only_use_specified_sources")),
-            "grounding_mode": grounding_mode,
-            "selection": selection,
-            "attachment_ids": attachment_ids,
-            "citations": [],
-        }
-        user_message = {
-            "id": user_id,
-            "role": "user",
-            "intent": intent,
-            "chat_style": chat_style,
-            "content": [self._markdown_block(content)],
-            "status": "complete",
-            "grounding_mode": grounding_mode,
-            "grounding_result": None,
-            "citations": [],
-            "source_context": source_context,
-            "selection": selection,
-            "model": None,
-            "error": None,
-            "created_at": timestamp,
-            "updated_at": timestamp,
-            "completed_at": timestamp,
-        }
-        assistant_id = self._ids("message")
-        assistant = {
-            "id": assistant_id,
-            "role": "assistant",
-            "intent": intent,
-            "chat_style": chat_style,
-            "content": [],
-            "status": "queued",
-            "grounding_mode": grounding_mode,
-            "grounding_result": None,
-            "citations": [],
-            "source_context": source_context,
-            "selection": selection,
-            "model": self._model_snapshot(profile),
-            "error": None,
-            "created_at": timestamp,
-            "updated_at": timestamp,
-            "completed_at": None,
-        }
+        source_context = self._source_context(
+            source_ids,
+            focused_ids,
+            payload,
+            grounding_mode,
+            selection,
+            attachment_ids,
+        )
+        user_message, assistant = self._chat_turn_messages(
+            intent=intent,
+            chat_style=chat_style,
+            content=content,
+            grounding_mode=grounding_mode,
+            source_context=source_context,
+            selection=selection,
+            profile=profile,
+            timestamp=timestamp,
+            user_id=user_id,
+        )
+        assistant_id = assistant["id"]
         chat = {
             **chat,
             "active_model_id": model_id,
@@ -566,11 +530,7 @@ class LearningService:
                 )
                 response = await self.model_client.chat(profile, messages)
                 text = response.get("text") or ""
-                result = (
-                    "general-knowledge"
-                    if grounding_mode == "general-knowledge"
-                    else "supplemental" if grounding_mode == "supplemental" else "covered"
-                )
+                result = self._grounding_result(grounding_mode)
                 self._complete_message(
                     subject_id,
                     assistant_id,
@@ -782,41 +742,40 @@ class LearningService:
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
         attachment_ids = list(payload.get("attachment_ids") or [])
         attachment_inputs = self._attachment_inputs(subject["id"], attachment_ids, profile)
-        selection = payload.get("selection")
-        selection_context = None
+        selection, selection_context = self._resolve_selection(payload.get("selection"), profile)
         if selection:
-            if self.selection_resolver is None:
-                raise LearningError(409, "CHAT_SELECTION_INVALID", "选区问答服务尚未就绪")
-            resolved = self.selection_resolver(selection, include_context=True)
-            if isinstance(resolved, tuple):
-                selection, selection_context = resolved
-            else:
-                selection = resolved
             payload = {**payload, "selection": selection}
-        if selection and selection.get("image_asset") and not profile.get("capabilities", {}).get("vision"):
-            raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入，请更换具备视觉能力的模型")
         if selected_ids:
             self._validate_source_scope(subject["id"], selected_ids, grounding_mode)
         elif grounding_mode in {"strict", "supplemental"} and not attachment_inputs and not selection:
             raise LearningError(409, "GROUNDING_SOURCE_REQUIRED", "当前依据模式需要资料、选区或临时附件")
         timestamp = self._now()
-        context = {
-            "source_version_ids": selected_ids,
-            "focused_source_version_ids": focused_ids,
-            "only_use_specified_sources": bool(payload.get("only_use_specified_sources")),
-            "grounding_mode": grounding_mode,
-            "selection": selection,
-            "attachment_ids": attachment_ids,
-            "citations": [],
-            "workspace_context": self._workspace_context(payload.get("workspace_context")),
-        }
+        context = self._source_context(
+            selected_ids,
+            focused_ids,
+            payload,
+            grounding_mode,
+            selection,
+            attachment_ids,
+            workspace_context=self._workspace_context(payload.get("workspace_context")),
+        )
         content = payload.get("content") or self._intent_label(payload["intent"])
         user_id = self._ids("message")
         if attachment_ids:
             self.attachments.claim(subject["id"], attachment_ids, user_id)
-        user_message = {"id": user_id, "role": "user", "intent": payload["intent"], "chat_style": chat_style, "content": [self._markdown_block(content)], "status": "complete", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "source_context": context, "selection": selection, "model": None, "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp}
-        assistant_id = self._ids("message")
-        assistant = {"id": assistant_id, "role": "assistant", "intent": payload["intent"], "chat_style": chat_style, "content": [], "status": "queued", "grounding_mode": context["grounding_mode"], "grounding_result": None, "citations": [], "tool_events": [], "source_context": context, "selection": selection, "model": self._model_snapshot(profile), "error": None, "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
+        user_message, assistant = self._chat_turn_messages(
+            intent=payload["intent"],
+            chat_style=chat_style,
+            content=content,
+            grounding_mode=context["grounding_mode"],
+            source_context=context,
+            selection=selection,
+            profile=profile,
+            timestamp=timestamp,
+            user_id=user_id,
+            extra_assistant={"tool_events": []},
+        )
+        assistant_id = assistant["id"]
         updated_session = {**session, "messages": [*session.get("messages", []), user_message, assistant], "updated_at": timestamp}
         if len(updated_session["messages"]) == 2 and session.get("title") == "新会话":
             updated_session["title"] = content[:60]
@@ -1000,11 +959,7 @@ class LearningService:
             if tool_anchors:
                 citations = self._citations_for_anchors(tool_anchors, citations)
             final_context = {**context, "citations": citations}
-            result = (
-                "general-knowledge"
-                if context["grounding_mode"] == "general-knowledge"
-                else "supplemental" if context["grounding_mode"] == "supplemental" else "covered"
-            )
+            result = self._grounding_result(context["grounding_mode"])
             _, session = self._find_session(session_id)
             current = next((item for item in session.get("messages", []) if item.get("id") == assistant_id), {})
             self._update_session_message(
@@ -1328,6 +1283,107 @@ class LearningService:
                 raise LearningError(exc.status_code, exc.code, str(exc)) from exc
             if source["subject_id"] != subject_id:
                 raise LearningError(409, "SOURCE_UNAVAILABLE", "选定资料不属于当前科目或尚不可用")
+
+    def _resolve_selection(self, selection, profile: dict) -> tuple[dict | None, dict | None]:
+        if not selection:
+            return None, None
+        if self.selection_resolver is None:
+            raise LearningError(409, "CHAT_SELECTION_INVALID", "选区问答服务尚未就绪")
+        resolved = self.selection_resolver(selection, include_context=True)
+        if isinstance(resolved, tuple):
+            selection, selection_context = resolved
+        else:
+            selection, selection_context = resolved, None
+        if selection and selection.get("image_asset") and not profile.get("capabilities", {}).get("vision"):
+            raise LearningError(409, "IMAGE_INPUT_UNSUPPORTED", "当前模型不支持图片输入，请更换具备视觉能力的模型")
+        return selection, selection_context
+
+    def _source_context(
+        self,
+        source_ids: list[str],
+        focused_ids: list[str],
+        payload: dict,
+        grounding_mode: str,
+        selection,
+        attachment_ids: list[str],
+        *,
+        workspace_context=None,
+    ) -> dict:
+        context = {
+            "source_version_ids": source_ids,
+            "focused_source_version_ids": focused_ids,
+            "only_use_specified_sources": bool(payload.get("only_use_specified_sources")),
+            "grounding_mode": grounding_mode,
+            "selection": selection,
+            "attachment_ids": attachment_ids,
+            "citations": [],
+        }
+        if workspace_context is not None:
+            context["workspace_context"] = workspace_context
+        return context
+
+    def _chat_turn_messages(
+        self,
+        *,
+        intent: str,
+        chat_style: str,
+        content: str,
+        grounding_mode: str,
+        source_context: dict,
+        selection,
+        profile: dict,
+        timestamp: int,
+        user_id: str | None = None,
+        extra_assistant: dict | None = None,
+    ) -> tuple[dict, dict]:
+        user_id = user_id or self._ids("message")
+        user_message = {
+            "id": user_id,
+            "role": "user",
+            "intent": intent,
+            "chat_style": chat_style,
+            "content": [self._markdown_block(content)],
+            "status": "complete",
+            "grounding_mode": grounding_mode,
+            "grounding_result": None,
+            "citations": [],
+            "source_context": source_context,
+            "selection": selection,
+            "model": None,
+            "error": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "completed_at": timestamp,
+        }
+        assistant = {
+            "id": self._ids("message"),
+            "role": "assistant",
+            "intent": intent,
+            "chat_style": chat_style,
+            "content": [],
+            "status": "queued",
+            "grounding_mode": grounding_mode,
+            "grounding_result": None,
+            "citations": [],
+            "source_context": source_context,
+            "selection": selection,
+            "model": self._model_snapshot(profile),
+            "error": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "completed_at": None,
+        }
+        if extra_assistant:
+            assistant = {**assistant, **extra_assistant}
+        return user_message, assistant
+
+    @staticmethod
+    def _grounding_result(mode: str) -> str:
+        if mode == "general-knowledge":
+            return "general-knowledge"
+        if mode == "supplemental":
+            return "supplemental"
+        return "covered"
 
     def _set_chat(self, subject_id: str, chat: dict) -> None:
         self._mutate(subject_id, lambda data: {**data, "learning_chat": chat})

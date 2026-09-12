@@ -126,8 +126,7 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now
     app.state.pet_service = pet
     app.state.store = store
 
-    @app.exception_handler(LearningError)
-    async def learning_error_handler(_, exc: LearningError):
+    async def service_error_handler(_, exc):
         return _error_response(
             exc.status_code,
             exc.code,
@@ -136,15 +135,8 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now
             details=exc.details,
         )
 
-    @app.exception_handler(SourceLibraryError)
-    async def source_error_handler(_, exc: SourceLibraryError):
-        return _error_response(
-            exc.status_code,
-            exc.code,
-            str(exc),
-            retryable=exc.retryable,
-            details=exc.details,
-        )
+    app.add_exception_handler(LearningError, service_error_handler)
+    app.add_exception_handler(SourceLibraryError, service_error_handler)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_, exc: RequestValidationError):

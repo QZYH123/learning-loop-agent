@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import os
-import tempfile
 import threading
 import time
 import uuid
@@ -16,6 +15,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .api_models import ContractModel, ModelSnapshot, OperationKind, ResourceRef
+from .files import write_json_atomic
 from .learning import LearningError
 from .model_client import ModelClientError
 from .operations import OperationFailure
@@ -371,25 +371,14 @@ class ObservabilityService:
             return {}
 
     def _persist_locked(self) -> None:
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=f"{self.storage_path.name}-", suffix=".tmp", dir=self.storage_path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "schema_version": 1,
-                        "orchestration_runs": list(self._runs.values()),
-                        "evaluation_runs": list(self._evaluation_runs.values()),
-                    },
-                    handle,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                handle.write("\n")
-            os.replace(temporary, self.storage_path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        write_json_atomic(
+            self.storage_path,
+            {
+                "schema_version": 1,
+                "orchestration_runs": list(self._runs.values()),
+                "evaluation_runs": list(self._evaluation_runs.values()),
+            },
+        )
 
 
 EVALUATION_SUITES = [{

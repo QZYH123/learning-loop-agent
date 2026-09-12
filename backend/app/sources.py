@@ -6,9 +6,7 @@ import hashlib
 import json
 import math
 import mimetypes
-import os
 import re
-import tempfile
 import threading
 import time
 import uuid
@@ -22,6 +20,7 @@ from .domain import (
     SOURCE_DELETE,
     SOURCE_FAIL_VERSION,
 )
+from .files import write_bytes_atomic, write_json_atomic
 from .operations import OperationFailure, OperationManager
 from .source_parsers import parse_source
 
@@ -567,10 +566,7 @@ class SourceLibrary:
 
     @staticmethod
     def _write_json_atomic(path: Path, payload: dict) -> None:
-        SourceLibrary._write_atomic(
-            path,
-            (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-        )
+        write_json_atomic(path, payload)
 
     def _mark_failed(self, version_id: str, message: str, retryable: bool = False) -> None:
         self.workspace_service.dispatch(
@@ -640,15 +636,7 @@ class SourceLibrary:
 
     @staticmethod
     def _write_atomic(path: Path, content: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=f"{path.name}-", suffix=".tmp", dir=path.parent)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(content)
-            os.replace(temp_name, path)
-        finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
+        write_bytes_atomic(path, content)
 
     @staticmethod
     def _require_dispatch(result: dict) -> None:

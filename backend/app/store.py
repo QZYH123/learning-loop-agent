@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 import time
 from copy import deepcopy
 from pathlib import Path
 
 from .domain import apply_action, initial_workspace, normalize_workspace
+from .files import write_json_atomic
 
 
 class WorkspaceStore:
@@ -32,17 +32,8 @@ class WorkspaceStore:
 
     def save(self, workspace: dict) -> dict:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
-                fd, tmp_name = tempfile.mkstemp(prefix="workspace-", suffix=".tmp", dir=self.path.parent)
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                        json.dump(workspace, handle, ensure_ascii=False, indent=2)
-                        handle.write("\n")
-                    os.replace(tmp_name, self.path)
-                finally:
-                    if os.path.exists(tmp_name):
-                        os.unlink(tmp_name)
+                write_json_atomic(self.path, workspace)
             return {"ok": True}
         except OSError as exc:
             return {
@@ -86,13 +77,6 @@ class WorkspaceService:
                 "persisted": saved["ok"],
                 "storage_error": self.last_storage_error,
             }
-
-    def get_chat(self, subject_id: str) -> dict | None:
-        with self._lock:
-            subject = next((s for s in self.workspace.get("subjects", []) if s["id"] == subject_id), None)
-            if not subject:
-                return None
-            return subject.get("data", {}).get("chat", {"active_model_id": None, "messages": []})
 
     def snapshot(self) -> dict:
         with self._lock:

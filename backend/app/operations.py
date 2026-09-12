@@ -5,13 +5,14 @@ import asyncio
 import copy
 import json
 import os
-import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from pathlib import Path
+
+from .files import write_json_atomic
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "canceled"}
@@ -294,26 +295,11 @@ class OperationManager:
         if self._storage_path is None:
             return
         try:
-            self._storage_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(
-                prefix=f"{self._storage_path.name}-",
-                suffix=".tmp",
-                dir=self._storage_path.parent,
+            write_json_atomic(
+                self._storage_path,
+                {"schema_version": 1, "operations": list(self._records.values())},
             )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(
-                        {"schema_version": 1, "operations": list(self._records.values())},
-                        handle,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                    handle.write("\n")
-                os.replace(temp_name, self._storage_path)
-                self.last_storage_error = None
-            finally:
-                if os.path.exists(temp_name):
-                    os.unlink(temp_name)
+            self.last_storage_error = None
         except OSError as exc:
             self.last_storage_error = str(exc)
 

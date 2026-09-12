@@ -6,7 +6,6 @@ import copy
 import html
 import io
 import os
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +26,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from .files import write_bytes_atomic
 from .learning import LearningError
 from .operations import OperationFailure
 
@@ -395,12 +395,4 @@ class ExamRenderingService:
 
     @staticmethod
     def _write_atomic(path: Path, content: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=f"{path.name}-", suffix=".tmp", dir=path.parent)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(content)
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        write_bytes_atomic(path, content)

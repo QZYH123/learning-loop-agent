@@ -1,8 +1,8 @@
 """Pure domain rules for the learning-loop workspace.
 
-The workspace is a plain JSON-serializable dict.  Every user-visible action
-goes through :func:`apply_action`; persistence, model IO and HTTP rendering are
-adapters outside this module.
+The workspace is a plain JSON-serializable dict. Subject, model and source-library
+actions go through :func:`apply_action`. Chat, exams and other subject data are
+owned by their services; this module only normalizes leftover workspace JSON.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ PET_NAME_MAX_LENGTH = 12
 # 默认靠右安放：居中会压在双栏中缝与输入区上方
 DEFAULT_PET_POSITION_X = 78
 DEFAULT_PET_POSITION_Y = 100
-CHAT_MESSAGE_MAX_LENGTH = 20_000
 MODEL_PROVIDER_MAX_LENGTH = 60
 MODEL_NAME_MAX_LENGTH = 120
 MODEL_BASE_URL_MAX_LENGTH = 500
@@ -36,14 +35,6 @@ MODEL_ADD = "model/add"
 MODEL_UPDATE = "model/update"
 MODEL_DELETE = "model/delete"
 MODEL_SET_VALIDATION = "model/set-validation"
-
-CHAT_SEND = "chat/send"
-CHAT_APPEND = "chat/append-chunk"
-CHAT_COMPLETE = "chat/complete"
-CHAT_FAIL = "chat/fail"
-CHAT_STOP = "chat/stop"
-CHAT_CLEAR = "chat/clear"
-CHAT_SWITCH_MODEL = "chat/switch-model"
 
 SOURCE_CREATE = "source/create"
 SOURCE_ADD_VERSION = "source/add-version"
@@ -268,18 +259,6 @@ def _validate_model_input(workspace: dict, action: dict, except_model_id=None) -
     }, None
 
 
-def _set_chat(workspace: dict, subject: dict, chat: dict, timestamp: int) -> dict:
-    subjects = []
-    for candidate in workspace.get("subjects", []):
-        if candidate["id"] == subject["id"]:
-            data = {**(candidate.get("data") or {})}
-            data["chat"] = chat
-            subjects.append({**candidate, "updated_at": timestamp, "data": data})
-        else:
-            subjects.append(candidate)
-    return {**workspace, "subjects": subjects, "updated_at": timestamp}
-
-
 def _set_subject_data(workspace: dict, subject: dict, data: dict, timestamp: int) -> dict:
     updated = {**subject, "data": data, "updated_at": timestamp}
     subjects = [updated if candidate["id"] == subject["id"] else candidate for candidate in workspace.get("subjects", [])]
@@ -330,47 +309,6 @@ def _source_version_summary(version: dict) -> dict:
     }
 
 
-def _empty_chat() -> dict:
-    return {"active_model_id": None, "messages": []}
-
-
-def _get_chat(workspace: dict, subject_id: str) -> dict:
-    subject = _find_subject(workspace, subject_id)
-    chat = (subject or {}).get("data", {}).get("chat") if subject else None
-    if not chat or not isinstance(chat.get("messages"), list):
-        return _empty_chat()
-    return chat
-
-
-def _ensure_chat(workspace: dict, subject: dict, timestamp: int) -> tuple[dict, dict]:
-    chat = subject.get("data", {}).get("chat")
-    if chat and isinstance(chat.get("messages"), list):
-        return workspace, chat
-    chat = _empty_chat()
-    return _set_chat(workspace, subject, chat, timestamp), chat
-
-
-def _model_snapshot(profile: dict) -> dict:
-    return {
-        "model_id": profile["id"],
-        "provider": profile["provider"],
-        "api_format": profile.get("api_format", DEFAULT_API_FORMAT),
-        "model": profile["model"],
-        "base_url": profile["base_url"],
-    }
-
-
-def build_chat_request_messages(chat: dict) -> list[dict]:
-    messages = []
-    for message in chat.get("messages", []):
-        if message.get("role") == "user":
-            messages.append({"role": "user", "content": message.get("content", "")})
-        elif message.get("role") == "assistant":
-            if message.get("status") in (MESSAGE_COMPLETE, MESSAGE_STOPPED) and message.get("content"):
-                messages.append({"role": "assistant", "content": message["content"]})
-    return messages
-
-
 def apply_action(workspace: dict, action: dict, now=None, id_factory=None) -> dict:
     """Single app-level entry: user action + state -> next state + visible result."""
     action_type = action.get("type")
@@ -393,20 +331,6 @@ def apply_action(workspace: dict, action: dict, now=None, id_factory=None) -> di
         return _delete_model(workspace, action, now_fn)
     if action_type == MODEL_SET_VALIDATION:
         return _set_model_validation(workspace, action, now_fn)
-    if action_type == CHAT_SEND:
-        return _send_chat(workspace, action, now_fn, ids)
-    if action_type == CHAT_APPEND:
-        return _append_chat(workspace, action, now_fn)
-    if action_type == CHAT_COMPLETE:
-        return _complete_chat(workspace, action, now_fn)
-    if action_type == CHAT_FAIL:
-        return _fail_chat(workspace, action, now_fn)
-    if action_type == CHAT_STOP:
-        return _stop_chat(workspace, action, now_fn)
-    if action_type == CHAT_CLEAR:
-        return _clear_chat(workspace, action, now_fn)
-    if action_type == CHAT_SWITCH_MODEL:
-        return _switch_chat_model(workspace, action, now_fn)
     if action_type == SOURCE_CREATE:
         return _create_source(workspace, action, now_fn, ids)
     if action_type == SOURCE_ADD_VERSION:
@@ -582,184 +506,6 @@ def _set_model_validation(workspace: dict, action: dict, now) -> dict:
         {**workspace, "models": [updated if m["id"] == profile["id"] else m for m in workspace.get("models", [])], "updated_at": timestamp},
         model_id=profile["id"],
         message="模型服务验证通过" if status == MODEL_OK else "模型服务验证状态已更新",
-    )
-
-
-# --- chat ---------------------------------------------------------------------
-
-
-def _normalize_chat_text(value):
-    if not isinstance(value, str) or not value.strip():
-        return None, _error("CHAT_MESSAGE_REQUIRED", "请输入问题")
-    text = value.strip()
-    if len(text) > CHAT_MESSAGE_MAX_LENGTH:
-        return None, _error("CHAT_MESSAGE_TOO_LONG", f"问题不能超过 {CHAT_MESSAGE_MAX_LENGTH} 个字符")
-    return text, None
-
-
-def _send_chat(workspace: dict, action: dict, now, ids) -> dict:
-    subject = _find_subject(workspace, action.get("subject_id"))
-    if not subject:
-        return _fail(workspace, "CHAT_SUBJECT_NOT_FOUND", "当前科目空间不存在")
-    workspace, chat = _ensure_chat(workspace, subject, _now_ms(now()))
-    if any(m.get("status") == MESSAGE_GENERATING for m in chat.get("messages", [])):
-        return _fail(workspace, "CHAT_GENERATION_IN_PROGRESS", "已有回答正在生成中，请先停止或等待完成")
-
-    text, error = _normalize_chat_text(action.get("content"))
-    if error:
-        return _fail(workspace, error["code"], error["message"])
-
-    model_id = action.get("model_id") or chat.get("active_model_id")
-    if not model_id:
-        return _fail(workspace, "CHAT_MODEL_NOT_SELECTED", "请先选择要使用的模型服务")
-    profile = _find_model(workspace, model_id)
-    if not profile:
-        return _fail(workspace, "CHAT_MODEL_NOT_FOUND", "所选模型服务不存在，请重新选择")
-
-    timestamp = _now_ms(now())
-    user_message = {"id": ids(), "role": "user", "content": text, "created_at": timestamp}
-    assistant_message = {
-        "id": ids(),
-        "role": "assistant",
-        "content": "",
-        "status": MESSAGE_GENERATING,
-        "mode": "general-knowledge",
-        "created_at": timestamp,
-        "updated_at": timestamp,
-        "completed_at": None,
-        "model": _model_snapshot(profile),
-        "error": None,
-    }
-    next_chat = {
-        "active_model_id": model_id,
-        "messages": [*chat.get("messages", []), user_message, assistant_message],
-    }
-    next_workspace = _set_chat(workspace, subject, next_chat, timestamp)
-    return _ok(
-        next_workspace,
-        subject_id=subject["id"],
-        message_id=assistant_message["id"],
-        user_message_id=user_message["id"],
-        message="问题已发送，正在生成回答",
-        request={
-            "subject_id": subject["id"],
-            "assistant_message_id": assistant_message["id"],
-            "model_profile": profile,
-            "messages": build_chat_request_messages(next_chat),
-        },
-    )
-
-
-def _message_and_chat(workspace: dict, subject_id: str, message_id: str) -> tuple[dict | None, dict | None, dict | None]:
-    subject = _find_subject(workspace, subject_id)
-    if not subject:
-        return None, None, _error("CHAT_SUBJECT_NOT_FOUND", "当前科目空间不存在")
-    chat = _get_chat(workspace, subject_id)
-    message = next((m for m in chat.get("messages", []) if m["id"] == message_id), None)
-    if not message:
-        return subject, chat, _error("CHAT_MESSAGE_NOT_FOUND", "要更新的消息不存在")
-    return subject, chat, message
-
-
-def _append_chat(workspace: dict, action: dict, now) -> dict:
-    result = _message_and_chat(workspace, action.get("subject_id"), action.get("message_id"))
-    subject, chat, message = result
-    if isinstance(message, dict) and "code" in message:
-        return _fail(workspace, message["code"], message["message"])
-    if message["status"] != MESSAGE_GENERATING:
-        return _ok(workspace, message="生成已结束，忽略迟到的内容分片")
-    if not isinstance(action.get("delta"), str):
-        return _ok(workspace)
-    timestamp = _now_ms(now())
-    updated = {**message, "content": (message["content"] + action["delta"])[:CHAT_MESSAGE_MAX_LENGTH], "updated_at": timestamp}
-    next_chat = {**chat, "messages": [updated if m["id"] == message["id"] else m for m in chat["messages"]]}
-    return _ok(_set_chat(workspace, subject, next_chat, timestamp), message_id=message["id"])
-
-
-def _complete_chat(workspace: dict, action: dict, now) -> dict:
-    result = _message_and_chat(workspace, action.get("subject_id"), action.get("message_id"))
-    subject, chat, message = result
-    if isinstance(message, dict) and "code" in message:
-        return _fail(workspace, message["code"], message["message"])
-    if message["status"] != MESSAGE_GENERATING:
-        return _ok(workspace, message="消息已不在生成状态")
-    timestamp = _now_ms(now())
-    content = action.get("text") if isinstance(action.get("text"), str) else message.get("content", "")
-    updated = {
-        **message,
-        "content": content[:CHAT_MESSAGE_MAX_LENGTH],
-        "status": MESSAGE_COMPLETE,
-        "updated_at": timestamp,
-        "completed_at": timestamp,
-        "error": None,
-    }
-    next_chat = {**chat, "messages": [updated if m["id"] == message["id"] else m for m in chat["messages"]]}
-    return _ok(_set_chat(workspace, subject, next_chat, timestamp), message_id=message["id"])
-
-
-def _fail_chat(workspace: dict, action: dict, now) -> dict:
-    result = _message_and_chat(workspace, action.get("subject_id"), action.get("message_id"))
-    subject, chat, message = result
-    if isinstance(message, dict) and "code" in message:
-        return _fail(workspace, message["code"], message["message"])
-    if message["status"] != MESSAGE_GENERATING:
-        return _ok(workspace, message="消息已不在生成状态")
-    timestamp = _now_ms(now())
-    updated = {
-        **message,
-        "status": MESSAGE_ERROR,
-        "updated_at": timestamp,
-        "completed_at": timestamp,
-        "error": {
-            "code": action.get("error_code") or "MODEL_REQUEST_FAILED",
-            "message": action.get("error_message") or "模型请求失败",
-        },
-    }
-    next_chat = {**chat, "messages": [updated if m["id"] == message["id"] else m for m in chat["messages"]]}
-    return _ok(_set_chat(workspace, subject, next_chat, timestamp), message_id=message["id"])
-
-
-def _stop_chat(workspace: dict, action: dict, now) -> dict:
-    result = _message_and_chat(workspace, action.get("subject_id"), action.get("message_id"))
-    subject, chat, message = result
-    if isinstance(message, dict) and "code" in message:
-        return _fail(workspace, message["code"], message["message"])
-    if message["status"] != MESSAGE_GENERATING:
-        return _ok(workspace, message="消息已不在生成状态")
-    timestamp = _now_ms(now())
-    updated = {**message, "status": MESSAGE_STOPPED, "updated_at": timestamp, "completed_at": timestamp, "error": None}
-    next_chat = {**chat, "messages": [updated if m["id"] == message["id"] else m for m in chat["messages"]]}
-    return _ok(_set_chat(workspace, subject, next_chat, timestamp), message_id=message["id"])
-
-
-def _clear_chat(workspace: dict, action: dict, now) -> dict:
-    subject = _find_subject(workspace, action.get("subject_id"))
-    if not subject:
-        return _fail(workspace, "CHAT_SUBJECT_NOT_FOUND", "当前科目空间不存在")
-    chat = _get_chat(workspace, subject["id"])
-    timestamp = _now_ms(now())
-    return _ok(
-        _set_chat(workspace, subject, {**chat, "messages": []}, timestamp),
-        subject_id=subject["id"],
-        message="当前科目的会话记录已删除",
-    )
-
-
-def _switch_chat_model(workspace: dict, action: dict, now) -> dict:
-    subject = _find_subject(workspace, action.get("subject_id"))
-    if not subject:
-        return _fail(workspace, "CHAT_SUBJECT_NOT_FOUND", "当前科目空间不存在")
-    if not action.get("model_id"):
-        return _fail(workspace, "CHAT_MODEL_NOT_SELECTED", "请选择要使用的模型服务")
-    if not _find_model(workspace, action["model_id"]):
-        return _fail(workspace, "CHAT_MODEL_NOT_FOUND", "所选模型服务不存在，请重新选择")
-    workspace, chat = _ensure_chat(workspace, subject, _now_ms(now()))
-    timestamp = _now_ms(now())
-    return _ok(
-        _set_chat(workspace, subject, {**chat, "active_model_id": action["model_id"]}, timestamp),
-        subject_id=subject["id"],
-        model_id=action["model_id"],
-        message="已切换当前会话使用的模型",
     )
 
 
@@ -1120,6 +866,10 @@ def _normalize_models(raw_models, timestamp: int) -> list[dict]:
             }
         )
     return models
+
+
+def _empty_chat() -> dict:
+    return {"active_model_id": None, "messages": []}
 
 
 def _normalize_chat(value, timestamp: int) -> dict:
