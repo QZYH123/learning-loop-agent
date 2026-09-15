@@ -2,13 +2,13 @@ import io
 
 import pytest
 from docx import Document
-from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
 from reportlab.pdfgen import canvas
 
 from backend.tests.conftest import make_client
-from backend.tests.test_sources_api import create_subject, upload_source, wait_for_operation
+from backend.tests.support.http import create_subject, upload_source, wait_for_operation
+from backend.tests.support.media import image_bytes
 
 
 def pdf_bytes():
@@ -35,12 +35,6 @@ def pptx_bytes():
     box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
     box.text = "Photosynthesis converts light energy into chemical energy."
     presentation.save(output)
-    return output.getvalue()
-
-
-def image_bytes():
-    output = io.BytesIO()
-    Image.new("RGB", (32, 24), "white").save(output, format="PNG")
     return output.getvalue()
 
 

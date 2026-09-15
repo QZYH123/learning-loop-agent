@@ -150,7 +150,7 @@ def test_update_model_resets_validation_to_unknown(tmp_path):
         model_id = create_model(client)
         verified = client.post(f"/api/models/{model_id}/verify")
         assert verified.status_code == 202
-        from backend.tests.test_sources_api import wait_for_operation
+        from backend.tests.support.http import wait_for_operation
 
         wait_for_operation(client, verified.json()["operation"]["id"])
         assert client.get(f"/api/models/{model_id}").json()["validation"]["status"] == "ok"

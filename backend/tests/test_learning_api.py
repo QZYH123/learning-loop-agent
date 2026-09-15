@@ -1,7 +1,8 @@
 import json
 
 from backend.tests.conftest import ImmediateFakeModelClient, make_client
-from backend.tests.test_sources_api import upload_source, wait_for_operation
+from backend.tests.support.bootstrap import create_subject_and_model
+from backend.tests.support.http import upload_source, wait_for_operation
 
 
 class LearningFakeModel(ImmediateFakeModelClient):
@@ -23,19 +24,6 @@ class LearningFakeModel(ImmediateFakeModelClient):
                 "model": profile["model"],
             }
         return {"text": "依据资料回答。", "provider": profile["provider"], "model": profile["model"]}
-
-
-def create_subject_and_model(client, *, vision=False):
-    subject = client.post("/api/subjects", json={"name": "数学"}).json()
-    model = client.post("/api/models", json={
-        "provider": "Fake",
-        "api_format": "openai-chat-completions",
-        "model": "fake-1",
-        "base_url": "http://localhost/v1",
-        "api_key": "secret",
-        "capabilities": {"text": True, "vision": vision},
-    }).json()
-    return subject["id"], model["id"]
 
 
 def configure_socratic_chat(client):
@@ -110,7 +98,7 @@ def test_grounded_chat_strict_supplemental_and_citation_lifecycle(tmp_path):
 
 
 def test_image_source_requires_vision_capability(tmp_path):
-    from backend.tests.test_rich_sources_api import image_bytes
+    from backend.tests.support.media import image_bytes
 
     client, _ = make_client(tmp_path)
     with client:

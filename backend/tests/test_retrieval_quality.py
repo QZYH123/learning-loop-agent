@@ -11,7 +11,7 @@ from pathlib import Path
 
 from backend.app.sources import SourceLibrary, tokenize_terms
 from backend.tests.conftest import make_client
-from backend.tests.test_sources_api import create_subject, upload_source, wait_for_operation
+from backend.tests.support.http import create_subject, upload_source, wait_for_operation
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "retrieval"
 

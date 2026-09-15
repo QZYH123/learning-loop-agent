@@ -1,9 +1,8 @@
-from pathlib import Path
+from backend.tests.support.frontend import ROOT, load_js
 
-ROOT = Path(__file__).resolve().parents[2]
-PET_JS = (ROOT / "frontend/js/pet.js").read_text(encoding="utf-8")
-APP_JS = (ROOT / "frontend/js/app.js").read_text(encoding="utf-8")
-API_JS = (ROOT / "frontend/js/api.js").read_text(encoding="utf-8")
+PET_JS = load_js("pet.js")
+APP_JS = load_js("app.js")
+API_JS = load_js("api.js")
 CSS = (ROOT / "frontend/styles.css").read_text(encoding="utf-8")
 
 

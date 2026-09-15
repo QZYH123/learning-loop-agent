@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from backend.tests.conftest import make_client
-from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam, publish_ready_exam
+from backend.tests.support.exam import ExamFakeModel, build_exam, publish_ready_exam
 
 
 SUMMARY_FIELDS = {

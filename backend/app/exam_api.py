@@ -38,6 +38,13 @@ from .exam_models import (
 from .learning import LearningError
 
 
+def _require_patch(payload, message: str) -> dict:
+    patch = payload.model_dump(exclude_unset=True)
+    if not patch:
+        raise LearningError(422, "VALIDATION_FAILED", message)
+    return patch
+
+
 def create_exam_router(exams) -> APIRouter:
     router = APIRouter()
 
@@ -76,9 +83,7 @@ def create_exam_router(exams) -> APIRouter:
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     def update_blueprint(blueprint_id: str, payload: ExamBlueprintPatch):
-        patch = payload.model_dump(exclude_unset=True)
-        if not patch:
-            raise LearningError(422, "VALIDATION_FAILED", "至少提供一项蓝图修改")
+        patch = _require_patch(payload, "至少提供一项蓝图修改")
         return exams.update_blueprint(blueprint_id, patch)
 
     @router.delete(
@@ -135,9 +140,7 @@ def create_exam_router(exams) -> APIRouter:
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     def update_draft(draft_id: str, payload: ExamDraftPatch):
-        patch = payload.model_dump(exclude_unset=True)
-        if not patch:
-            raise LearningError(422, "VALIDATION_FAILED", "至少提供一项草稿修改")
+        patch = _require_patch(payload, "至少提供一项草稿修改")
         return exams.update_draft(draft_id, patch)
 
     @router.delete(
@@ -270,9 +273,7 @@ def create_exam_router(exams) -> APIRouter:
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     def update_exam(exam_id: str, payload: ExamPatch):
-        patch = payload.model_dump(exclude_unset=True)
-        if not patch:
-            raise LearningError(422, "VALIDATION_FAILED", "至少提供一项试卷修改")
+        patch = _require_patch(payload, "至少提供一项试卷修改")
         return exams.update_exam(exam_id, patch)
 
     @router.delete(
@@ -403,9 +404,7 @@ def create_exam_router(exams) -> APIRouter:
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     )
     def update_attempt(attempt_id: str, payload: AttemptPatch):
-        patch = payload.model_dump(exclude_unset=True)
-        if not patch:
-            raise LearningError(422, "VALIDATION_FAILED", "至少提供一项作答设置")
+        patch = _require_patch(payload, "至少提供一项作答设置")
         return exams.update_attempt(attempt_id, patch)
 
     @router.put(

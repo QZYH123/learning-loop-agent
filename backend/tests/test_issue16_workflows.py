@@ -1,6 +1,7 @@
 from backend.app.model_client import ModelClientError
 from backend.tests.conftest import ImmediateFakeModelClient, WaitingFakeModelClient, make_client, wait_for
-from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam
+from backend.tests.support.bootstrap import create_subject_and_source, create_subject_with_current_model
+from backend.tests.support.exam import ExamFakeModel, build_exam
 
 
 class FailingFakeModelClient(ImmediateFakeModelClient):
@@ -27,18 +28,6 @@ def generation_call(model_client):
         if "起一个不超过12个字" not in text:
             return call
     raise AssertionError("missing generation call")
-
-
-def create_subject_and_source(client):
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-    response = client.post(
-        f"/api/subjects/{subject_id}/sources",
-        files={"file": ("notes.md", b"# Limits\nThe limit of x is x.", "text/markdown")},
-    )
-    operation_id = response.json()["operation"]["id"]
-    wait_for(lambda: client.get(f"/api/operations/{operation_id}").json()["status"] == "succeeded")
-    source = client.get(f"/api/subjects/{subject_id}/sources").json()["items"][0]
-    return subject_id, source["current_version"]["id"]
 
 
 def test_model_api_format_and_session_chat_style_survive_restart(tmp_path):
@@ -600,12 +589,7 @@ def test_retry_session_message_after_failure(tmp_path):
     success = ImmediateFakeModelClient(answer="重试成功")
     client, app = make_client(tmp_path, model_client=failing)
     with client:
-        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-        model_id = client.post(
-            "/api/models",
-            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
-        ).json()["id"]
-        client.put("/api/models/current", json={"model_id": model_id})
+        subject_id, _ = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
 
         failed = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "第一问"}).json()
@@ -625,12 +609,7 @@ def test_retry_session_message_after_failure(tmp_path):
 def test_retry_session_message_rejects_non_failed_message(tmp_path):
     client, _ = make_client(tmp_path, model_client=ImmediateFakeModelClient(answer="完成"))
     with client:
-        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-        model_id = client.post(
-            "/api/models",
-            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
-        ).json()["id"]
-        client.put("/api/models/current", json={"model_id": model_id})
+        subject_id, _ = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         sent = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "你好"}).json()
         wait_for(lambda: client.get(f"/api/operations/{sent['operation']['id']}").json()["status"] == "succeeded")
@@ -648,12 +627,7 @@ def test_retry_session_message_blocks_while_generation_in_progress(tmp_path):
     waiting = WaitingFakeModelClient()
     client, app = make_client(tmp_path, model_client=failing)
     with client:
-        subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-        model_id = client.post(
-            "/api/models",
-            json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
-        ).json()["id"]
-        client.put("/api/models/current", json={"model_id": model_id})
+        subject_id, _ = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
 
         failed = client.post(f"/api/sessions/{session['id']}/messages", json={"content": "失败题"}).json()
@@ -691,20 +665,10 @@ class NamingErrorModel(ImmediateFakeModelClient):
         return await super().chat(profile, messages, max_tokens, tools=tools)
 
 
-def _subject_and_model(client):
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-    model_id = client.post(
-        "/api/models",
-        json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
-    ).json()["id"]
-    client.put("/api/models/current", json={"model_id": model_id})
-    return subject_id, model_id
-
-
 def test_session_notes_append_and_validate(tmp_path):
     client, _ = make_client(tmp_path)
     with client:
-        subject_id, _ = _subject_and_model(client)
+        subject_id, _ = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         user_note = client.post(
             f"/api/sessions/{session['id']}/notes",
@@ -738,7 +702,7 @@ def test_ai_document_title_from_first_line(tmp_path):
     model_client = ImmediateFakeModelClient(answer="计网大纲\n# 第一章 概述\n传输层")
     client, _ = make_client(tmp_path, model_client=model_client)
     with client:
-        subject_id, model_id = _subject_and_model(client)
+        subject_id, model_id = create_subject_with_current_model(client)
         created = client.post(f"/api/subjects/{subject_id}/documents", json={
             "instruction": "整理计网",
             "source_version_ids": [],
@@ -757,7 +721,7 @@ def test_ai_document_title_fallback_when_unformatted(tmp_path):
     model_client = ImmediateFakeModelClient(answer="   \n")
     client, _ = make_client(tmp_path, model_client=model_client)
     with client:
-        subject_id, model_id = _subject_and_model(client)
+        subject_id, model_id = create_subject_with_current_model(client)
         created = client.post(f"/api/subjects/{subject_id}/documents", json={
             "instruction": "整理笔记",
             "source_version_ids": [],
@@ -773,7 +737,7 @@ def test_session_auto_title_from_naming_call(tmp_path):
     model_client = SequenceTitleModel(answer="TCP 通过三次握手建立连接。", title="TCP 三次握手")
     client, _ = make_client(tmp_path, model_client=model_client)
     with client:
-        subject_id, model_id = _subject_and_model(client)
+        subject_id, model_id = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         sent = client.post(f"/api/sessions/{session['id']}/messages", json={
             "content": "请解释 TCP 三次握手",
@@ -792,7 +756,7 @@ def test_session_auto_title_keeps_fallback_when_naming_fails(tmp_path):
     model_client = NamingErrorModel(answer="这是兜底回答")
     client, _ = make_client(tmp_path, model_client=model_client)
     with client:
-        subject_id, model_id = _subject_and_model(client)
+        subject_id, model_id = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         content = "请解释 TCP 三次握手"
         sent = client.post(f"/api/sessions/{session['id']}/messages", json={

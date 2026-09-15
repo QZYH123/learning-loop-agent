@@ -11,19 +11,14 @@ import {
   uploadedSources,
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
+import { expandBtn, taskWorkspaceShell } from './workspace-shell.js';
 
 export function sourcesShellHtml(state) {
-  const collapsed = !!state.sidebarCollapsed.sources;
-  return `
-    <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.sources}" data-testid="sources-workspace">
-      <div class="mobile-switch">
-        <button type="button" class="seg ${state.mobilePane.sources === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
-        <button type="button" class="seg ${state.mobilePane.sources === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
-      </div>
-      <aside class="pane pane-ai"></aside>
-      <main class="pane pane-content"></main>
-    </div>
-  `;
+  return taskWorkspaceShell({
+    testId: 'sources-workspace',
+    collapsed: !!state.sidebarCollapsed.sources,
+    mobilePane: state.mobilePane.sources,
+  });
 }
 
 export function sourcesLeftHtml(state, handlers) {
@@ -69,12 +64,6 @@ export function bindSourcesRight(root, handlers) {
     handlers.onUploadSources([...event.target.files]);
     event.target.value = '';
   });
-}
-
-function expandBtn(collapsed) {
-  return collapsed
-    ? `<button type="button" class="icon-btn" data-action="collapse-left" title="展开">${icons.panelLeftOpen(15)}</button>`
-    : '';
 }
 
 function renderHeader(state, kind, source, doc, proposal, collapsed) {

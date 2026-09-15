@@ -118,21 +118,12 @@ async function downloadFile(endpoint, { accept, fallbackName }) {
 }
 
 export const api = {
-  getHealth() {
-    return request('/api/health');
-  },
   getWorkspace() {
     return request('/api/workspace');
   },
 
-  listSubjects() {
-    return request('/api/subjects');
-  },
   createSubject(name) {
     return json('POST', '/api/subjects', { name });
-  },
-  getSubject(subjectId) {
-    return request(`/api/subjects/${encodeURIComponent(subjectId)}`);
   },
   renameSubject(subjectId, name) {
     return json('PATCH', `/api/subjects/${encodeURIComponent(subjectId)}`, { name });
@@ -160,9 +151,6 @@ export const api = {
   },
   createModel(config) {
     return json('POST', '/api/models', config);
-  },
-  getModel(modelId) {
-    return request(`/api/models/${encodeURIComponent(modelId)}`);
   },
   updateModel(modelId, patch) {
     return json('PATCH', `/api/models/${encodeURIComponent(modelId)}`, patch);
@@ -232,9 +220,6 @@ export const api = {
   retrySessionMessage(sessionId, messageId, payload = {}) {
     return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/retry`, payload);
   },
-  listSessionSources(sessionId) {
-    return request(`/api/sessions/${encodeURIComponent(sessionId)}/sources`);
-  },
   addSessionSource(sessionId, sourceVersionId) {
     return json('POST', `/api/sessions/${encodeURIComponent(sessionId)}/sources`, { source_version_id: sourceVersionId });
   },
@@ -265,11 +250,6 @@ export const api = {
   },
   listSourceVersions(sourceId) {
     return request(`/api/sources/${encodeURIComponent(sourceId)}/versions`);
-  },
-  uploadSourceVersion(sourceId, file) {
-    const body = new FormData();
-    body.append('file', file);
-    return request(`/api/sources/${encodeURIComponent(sourceId)}/versions`, { method: 'POST', body });
   },
   listSourceVersionAnchors(versionId) {
     return request(`/api/source-versions/${encodeURIComponent(versionId)}/anchors`);
@@ -467,9 +447,6 @@ export const api = {
     if (params.category) query.set('category', params.category);
     const suffix = query.toString();
     return request(`/api/orchestration-runs${suffix ? `?${suffix}` : ''}`);
-  },
-  getOrchestrationRun(runId) {
-    return request(`/api/orchestration-runs/${encodeURIComponent(runId)}`);
   },
   listEvaluationSuites() {
     return request('/api/evaluation-suites');

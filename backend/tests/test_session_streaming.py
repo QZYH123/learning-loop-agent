@@ -1,22 +1,13 @@
 import asyncio
 
 from backend.tests.conftest import ImmediateFakeModelClient, make_client, wait_for
+from backend.tests.support.bootstrap import create_subject_with_current_model
 
 
 def _assistant_text(session):
     last = session["messages"][-1]
     blocks = last.get("content") or []
     return "".join(block.get("text") or "" for block in blocks if isinstance(block, dict)), last
-
-
-def _subject_and_model(client):
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-    model_id = client.post(
-        "/api/models",
-        json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
-    ).json()["id"]
-    client.put("/api/models/current", json={"model_id": model_id})
-    return subject_id, model_id
 
 
 class HalfStreamFake:
@@ -48,7 +39,7 @@ def test_session_message_persists_increasing_stream_prefixes(tmp_path):
     fake = ImmediateFakeModelClient(script=[{"deltas": ["你", "好", "啊"], "delta_sleep": 0.35}])
     client, _ = make_client(tmp_path, model_client=fake)
     with client:
-        subject_id, model_id = _subject_and_model(client)
+        subject_id, model_id = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         sent = client.post(
             f"/api/sessions/{session['id']}/messages",
@@ -77,7 +68,7 @@ def test_stop_keeps_streamed_prefix_and_retry_works(tmp_path):
     fake = HalfStreamFake()
     client, app = make_client(tmp_path, model_client=fake)
     with client:
-        subject_id, model_id = _subject_and_model(client)
+        subject_id, model_id = create_subject_with_current_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={}).json()
         sent = client.post(
             f"/api/sessions/{session['id']}/messages",

@@ -4,8 +4,8 @@ import zipfile
 
 from backend.app.subject_transfer import export_zip_filename, sanitize_export_stem
 from backend.tests.conftest import make_client
-from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam, publish_ready_exam
-from backend.tests.test_sources_api import wait_for_operation
+from backend.tests.support.exam import ExamFakeModel, build_exam, publish_ready_exam
+from backend.tests.support.http import wait_for_operation
 
 
 def _export_populated_subject(tmp_path):

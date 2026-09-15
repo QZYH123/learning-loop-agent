@@ -1,11 +1,9 @@
-from pathlib import Path
+from backend.tests.support.frontend import load_js
 
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_JS = ROOT / "frontend/js"
-APP_JS = (FRONTEND_JS / "app.js").read_text(encoding="utf-8")
-API_JS = (FRONTEND_JS / "api.js").read_text(encoding="utf-8")
-EXAM_JS = (FRONTEND_JS / "components/exam.js").read_text(encoding="utf-8")
-MODAL_JS = (FRONTEND_JS / "components/modal.js").read_text(encoding="utf-8")
+APP_JS = load_js("app.js")
+API_JS = load_js("api.js")
+EXAM_JS = load_js("components/exam.js")
+MODAL_JS = load_js("components/modal.js")
 
 
 def test_exam_export_api_wrappers_exist():

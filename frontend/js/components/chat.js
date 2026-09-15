@@ -1,5 +1,5 @@
 import { icons } from '../icons.js';
-import { COMMANDS } from '../commands.js';
+import { prefixMatchCommands } from '../commands.js';
 import {
   CHAT_STYLES,
   GROUNDING_MODES,
@@ -235,26 +235,20 @@ export function bindChatPane(root, handlers) {
 
   const updateMenu = (value) => {
     if (value.startsWith('/') && !value.includes(' ')) {
-      const seen = new Set();
-      const items = [];
       const needs = handlers.onCommandNeeds?.() || {};
       const hasExam = !!needs.exam;
       const hasDraft = !!needs.draft;
       const hasDoc = !!needs.aiDocument;
-      for (const def of COMMANDS) {
-        for (const name of [def.name, ...def.aliases]) {
-          if (!name.startsWith(value) || seen.has(def.name)) continue;
-          seen.add(def.name);
-          const disabled = (def.needs === 'examOrDraft' && !hasExam && !hasDraft)
-            || (def.needs === 'exam' && !hasExam)
-            || (def.needs === 'aiDocument' && !hasDoc);
-          items.push({
-            disabled,
-            attrs: ` data-cmd="${escapeHtml(name)}"`,
-            html: `<b>${escapeHtml(name)}</b><span>${escapeHtml(disabled ? `${def.hint}（当前不可用）` : def.hint)}</span>`,
-          });
-        }
-      }
+      const items = prefixMatchCommands(value).map(({ name, def }) => {
+        const disabled = (def.needs === 'examOrDraft' && !hasExam && !hasDraft)
+          || (def.needs === 'exam' && !hasExam)
+          || (def.needs === 'aiDocument' && !hasDoc);
+        return {
+          disabled,
+          attrs: ` data-cmd="${escapeHtml(name)}"`,
+          html: `<b>${escapeHtml(name)}</b><span>${escapeHtml(disabled ? `${def.hint}（当前不可用）` : def.hint)}</span>`,
+        };
+      });
       showMenu(items);
       return;
     }

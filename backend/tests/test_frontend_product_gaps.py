@@ -1,21 +1,17 @@
-from pathlib import Path
+from backend.tests.support.frontend import ROOT, load_js
 
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_JS = ROOT / "frontend/js"
-APP_JS = (FRONTEND_JS / "app.js").read_text(encoding="utf-8")
-API_JS = (FRONTEND_JS / "api.js").read_text(encoding="utf-8")
-UTIL_JS = (FRONTEND_JS / "util.js").read_text(encoding="utf-8")
-EXAM_JS = (FRONTEND_JS / "components/exam.js").read_text(encoding="utf-8")
-SOURCES_JS = (FRONTEND_JS / "components/sources.js").read_text(encoding="utf-8")
-ATTEMPT_JS = (FRONTEND_JS / "components/attempt.js").read_text(encoding="utf-8")
-TIMER_JS = (FRONTEND_JS / "attempt-timer.js").read_text(encoding="utf-8")
-CHAT_JS = (FRONTEND_JS / "components/chat.js").read_text(encoding="utf-8")
-NAVBAR_JS = (FRONTEND_JS / "components/navbar.js").read_text(encoding="utf-8")
-MODAL_JS = (FRONTEND_JS / "components/modal.js").read_text(encoding="utf-8")
-MODELS_JS = (FRONTEND_JS / "components/models.js").read_text(encoding="utf-8")
+APP_JS = load_js("app.js")
+API_JS = load_js("api.js")
+UTIL_JS = load_js("util.js")
+EXAM_JS = load_js("components/exam.js")
+SOURCES_JS = load_js("components/sources.js")
+ATTEMPT_JS = load_js("components/attempt.js")
+TIMER_JS = load_js("attempt-timer.js")
+CHAT_JS = load_js("components/chat.js")
+NAVBAR_JS = load_js("components/navbar.js")
+MODAL_JS = load_js("components/modal.js")
+MODELS_JS = load_js("components/models.js")
 CSS = (ROOT / "frontend/styles.css").read_text(encoding="utf-8")
-
-
 def test_blueprint_structure_is_editable():
     assert 'data-action="plan-type"' in EXAM_JS
     assert 'data-action="plan-difficulty"' in EXAM_JS

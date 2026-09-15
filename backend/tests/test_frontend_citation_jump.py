@@ -1,12 +1,10 @@
-from pathlib import Path
+from backend.tests.support.frontend import ROOT, load_js
 
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_JS = ROOT / "frontend/js"
-APP_JS = (FRONTEND_JS / "app.js").read_text(encoding="utf-8")
-API_JS = (FRONTEND_JS / "api.js").read_text(encoding="utf-8")
-CHAT_JS = (FRONTEND_JS / "components/chat.js").read_text(encoding="utf-8")
-SOLUTION_JS = (FRONTEND_JS / "components/solution.js").read_text(encoding="utf-8")
-SOURCES_JS = (FRONTEND_JS / "components/sources.js").read_text(encoding="utf-8")
+APP_JS = load_js("app.js")
+API_JS = load_js("api.js")
+CHAT_JS = load_js("components/chat.js")
+SOLUTION_JS = load_js("components/solution.js")
+SOURCES_JS = load_js("components/sources.js")
 STYLES = (ROOT / "frontend/styles.css").read_text(encoding="utf-8")
 
 

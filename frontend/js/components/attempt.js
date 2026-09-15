@@ -14,21 +14,16 @@ import { attemptElapsedMs, attemptLimitMs, attemptRemainingMs, attemptTimerRunni
 import { bindChatPane, renderChatPane } from './chat.js';
 import { renderMiniCard } from './exam.js';
 import { renderReview, renderSolution } from './solution.js';
+import { taskWorkspaceShell } from './workspace-shell.js';
 
 const SUBJECTIVE_TYPES = new Set(['short-answer', 'argumentation', 'extended-response']);
 
 export function attemptShellHtml(state) {
-  const collapsed = !!state.sidebarCollapsed.attempt;
-  return `
-    <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.attempt}" data-testid="attempt-workspace">
-      <div class="mobile-switch">
-        <button type="button" class="seg ${state.mobilePane.attempt === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
-        <button type="button" class="seg ${state.mobilePane.attempt === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
-      </div>
-      <aside class="pane pane-ai"></aside>
-      <main class="pane pane-content"></main>
-    </div>
-  `;
+  return taskWorkspaceShell({
+    testId: 'attempt-workspace',
+    collapsed: !!state.sidebarCollapsed.attempt,
+    mobilePane: state.mobilePane.attempt,
+  });
 }
 
 export function attemptLeftHtml(state, handlers) {

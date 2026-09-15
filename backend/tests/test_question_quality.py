@@ -1,7 +1,7 @@
 import copy
 
 from backend.tests.conftest import make_client
-from backend.tests.test_exam_workflow_api import ExamFakeModel, _prepare_editable_draft
+from backend.tests.support.exam import ExamFakeModel, _prepare_editable_draft
 
 
 def _choice_slot(draft):

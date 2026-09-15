@@ -5,9 +5,9 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from backend.tests.conftest import make_client
-from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam, publish_ready_exam
-from backend.tests.test_rich_sources_api import image_bytes
-from backend.tests.test_sources_api import upload_source, wait_for_operation
+from backend.tests.support.exam import ExamFakeModel, build_exam, publish_ready_exam
+from backend.tests.support.http import upload_source, wait_for_operation
+from backend.tests.support.media import image_bytes
 
 FRONTEND = Path(__file__).resolve().parents[2] / "frontend"
 

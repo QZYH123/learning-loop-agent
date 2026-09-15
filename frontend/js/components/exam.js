@@ -18,19 +18,14 @@ import {
 } from '../util.js';
 import { bindChatPane, renderChatPane } from './chat.js';
 import { formatKey, renderSolution } from './solution.js';
+import { expandBtn, taskWorkspaceShell } from './workspace-shell.js';
 
 export function examShellHtml(state) {
-  const collapsed = !!state.sidebarCollapsed.exam;
-  return `
-    <div class="ws ws-task ${collapsed ? 'is-collapsed' : ''}" data-mobile="${state.mobilePane.exam}" data-testid="exam-workspace">
-      <div class="mobile-switch">
-        <button type="button" class="seg ${state.mobilePane.exam === 'ai' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="ai">AI</button>
-        <button type="button" class="seg ${state.mobilePane.exam === 'content' ? 'is-active' : ''}" data-action="mobile-pane" data-pane="content">内容</button>
-      </div>
-      <aside class="pane pane-ai"></aside>
-      <main class="pane pane-content"></main>
-    </div>
-  `;
+  return taskWorkspaceShell({
+    testId: 'exam-workspace',
+    collapsed: !!state.sidebarCollapsed.exam,
+    mobilePane: state.mobilePane.exam,
+  });
 }
 
 export function examLeftHtml(state, handlers) {
@@ -69,12 +64,6 @@ export function examRightHtml(state) {
 
 export function bindExamLeft(root, handlers) {
   bindChatPane(root, handlers);
-}
-
-function expandBtn(collapsed) {
-  return collapsed
-    ? `<button type="button" class="icon-btn" data-action="collapse-left" title="展开">${icons.panelLeftOpen(15)}</button>`
-    : '';
 }
 
 function renderHeader(tab, blueprint, draft, exam, proposal, collapsed, state = {}) {

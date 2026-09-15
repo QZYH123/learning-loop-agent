@@ -1,11 +1,9 @@
-from pathlib import Path
+from backend.tests.support.frontend import load_js
 
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_JS = ROOT / "frontend/js"
-APP_JS = (FRONTEND_JS / "app.js").read_text(encoding="utf-8")
-API_JS = (FRONTEND_JS / "api.js").read_text(encoding="utf-8")
-STORE_JS = (FRONTEND_JS / "store.js").read_text(encoding="utf-8")
-ATTEMPT_JS = (FRONTEND_JS / "components/attempt.js").read_text(encoding="utf-8")
+APP_JS = load_js("app.js")
+API_JS = load_js("api.js")
+STORE_JS = load_js("store.js")
+ATTEMPT_JS = load_js("components/attempt.js")
 
 
 def test_attempt_missed_tab_and_practice_entry():

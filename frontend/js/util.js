@@ -428,10 +428,6 @@ export function blankIdsForQuestion(question) {
   return Array.from({ length: count }, (_, index) => `blank-${index + 1}`);
 }
 
-export function countBlanks(question) {
-  return blankIdsForQuestion(question).length;
-}
-
 export function buildAnswerPayload(question, form) {
   const type = question.type;
   if (type === 'single-choice' || type === 'multiple-choice') {
@@ -475,18 +471,3 @@ export function officialSelection(selection) {
   };
 }
 
-export function bind(root, selector, event, handler) {
-  root.querySelectorAll(selector).forEach((node) => {
-    node.addEventListener(event, handler);
-  });
-}
-
-export function closestAction(event, attr = 'data-action') {
-  const target = event.target.closest(`[${attr}]`);
-  if (!target) return null;
-  return {
-    el: target,
-    action: target.getAttribute(attr),
-    ...Object.fromEntries([...target.attributes].map((item) => [item.name.replace(/^data-/, '').replace(/-([a-z])/g, (_, ch) => ch.toUpperCase()), item.value])),
-  };
-}

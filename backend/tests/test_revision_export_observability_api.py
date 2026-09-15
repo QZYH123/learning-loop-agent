@@ -2,8 +2,8 @@ import copy
 import json
 
 from backend.tests.conftest import make_client
-from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam
-from backend.tests.test_sources_api import wait_for_operation
+from backend.tests.support.exam import ExamFakeModel, build_exam
+from backend.tests.support.http import wait_for_operation
 
 
 def publish_exam(client):

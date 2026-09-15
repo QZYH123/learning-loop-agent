@@ -47,6 +47,7 @@ import {
   draftPublishState,
   sanitizeErrorMessage,
   textToMarkdownBlocks,
+  escapeHtml,
 } from './util.js';
 import { attemptLimitMs, attemptRemainingMs, examDurationMinutes, formatElapsed } from './attempt-timer.js';
 import { initPet, petNotify } from './pet.js';
@@ -430,11 +431,7 @@ class App {
     const { action } = target.dataset;
     const id = target.dataset.id;
     try {
-      if (action === 'select-workspace') {
-        store.setState({ workspace: target.dataset.workspace, openMenu: null });
-        if (target.dataset.workspace === 'attempt') await this.loadMissedQuestions();
-      }
-      else if (action === 'toggle-menu') {
+      if (action === 'toggle-menu') {
         store.setState({
           openMenu: store.state.openMenu === target.dataset.menu ? null : target.dataset.menu,
           menuFocusIndex: -1,
@@ -1432,9 +1429,8 @@ class App {
       model_id: store.state.currentModelId,
       use_defaults: !!options.useDefaults,
     });
-    store.trackOperation(accepted.operation);
     store.setState({ examTab: 'blueprint', workspace: 'exam', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
-    const done = await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    const done = await this.awaitOperation(accepted);
     store.trackOperation(done);
     const data = await api.listBlueprints(store.state.activeSubjectId);
     const id = accepted.resource?.id || data.items?.[0]?.id;
@@ -1453,8 +1449,7 @@ class App {
       scope: scope || { kind: 'whole-exam', question_ids: [], block_ids: [] },
       model_id: store.state.currentModelId,
     });
-    store.trackOperation(accepted.operation);
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    await this.awaitOperation(accepted);
     await this.loadDraftProposals(draft.id);
     store.setState({
       examTab: 'draft',
@@ -1494,11 +1489,20 @@ class App {
     store.setState({ draftProposals: proposals.items || [] });
   }
 
-  async applyDraftProposal(proposalId) {
+  async _withApplyingProposal(proposalId, task) {
     if (this.applyingProposal) return;
     this.applyingProposal = true;
     store.setState({ draftProposalBusyId: proposalId });
     try {
+      await task();
+    } finally {
+      this.applyingProposal = false;
+      store.setState({ draftProposalBusyId: null });
+    }
+  }
+
+  async applyDraftProposal(proposalId) {
+    await this._withApplyingProposal(proposalId, async () => {
       await api.applyDraftRevisionProposal(proposalId);
       const draftId = store.state.activeDraftId;
       if (draftId) {
@@ -1506,10 +1510,7 @@ class App {
         await this.loadDraftProposals(draftId);
       }
       store.addToast('已应用修改', 'success');
-    } finally {
-      this.applyingProposal = false;
-      store.setState({ draftProposalBusyId: null });
-    }
+    });
   }
 
   async discardDraftProposal(proposalId) {
@@ -1525,8 +1526,7 @@ class App {
       scope: { kind: 'whole-exam', question_ids: [], block_ids: [] },
       model_id: store.state.currentModelId,
     });
-    store.trackOperation(accepted.operation);
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    await this.awaitOperation(accepted);
     await this.loadExamDetail(exam.id);
     store.setState({ examTab: 'exam', mobilePane: { ...store.state.mobilePane, exam: 'content' } });
     store.addToast('修改预览已就绪', 'success');
@@ -1541,8 +1541,7 @@ class App {
       instruction,
       model_id: store.state.currentModelId,
     });
-    store.trackOperation(accepted.operation);
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    await this.awaitOperation(accepted);
     await this.loadAiDocDetail(doc.id);
     store.setState({ sourceKind: 'docs', mobilePane: { ...store.state.mobilePane, sources: 'content' } });
     store.addToast('修改预览已就绪', 'success');
@@ -1561,8 +1560,7 @@ class App {
       grounding_mode: store.state.groundingMode,
       model_id: store.state.currentModelId,
     });
-    store.trackOperation(accepted.operation);
-    const done = await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    const done = await this.awaitOperation(accepted);
     store.trackOperation(done);
     const data = await api.listAiDocuments(store.state.activeSubjectId);
     const id = accepted.resource?.id || done.result?.id || data.items?.[0]?.id;
@@ -1658,8 +1656,7 @@ class App {
       const accepted = await api.verifyModel(modelId);
       const operationId = accepted?.operation?.id;
       if (!operationId) throw new Error('验证任务未创建');
-      store.trackOperation(accepted.operation);
-      await api.pollOperation(operationId, { onProgress: (op) => store.trackOperation(op) });
+      await this.awaitOperation(accepted);
       const models = (await api.listModels()).items || [];
       const updated = models.find((item) => item.id === modelId);
       store.setState({ models, modelBusy: null });
@@ -1773,9 +1770,8 @@ class App {
     if (!store.state.activeSubjectId) return store.addToast('请先创建科目', 'error');
     for (const file of files) {
       const accepted = await api.uploadSource(store.state.activeSubjectId, file);
-      store.trackOperation(accepted.operation);
       try {
-        await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+        await this.awaitOperation(accepted);
         store.addToast(`${file.name} 已上传`, 'success');
       } catch (err) {
         store.addToast(err.message, 'error');
@@ -1879,8 +1875,7 @@ class App {
     store.setState({ runsBusy: suiteId });
     try {
       const accepted = await api.runEvaluationSuite(suiteId, { model_id: modelId });
-      store.trackOperation(accepted.operation);
-      await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+      await this.awaitOperation(accepted);
       const runId = accepted.resource?.id || accepted.operation?.resource?.id;
       const evaluation = runId ? await api.getEvaluationRun(runId) : null;
       const runs = await api.listOrchestrationRuns({ subject_id: store.state.activeSubjectId || undefined });
@@ -2079,7 +2074,7 @@ class App {
     if (draftId) await this.selectDraft(draftId);
     this.watchDraft();
     store.addToast('已开始组题', 'success');
-    api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) })
+    this.awaitOperation(accepted)
       .then(async () => {
         if (store.state.activeDraftId) await this.selectDraft(store.state.activeDraftId);
       })
@@ -2328,8 +2323,7 @@ class App {
     store.setState({ retryingQuestionId: questionId });
     try {
       const accepted = await api.retryDraftQuestion(draftId, questionId);
-      store.trackOperation(accepted.operation);
-      await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+      await this.awaitOperation(accepted);
       await this.selectDraft(draftId);
     } finally {
       this.retryingQuestions.delete(questionId);
@@ -2392,17 +2386,11 @@ class App {
   }
 
   async applyExamProposal(id) {
-    if (this.applyingProposal) return;
-    this.applyingProposal = true;
-    store.setState({ draftProposalBusyId: id });
-    try {
+    await this._withApplyingProposal(id, async () => {
       await api.applyRevisionProposal(id);
       await this.loadExamDetail(store.state.activeExamId);
       store.addToast('已应用', 'success');
-    } finally {
-      this.applyingProposal = false;
-      store.setState({ draftProposalBusyId: null });
-    }
+    });
   }
 
   async discardExamProposal(id) {
@@ -2656,8 +2644,7 @@ class App {
 
   async gradeAttempt(id) {
     const accepted = await api.submitAttemptGrading(id, { model_id: store.state.currentModelId });
-    store.trackOperation(accepted.operation);
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    await this.awaitOperation(accepted);
     await this.refreshAttempt(id);
     store.addToast('批改完成', 'success');
     petNotify('attempt-completed');
@@ -2665,11 +2652,15 @@ class App {
 
   async askFeedback(attemptId, questionId) {
     const accepted = await api.requestQuestionFeedback(attemptId, questionId, { model_id: store.state.currentModelId });
-    store.trackOperation(accepted.operation);
-    await api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
+    await this.awaitOperation(accepted);
     await this.refreshAttempt(attemptId);
     const feedback = (store.state.activeAttempt?.feedback || []).find((item) => item.question_id === questionId);
     petNotify(feedback?.correct === true ? 'correct' : 'feedback');
+  }
+
+  async awaitOperation(accepted) {
+    store.trackOperation(accepted.operation);
+    return api.pollOperation(accepted.operation.id, { onProgress: (op) => store.trackOperation(op) });
   }
 
   async run(fail, task, after) {

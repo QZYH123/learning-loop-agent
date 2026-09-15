@@ -1,10 +1,8 @@
-from pathlib import Path
+from backend.tests.support.frontend import load_js
 
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_JS = ROOT / "frontend/js"
-APP_JS = (FRONTEND_JS / "app.js").read_text(encoding="utf-8")
-API_JS = (FRONTEND_JS / "api.js").read_text(encoding="utf-8")
-NAVBAR_JS = (FRONTEND_JS / "components/navbar.js").read_text(encoding="utf-8")
+APP_JS = load_js("app.js")
+API_JS = load_js("api.js")
+NAVBAR_JS = load_js("components/navbar.js")
 
 
 def test_subject_menu_has_export_and_import_actions():

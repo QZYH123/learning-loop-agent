@@ -1,7 +1,7 @@
 from backend.tests.conftest import ImmediateFakeModelClient, make_client, wait_for
-from backend.tests.test_exam_workflow_api import ExamFakeModel, build_exam, publish_ready_exam
-from backend.tests.test_issue16_workflows import create_subject_and_source
-from backend.tests.test_sources_api import wait_for_operation
+from backend.tests.support.bootstrap import create_subject_and_model, create_subject_and_source
+from backend.tests.support.exam import ExamFakeModel, build_exam, publish_ready_exam
+from backend.tests.support.http import wait_for_operation
 
 
 class SessionProposalFake(ImmediateFakeModelClient):
@@ -50,15 +50,6 @@ class SessionProposalFake(ImmediateFakeModelClient):
             if any(hint in text for hint in worker_hints):
                 return await self._workers.chat(profile, messages, max_tokens, tools)
         return await super().chat(profile, messages, max_tokens, tools)
-
-
-def _create_subject_and_model(client):
-    subject_id = client.post("/api/subjects", json={"name": "数学"}).json()["id"]
-    model_id = client.post(
-        "/api/models",
-        json={"provider": "Fake", "api_format": "openai-chat-completions", "model": "fake-1", "base_url": "http://localhost/v1"},
-    ).json()["id"]
-    return subject_id, model_id
 
 
 def _editable_draft(client, blueprint_id):
@@ -296,7 +287,7 @@ def test_session_agent_propose_exam_blueprint_creates_blueprint_and_resource(tmp
     ))
     client, _ = make_client(tmp_path, model_client=fake)
     with client:
-        subject_id, model_id = _create_subject_and_model(client)
+        subject_id, model_id = create_subject_and_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "组卷"}).json()
         message = _send_session_message(
             client,
@@ -386,7 +377,7 @@ def test_session_agent_propose_revision_routes_to_ai_document(tmp_path):
     model_client = ImmediateFakeModelClient(answer="复习提纲\n正文")
     client, app = make_client(tmp_path, model_client=model_client)
     with client:
-        subject_id, model_id = _create_subject_and_model(client)
+        subject_id, model_id = create_subject_and_model(client)
         created = client.post(
             f"/api/subjects/{subject_id}/documents",
             json={
@@ -472,7 +463,7 @@ def test_session_agent_propose_revision_without_context_creates_nothing(tmp_path
     ))
     client, app = make_client(tmp_path, model_client=fake)
     with client:
-        subject_id, model_id = _create_subject_and_model(client)
+        subject_id, model_id = create_subject_and_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "无对象"}).json()
         message = _send_session_message(client, session["id"], model_id, "帮我改一下")
         assert message["status"] == "complete"
@@ -495,7 +486,7 @@ def test_session_agent_create_ai_document_returns_resource(tmp_path):
     ))
     client, _ = make_client(tmp_path, model_client=fake)
     with client:
-        subject_id, model_id = _create_subject_and_model(client)
+        subject_id, model_id = create_subject_and_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "文档"}).json()
         message = _send_session_message(
             client,
@@ -525,7 +516,7 @@ def test_session_workspace_context_rejects_unknown_keys(tmp_path):
     fake = ImmediateFakeModelClient(answer="普通回复")
     client, _ = make_client(tmp_path, model_client=fake)
     with client:
-        subject_id, model_id = _create_subject_and_model(client)
+        subject_id, model_id = create_subject_and_model(client)
         session = client.post(f"/api/subjects/{subject_id}/sessions", json={"title": "契约"}).json()
         sent = client.post(
             f"/api/sessions/{session['id']}/messages",
