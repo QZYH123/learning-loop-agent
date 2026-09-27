@@ -405,12 +405,17 @@ export function sanitizeCommandNote(text) {
   return `${match[1]}${sanitizeErrorMessage(match[2].trim())}`;
 }
 
+export function locationLeaf(label) {
+  const parts = String(label || '').split('/').map((part) => part.trim()).filter(Boolean);
+  return parts[parts.length - 1] || '';
+}
+
 export function visibleCitations(citations, limit = 3) {
   const seen = new Set();
   const unique = [];
   for (const item of citations || []) {
     if (!item) continue;
-    const loc = String(item.location?.label || '').split('/').pop()?.trim() || '';
+    const loc = locationLeaf(item.location?.label);
     const name = item.source_name || item.source_id || '';
     const key = `${name}#${loc || item.anchor_id || item.id || unique.length}`;
     if (seen.has(key)) continue;
@@ -419,6 +424,16 @@ export function visibleCitations(citations, limit = 3) {
     if (unique.length >= limit) break;
   }
   return unique;
+}
+
+export function citationButton(cite) {
+  if (!cite) return '';
+  const loc = locationLeaf(cite.location?.label);
+  const label = loc ? `${cite.source_name || '资料'} · ${loc}` : (cite.source_name || '');
+  if (!label) return '';
+  const title = cite.excerpt || cite.location?.label || label;
+  const idAttr = cite.id ? ` data-citation-id="${escapeHtml(cite.id)}"` : '';
+  return `<button type="button" class="cite" data-action="open-citation" data-source-id="${escapeHtml(cite.source_id || '')}" data-version-id="${escapeHtml(cite.source_version_id || '')}" data-anchor-id="${escapeHtml(cite.anchor_id || '')}"${idAttr} title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
 }
 
 export function sourceAnchorLabel(anchor, index) {

@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .domain import SUBJECT_NAME_MAX_LENGTH
+from .files import write_bytes_atomic
 
 EXPORT_SCHEMA_VERSION = 1
 IMPORT_NAME_SUFFIX = "（导入）"
@@ -146,7 +147,7 @@ def parse_export_zip(content: bytes) -> dict:
 def write_source_entries(library, source_entries: dict[str, bytes]) -> None:
     for relative, data in source_entries.items():
         dest = library_dest(library, relative)
-        library._write_atomic(dest, data)
+        write_bytes_atomic(dest, data)
 
 
 def library_dest(library, relative: str) -> Path:

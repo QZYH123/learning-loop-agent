@@ -276,41 +276,11 @@ class ExamService:
                             "updated_at": self._now(),
                         })
                     except json.JSONDecodeError as exc:
-                        self._update_slot(subject["id"], draft_id, slot["id"], {
-                            "status": "failed",
-                            "question": None,
-                            "error": {
-                                "code": "QUESTION_GENERATION_FAILED",
-                                "message": self._structure_error_message(exc),
-                                "retryable": True,
-                                "details": {},
-                            },
-                            "updated_at": self._now(),
-                        })
+                        self._update_slot(subject["id"], draft_id, slot["id"], self._slot_failure(exc))
                     except (LearningError, ValidationError, KeyError, TypeError, ValueError) as exc:
-                        self._update_slot(subject["id"], draft_id, slot["id"], {
-                            "status": "needs-review",
-                            "question": None,
-                            "error": {
-                                "code": "QUESTION_STRUCTURE_INVALID",
-                                "message": self._structure_error_message(exc),
-                                "retryable": True,
-                                "details": {},
-                            },
-                            "updated_at": self._now(),
-                        })
+                        self._update_slot(subject["id"], draft_id, slot["id"], self._slot_failure(exc, structured=True))
                     except (ModelClientError, SourceLibraryError) as exc:
-                        self._update_slot(subject["id"], draft_id, slot["id"], {
-                            "status": "failed",
-                            "question": None,
-                            "error": {
-                                "code": "QUESTION_GENERATION_FAILED",
-                                "message": str(exc) or "题目生成失败",
-                                "retryable": True,
-                                "details": {},
-                            },
-                            "updated_at": self._now(),
-                        })
+                        self._update_slot(subject["id"], draft_id, slot["id"], self._slot_failure(exc))
                     else:
                         known_briefs[slot["id"]] = self._question_brief(question, slot["ordinal"])
                     completed += 1
@@ -439,29 +409,17 @@ class ExamService:
                 self._update_slot(subject["id"], draft_id, question_id, {**slot, "updated_at": self._now()})
                 raise
             except json.JSONDecodeError as exc:
-                self._update_slot(subject["id"], draft_id, question_id, {
-                    "status": "failed",
-                    "question": None,
-                    "error": {"code": "QUESTION_GENERATION_FAILED", "message": str(exc), "retryable": True, "details": {}},
-                    "updated_at": self._now(),
-                })
-                raise OperationFailure("QUESTION_GENERATION_FAILED", "题目生成失败", retryable=True) from exc
+                failure = self._slot_failure(exc)
+                self._update_slot(subject["id"], draft_id, question_id, failure)
+                raise OperationFailure(failure["error"]["code"], "题目生成失败", retryable=True) from exc
             except (LearningError, ValidationError, KeyError, TypeError, ValueError) as exc:
-                self._update_slot(subject["id"], draft_id, question_id, {
-                    "status": "needs-review",
-                    "question": None,
-                    "error": {"code": "QUESTION_STRUCTURE_INVALID", "message": self._structure_error_message(exc), "retryable": True, "details": {}},
-                    "updated_at": self._now(),
-                })
-                raise OperationFailure("QUESTION_STRUCTURE_INVALID", "题目结构不完整", retryable=True) from exc
+                failure = self._slot_failure(exc, structured=True)
+                self._update_slot(subject["id"], draft_id, question_id, failure)
+                raise OperationFailure(failure["error"]["code"], "题目结构不完整", retryable=True) from exc
             except (ModelClientError, SourceLibraryError) as exc:
-                self._update_slot(subject["id"], draft_id, question_id, {
-                    "status": "failed",
-                    "question": None,
-                    "error": {"code": "QUESTION_GENERATION_FAILED", "message": str(exc), "retryable": True, "details": {}},
-                    "updated_at": self._now(),
-                })
-                raise OperationFailure("QUESTION_GENERATION_FAILED", "题目生成失败", retryable=True) from exc
+                failure = self._slot_failure(exc)
+                self._update_slot(subject["id"], draft_id, question_id, failure)
+                raise OperationFailure(failure["error"]["code"], "题目生成失败", retryable=True) from exc
             status = "complete" if question["reliability"] == "reliable" else "needs-review"
             self._update_slot(subject["id"], draft_id, question_id, {"status": status, "question": question, "error": None, "updated_at": self._now()})
             return {"type": "question", "id": question_id}
@@ -2780,6 +2738,22 @@ class ExamService:
             "total_score": total_score,
             "duration_minutes": duration,
             "issues": issues,
+        }
+
+    def _slot_failure(self, exc: Exception, *, structured: bool = False) -> dict:
+        if structured:
+            code = "QUESTION_STRUCTURE_INVALID"
+            status = "needs-review"
+            message = self._structure_error_message(exc)
+        else:
+            code = "QUESTION_GENERATION_FAILED"
+            status = "failed"
+            message = self._structure_error_message(exc) if isinstance(exc, json.JSONDecodeError) else (str(exc) or "题目生成失败")
+        return {
+            "status": status,
+            "question": None,
+            "error": {"code": code, "message": message, "retryable": True, "details": {}},
+            "updated_at": self._now(),
         }
 
     def _update_slot(self, subject_id: str, draft_id: str, question_id: str, changes: dict) -> None:

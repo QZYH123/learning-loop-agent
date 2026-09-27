@@ -259,7 +259,7 @@ class SourceLibrary:
         with self._citation_lock:
             records = self._load_citations()
             records.append(citation)
-            self._write_json_atomic(self.citations_path, {"schema_version": 1, "citations": records})
+            write_json_atomic(self.citations_path, {"schema_version": 1, "citations": records})
         return citation
 
     def get_citation(self, citation_id: str) -> dict:
@@ -285,7 +285,7 @@ class SourceLibrary:
                 existing.add(citation_id)
                 changed = True
             if changed:
-                self._write_json_atomic(self.citations_path, {"schema_version": 1, "citations": records})
+                write_json_atomic(self.citations_path, {"schema_version": 1, "citations": records})
 
     def create_source(self, subject_id: str, filename: str | None, display_name: str | None, content: bytes) -> dict:
         self._subject(subject_id)
@@ -387,7 +387,7 @@ class SourceLibrary:
             },
             "content": version["content"],
         }
-        self._write_json_atomic(self.index_dir / f"{version['id']}.json", {
+        write_json_atomic(self.index_dir / f"{version['id']}.json", {
             "schema_version": 1,
             "source_id": document["id"],
             "source_version_id": version["id"],
@@ -408,7 +408,7 @@ class SourceLibrary:
         async def worker():
             await asyncio.sleep(0)
             try:
-                await asyncio.to_thread(self._write_atomic, self.files_dir / f"{version['id']}.bin", content)
+                await asyncio.to_thread(write_bytes_atomic, self.files_dir / f"{version['id']}.bin", content)
                 parse_started_at = int(time.time() * 1000)
                 parse_started = time.perf_counter()
                 cached, parsed = await asyncio.to_thread(
@@ -479,7 +479,7 @@ class SourceLibrary:
         for index, asset in enumerate(parsed["assets"]):
             extension = mimetypes.guess_extension(asset["mime_type"]) or ".bin"
             filename = f"{index}{extension}"
-            self._write_atomic(cache_assets_dir / filename, asset["data"])
+            write_bytes_atomic(cache_assets_dir / filename, asset["data"])
             assets.append({key: value for key, value in asset.items() if key != "data"} | {"cache_file": filename})
         payload = {
             "schema_version": 1,
@@ -488,7 +488,7 @@ class SourceLibrary:
             "anchors": parsed["anchors"],
             "assets": assets,
         }
-        self._write_json_atomic(cache_path, payload)
+        write_json_atomic(cache_path, payload)
         return False, payload
 
     def _materialize_version_index(self, source: dict, version: dict, parsed: dict) -> dict:
@@ -528,7 +528,7 @@ class SourceLibrary:
             "anchors": anchors,
             "assets": assets,
         }
-        self._write_json_atomic(self.index_dir / f"{version['id']}.json", index)
+        write_json_atomic(self.index_dir / f"{version['id']}.json", index)
         return index
 
     def _load_version_index(self, version_id: str) -> dict:
@@ -563,10 +563,6 @@ class SourceLibrary:
     @staticmethod
     def _public_asset(asset: dict) -> dict:
         return {key: asset.get(key) for key in ("id", "kind", "mime_type", "width", "height", "alt")}
-
-    @staticmethod
-    def _write_json_atomic(path: Path, payload: dict) -> None:
-        write_json_atomic(path, payload)
 
     def _mark_failed(self, version_id: str, message: str, retryable: bool = False) -> None:
         self.workspace_service.dispatch(
@@ -633,10 +629,6 @@ class SourceLibrary:
         if not name or len(name) > 255:
             raise SourceLibraryError(422, "VALIDATION_FAILED", "资料名称长度必须为 1 到 255 个字符")
         return name, source_format[0], source_format[1]
-
-    @staticmethod
-    def _write_atomic(path: Path, content: bytes) -> None:
-        write_bytes_atomic(path, content)
 
     @staticmethod
     def _require_dispatch(result: dict) -> None:

@@ -27,13 +27,15 @@ def test_command_failures_hide_internal_error_names():
 
 
 def test_citation_chips_are_buttons_with_jump_data():
-    for source in (CHAT_JS, SOLUTION_JS):
-        assert 'data-action="open-citation"' in source
-        assert "data-source-id=" in source
-        assert "data-version-id=" in source
-        assert "data-anchor-id=" in source
-        assert 'class="cite"' in source
-        assert "<button type=\"button\" class=\"cite\"" in source
+    util = load_js("util.js")
+    assert "export function citationButton(" in util
+    assert 'data-action="open-citation"' in util
+    assert "data-source-id=" in util
+    assert "data-version-id=" in util
+    assert "data-anchor-id=" in util
+    assert "<button type=\"button\" class=\"cite\"" in util
+    assert "citationButton" in CHAT_JS
+    assert "citationButton" in SOLUTION_JS
     assert 'id="anchor-${anchor.id}"' in SOURCES_JS or 'id="anchor-' in SOURCES_JS
 
 

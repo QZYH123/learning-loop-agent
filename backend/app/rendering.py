@@ -103,7 +103,7 @@ class ExamRenderingService:
                 )
                 export_started_at = self._now()
                 export_started = time.perf_counter()
-                self._write_atomic(self.exports_dir / export["storage_name"], content)
+                write_bytes_atomic(self.exports_dir / export["storage_name"], content)
                 self.operations.record_stage(
                     "export",
                     started_at=export_started_at,
@@ -422,7 +422,3 @@ class ExamRenderingService:
                 "updated_at",
             )
         }
-
-    @staticmethod
-    def _write_atomic(path: Path, content: bytes) -> None:
-        write_bytes_atomic(path, content)

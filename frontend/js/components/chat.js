@@ -9,6 +9,7 @@ import {
   formatTime,
   groundingLabel,
   renderBlocks,
+  citationButton,
   sanitizeCommandNote,
   sanitizeErrorMessage,
   statusLabel,
@@ -349,13 +350,7 @@ function renderMessage(msg) {
   const grounding = msg.grounding_result
     ? { covered: '依据资料', 'not-covered': '未覆盖', 'general-knowledge': '常识', supplemental: '资料+补充' }[msg.grounding_result]
     : '';
-  const cites = visibleCitations(msg.citations)
-    .map((cite) => {
-      const location = shortLocation(cite.location?.label);
-      const label = location ? `${cite.source_name || '资料'} · ${location}` : (cite.source_name || '资料');
-      return `<button type="button" class="cite" data-action="open-citation" data-source-id="${escapeHtml(cite.source_id || '')}" data-version-id="${escapeHtml(cite.source_version_id || '')}" data-anchor-id="${escapeHtml(cite.anchor_id || '')}" ${cite.id ? `data-citation-id="${escapeHtml(cite.id)}"` : ''} title="${escapeHtml(cite.excerpt || cite.location?.label || label)}">${escapeHtml(label)}</button>`;
-    })
-    .join('');
+  const cites = visibleCitations(msg.citations).map(citationButton).filter(Boolean).join('');
   const bubbleBody = isGenerating && !text && !plainText
     ? `${icons.rotateCw(14, 'spin')} 生成中`
     : role === 'system'
@@ -490,13 +485,6 @@ function groundingMenu(current) {
       ).join('')}
     </div>
   `;
-}
-
-function shortLocation(label) {
-  const text = String(label || '').trim();
-  if (!text) return '';
-  const parts = text.split('/').map((part) => part.trim()).filter(Boolean);
-  return parts[parts.length - 1] || text;
 }
 
 function sourcesDrawer(state) {

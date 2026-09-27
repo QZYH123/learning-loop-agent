@@ -25,6 +25,32 @@ function formatErrorMessage(error, payload, status) {
   return detail ? `${base}（${detail}）` : base;
 }
 
+function networkError(err) {
+  return new ApiError(
+    '无法连接本地服务，请确认应用已打开',
+    'NETWORK_ERROR',
+    0,
+    { cause: String(err?.message || err) },
+  );
+}
+
+async function readBody(response) {
+  const contentType = response.headers.get('content-type') || '';
+  return contentType.includes('application/json')
+    ? response.json().catch(() => null)
+    : response.text().catch(() => null);
+}
+
+function errorFromResponse(payload, status) {
+  const error = payload && typeof payload === 'object' ? payload.error : null;
+  return new ApiError(
+    formatErrorMessage(error, payload, status),
+    error?.code || 'API_ERROR',
+    status,
+    error?.details || payload,
+  );
+}
+
 async function request(endpoint, options = {}) {
   const headers = { Accept: 'application/json', ...(options.headers || {}) };
   if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
@@ -35,29 +61,11 @@ async function request(endpoint, options = {}) {
   try {
     response = await fetch(endpoint, { ...options, headers });
   } catch (err) {
-    throw new ApiError(
-      '无法连接本地服务，请确认应用已打开',
-      'NETWORK_ERROR',
-      0,
-      { cause: String(err?.message || err) },
-    );
+    throw networkError(err);
   }
   if (response.status === 204) return null;
-
-  const contentType = response.headers.get('content-type') || '';
-  const payload = contentType.includes('application/json')
-    ? await response.json().catch(() => null)
-    : await response.text().catch(() => null);
-
-  if (!response.ok) {
-    const error = payload && typeof payload === 'object' ? payload.error : null;
-    throw new ApiError(
-      formatErrorMessage(error, payload, response.status),
-      error?.code || 'API_ERROR',
-      response.status,
-      error?.details || payload,
-    );
-  }
+  const payload = await readBody(response);
+  if (!response.ok) throw errorFromResponse(payload, response.status);
   return payload;
 }
 
@@ -91,26 +99,9 @@ async function downloadFile(endpoint, { accept, fallbackName }) {
   try {
     response = await fetch(endpoint, { headers: { Accept: accept } });
   } catch (err) {
-    throw new ApiError(
-      '无法连接本地服务，请确认应用已打开',
-      'NETWORK_ERROR',
-      0,
-      { cause: String(err?.message || err) },
-    );
+    throw networkError(err);
   }
-  if (!response.ok) {
-    const contentType = response.headers.get('content-type') || '';
-    const payload = contentType.includes('application/json')
-      ? await response.json().catch(() => null)
-      : await response.text().catch(() => null);
-    const error = payload && typeof payload === 'object' ? payload.error : null;
-    throw new ApiError(
-      formatErrorMessage(error, payload, response.status),
-      error?.code || 'API_ERROR',
-      response.status,
-      error?.details || payload,
-    );
-  }
+  if (!response.ok) throw errorFromResponse(await readBody(response), response.status);
   const blob = await response.blob();
   const fileName = filenameFromDisposition(response.headers.get('content-disposition')) || fallbackName;
   triggerDownload(blob, fileName);

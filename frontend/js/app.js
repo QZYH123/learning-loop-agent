@@ -611,11 +611,8 @@ class App {
     const id = target.dataset.id;
     const index = Number(target.dataset.index);
     try {
-      if (action === 'plan-count' || action === 'plan-score' || action === 'plan-type' || action === 'plan-difficulty') {
-        const field = action === 'plan-count' ? 'count' : action === 'plan-score' ? 'score_each' : action === 'plan-type' ? 'type' : 'difficulty';
-        await this.enqueueBlueprint(() => this.updateBlueprintPlan(id, index, field, target.value));
-      } else if (action === 'plan-duration') {
-        await this.enqueueBlueprint(() => this.updateBlueprintDuration(id, target.value));
+      if (action.startsWith('plan-')) {
+        await this.enqueueBlueprint(() => this.applyBlueprintControl(id, action, index, target.value));
       } else if (action === 'toggle-missed-point') {
         const point = target.dataset.point;
         const selected = new Set(store.state.missedSelectedPoints || []);
@@ -2083,15 +2080,21 @@ class App {
     if (!root) return;
     const nodes = [...root.querySelectorAll('[data-id]')].filter((node) => node.dataset.id === id);
     for (const node of nodes) {
-      const action = node.dataset.action;
-      const index = Number(node.dataset.index);
-      if (action === 'plan-count' || action === 'plan-score' || action === 'plan-type' || action === 'plan-difficulty') {
-        const field = action === 'plan-count' ? 'count' : action === 'plan-score' ? 'score_each' : action === 'plan-type' ? 'type' : 'difficulty';
-        await this.updateBlueprintPlan(id, index, field, node.value);
-      } else if (action === 'plan-duration') {
-        await this.updateBlueprintDuration(id, node.value);
-      }
+      await this.applyBlueprintControl(id, node.dataset.action, Number(node.dataset.index), node.value);
     }
+  }
+
+  async applyBlueprintControl(id, action, index, value) {
+    if (action === 'plan-count' || action === 'plan-score' || action === 'plan-type' || action === 'plan-difficulty') {
+      const field = action === 'plan-count' ? 'count' : action === 'plan-score' ? 'score_each' : action === 'plan-type' ? 'type' : 'difficulty';
+      await this.updateBlueprintPlan(id, index, field, value);
+      return true;
+    }
+    if (action === 'plan-duration') {
+      await this.updateBlueprintDuration(id, value);
+      return true;
+    }
+    return false;
   }
 
   async confirmBlueprint(id) {

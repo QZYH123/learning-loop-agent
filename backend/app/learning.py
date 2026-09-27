@@ -771,7 +771,7 @@ class LearningService:
             grounding_mode,
             selection,
             attachment_ids,
-            workspace_context=self._workspace_context(payload.get("workspace_context")),
+            workspace_context=workspace,
         )
         content = payload.get("content") or self._intent_label(payload["intent"])
         user_id = self._ids("message")
@@ -842,15 +842,11 @@ class LearningService:
         selection = user_message.get("selection")
         selection_context = None
         if selection and self.selection_resolver is not None:
-            resolved = self.selection_resolver(
+            selection, selection_context = self._resolve_selection(
                 selection,
-                include_context=True,
+                profile,
                 redact_answers=self._selection_should_hide_answers((context or {}).get("workspace_context")),
             )
-            if isinstance(resolved, tuple):
-                selection, selection_context = resolved
-            else:
-                selection = resolved
         attachment_ids = list(context.get("attachment_ids") or [])
         attachment_inputs = self._attachment_inputs(subject["id"], attachment_ids, profile) if attachment_ids else []
         content = self._content_text(user_message.get("content", []))
