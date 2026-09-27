@@ -2514,18 +2514,16 @@ class ExamService:
     def _extract_choice_ids(self, answer, option_ids: list[str]) -> list[str]:
         if isinstance(answer, str):
             text = answer.strip()
-            if text in option_ids:
-                return [text]
-            letter = text[:1].upper() if text else ""
-            if letter in option_ids:
-                return [letter]
+            token = text.strip("。．.、)） ")
+            if token in option_ids:
+                return [token]
+            if len(token) == 1 and token.upper() in option_ids:
+                return [token.upper()]
             return [text] if text else []
         if isinstance(answer, bool):
             return []
-        if isinstance(answer, (int, float)):
+        if isinstance(answer, (int, float)) and float(answer).is_integer():
             index = int(answer)
-            if 0 <= index < len(option_ids):
-                return [option_ids[index]]
             if 1 <= index <= len(option_ids):
                 return [option_ids[index - 1]]
             return []

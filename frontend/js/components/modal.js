@@ -1,12 +1,19 @@
 import { escapeHtml, formatTime, statusLabel } from '../util.js';
 
+let lastModalKey = '';
+
 export function renderModals(state, root, handlers) {
   const modal = state.modal;
   if (!modal) {
+    lastModalKey = '';
     root.innerHTML = '';
     root.onclick = null;
     return;
   }
+  const stable = modal === 'subject' || modal === 'rename-subject' || modal === 'exam-edition';
+  const key = stable ? `${modal}:${state.examEditionTitle || ''}` : '';
+  if (key && key === lastModalKey && root.childElementCount) return;
+  lastModalKey = key;
 
   if (modal === 'subject' || modal === 'rename-subject') {
     const current = state.subjects.find((item) => item.id === state.activeSubjectId);
