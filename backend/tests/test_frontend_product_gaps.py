@@ -89,8 +89,10 @@ def test_menus_support_keyboard_and_accessible_names():
 def test_run_log_is_outside_learning_workspaces():
     assert "open-runs" in NAVBAR_JS
     assert "运行记录" in MODAL_JS
-    assert "外层耗时" in MODAL_JS
-    assert "模型结果" in MODAL_JS
+    assert "准备 " in MODAL_JS
+    assert "生成 " in MODAL_JS
+    assert "外层耗时" not in MODAL_JS
+    assert "答案露出" in MODAL_JS
     assert "listOrchestrationRuns(" in API_JS
     assert "runEvaluationSuite(" in API_JS
     assert "编排运行" not in MODAL_JS

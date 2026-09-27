@@ -615,3 +615,43 @@ def test_fill_in_question_sees_later_bundle_stems(tmp_path):
         prompt = fill_prompts[0]
         assert "A limit primarily describes what? (1)" in prompt
         assert "A limit can exist even when the point value differs." in prompt
+
+
+def test_exam_attempt_selection_hides_the_answer(tmp_path):
+    fake = ExamFakeModel()
+    client, _ = make_client(tmp_path, model_client=fake)
+    with client:
+        subject_id, _, version_id, blueprint_id = build_exam(client)
+        exam = publish_ready_exam(client, blueprint_id)
+        choice = next(question for question in exam["document"]["questions"] if question["type"] == "single-choice")
+        attempt = client.post(f"/api/exams/{exam['id']}/attempts", json={"mode": "exam"}).json()
+        session = client.post(f"/api/subjects/{subject_id}/sessions", json={
+            "source_version_ids": [version_id],
+        }).json()
+        stem = choice["stem"][0]["text"]
+        answer = json.dumps(choice["answer"], ensure_ascii=False)
+        before = len(fake.chat_calls)
+        sent = client.post(f"/api/sessions/{session['id']}/messages", json={
+            "intent": "ask",
+            "content": "这题在问什么",
+            "grounding_mode": "strict",
+            "workspace_context": {"workspace": "attempt", "attempt_id": attempt["id"]},
+            "selection": {
+                "document_kind": "exam",
+                "document_id": exam["id"],
+                "version_id": exam["current_version_id"],
+                "question_id": choice["id"],
+                "block_id": choice["stem"][0]["id"],
+                "selected_text": stem,
+            },
+        })
+        assert wait_for_operation(client, sent.json()["operation"]["id"])["status"] == "succeeded"
+        prompts = [
+            call["messages"][-1]["content"]
+            for call in fake.chat_calls[before:]
+            if isinstance(call["messages"][-1]["content"], str) and "起一个不超过12个字" not in call["messages"][-1]["content"]
+        ]
+        assert prompts
+        assert stem in prompts[-1]
+        assert answer not in prompts[-1]
+        assert "option_ids" not in prompts[-1]

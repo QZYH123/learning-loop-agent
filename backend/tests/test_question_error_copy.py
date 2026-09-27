@@ -1,3 +1,5 @@
+import json
+
 from backend.app.exams import ExamService
 
 
@@ -6,3 +8,5 @@ def test_structure_error_message_hides_internal_fields():
     assert "得分点" in ExamService._structure_error_message(KeyError("scoring_points"))
     assert "正文" in ExamService._structure_error_message(ValueError("content blocks must be a string or list"))
     assert "结构不完整" in ExamService._structure_error_message(TypeError("x"))
+    assert "无法解析" in ExamService._structure_error_message(json.JSONDecodeError("Expecting value", "", 0))
+    assert "Expecting" not in ExamService._structure_error_message(json.JSONDecodeError("Expecting value", "", 0))

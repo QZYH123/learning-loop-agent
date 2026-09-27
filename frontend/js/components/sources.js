@@ -160,7 +160,7 @@ function renderFiles(state, source) {
         `,
                       )
                       .join('')
-                  : `<div class="empty"><h3>暂无正文</h3></div>`
+                  : `<div class="empty"><h3>暂无正文</h3><button type="button" class="btn btn-primary" data-action="upload-source">重新上传</button></div>`
               }`
     }
   `;

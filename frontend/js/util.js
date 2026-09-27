@@ -371,6 +371,14 @@ export function sanitizeErrorMessage(message) {
   if (lower.includes('api key') || lower.includes('incorrect api key') || text.includes('sk-')) {
     return '模型服务拒绝了请求，请检查 API Key';
   }
+  if (
+    lower.includes('internal server error')
+    || lower === 'internalservererror'
+    || text === 'INTERNAL_ERROR'
+    || /^[A-Z][A-Za-z]+(?:Error|Exception)$/.test(text)
+  ) {
+    return '这次没有完成，请再试一次';
+  }
   if (text.includes('{') || text.includes('"error"') || /https?:\/\//.test(text)) {
     const status = text.match(/HTTP (\d{3})/);
     if (status?.[1] === '401') return '模型服务拒绝了请求，请检查 API Key';
@@ -382,8 +390,35 @@ export function sanitizeErrorMessage(message) {
   if (lower.includes('blank')) return '填空题缺少填空定义，请重试生成';
   if (lower.includes('scoring_point')) return '主观题缺少得分点，请重试生成';
   if (lower.includes('content block')) return '题目正文格式无效，请重试生成';
-  if (/^['"]?[a-z_]+['"]?$/i.test(text)) return '题目结构不完整，请重试生成';
+  const bare = text.replace(/^['"]|['"]$/g, '');
+  if (/^(stem|options|answer|explanation|knowledge_points|question_type|type)$/i.test(bare)) {
+    return '题目结构不完整，请重试生成';
+  }
+  if (/^[a-z]+(_[a-z]+)+$/i.test(bare)) return '题目结构不完整，请重试生成';
   return text;
+}
+
+export function sanitizeCommandNote(text) {
+  const raw = String(text || '');
+  const match = raw.match(/^(\/\S+失败：)([\s\S]+)$/);
+  if (!match) return raw;
+  return `${match[1]}${sanitizeErrorMessage(match[2].trim())}`;
+}
+
+export function visibleCitations(citations, limit = 3) {
+  const seen = new Set();
+  const unique = [];
+  for (const item of citations || []) {
+    if (!item) continue;
+    const loc = String(item.location?.label || '').split('/').pop()?.trim() || '';
+    const name = item.source_name || item.source_id || '';
+    const key = `${name}#${loc || item.anchor_id || item.id || unique.length}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+    if (unique.length >= limit) break;
+  }
+  return unique;
 }
 
 export function sourceAnchorLabel(anchor, index) {

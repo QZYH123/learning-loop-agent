@@ -9,10 +9,12 @@ import {
   formatTime,
   groundingLabel,
   renderBlocks,
+  sanitizeCommandNote,
+  sanitizeErrorMessage,
   statusLabel,
   styleLabel,
   truncate,
-  sanitizeErrorMessage,
+  visibleCitations,
 } from '../util.js';
 
 export function renderChatPane(state, handlers, options = {}) {
@@ -341,12 +343,13 @@ function renderMessage(msg) {
   const isGenerating = role === 'assistant' && ['queued', 'generating'].includes(msg.status);
   const text = renderBlocks(msg.content);
   const plainText = blocksToText(msg.content);
+  const systemText = role === 'system' ? sanitizeCommandNote(plainText) : '';
+  const failedNote = role === 'system' && systemText.includes('失败：');
   const status = statusLabel('message', msg.status);
   const grounding = msg.grounding_result
     ? { covered: '依据资料', 'not-covered': '未覆盖', 'general-knowledge': '常识', supplemental: '资料+补充' }[msg.grounding_result]
     : '';
-  const cites = (msg.citations || [])
-    .slice(0, 3)
+  const cites = visibleCitations(msg.citations)
     .map((cite) => {
       const location = shortLocation(cite.location?.label);
       const label = location ? `${cite.source_name || '资料'} · ${location}` : (cite.source_name || '资料');
@@ -355,22 +358,27 @@ function renderMessage(msg) {
     .join('');
   const bubbleBody = isGenerating && !text && !plainText
     ? `${icons.rotateCw(14, 'spin')} 生成中`
-    : `${text || escapeHtml(plainText)}${cites ? `<div class="cite-row">${cites}</div>` : ''}`;
+    : role === 'system'
+      ? escapeHtml(systemText)
+      : `${text || escapeHtml(plainText)}${cites ? `<div class="cite-row">${cites}</div>` : ''}`;
   const retryable = role === 'assistant' && ['error', 'stopped'].includes(msg.status);
   const errorBlock = retryable
     ? `<div class="msg-error">${escapeHtml(sanitizeErrorMessage(msg.error?.message || '生成失败'))}</div>
        <button type="button" class="btn btn-ghost btn-sm" data-action="retry-message" data-id="${msg.id}">重试</button>`
     : '';
   const toolEvents = role === 'assistant' ? renderToolEvents(msg.tool_events) : '';
-  return `
-    <article class="msg msg-${role}">
-      <div class="msg-meta">
+  const meta = role === 'system'
+    ? ''
+    : `<div class="msg-meta">
         <span>${role === 'user' ? '我' : 'AI'}</span>
         ${msg.model?.model ? `<span class="model-chip">${escapeHtml(msg.model.model)}</span>` : ''}
         ${grounding ? `<span>${grounding}</span>` : ''}
         ${status ? `<span>${status}</span>` : ''}
         <span>${formatTime(msg.created_at)}</span>
-      </div>
+      </div>`;
+  return `
+    <article class="msg msg-${role}${failedNote ? ' is-fail' : ''}">
+      ${meta}
       ${toolEvents}
       <div class="bubble">${bubbleBody}</div>
       ${errorBlock}

@@ -44,6 +44,8 @@ import {
   nextOptionId,
   sessionVisible,
   titleFromMessage,
+  answerForQuestion,
+  buildAnswerPayload,
   draftPublishState,
   sanitizeErrorMessage,
   textToMarkdownBlocks,
@@ -68,6 +70,7 @@ class App {
     this.regions = { workspace: null, shell: '', left: '', right: '', nav: '' };
     this.attemptTimer = null;
     this.citeHighlightTimer = null;
+    this.blueprintChain = Promise.resolve();
   }
 
   async init() {
@@ -610,9 +613,9 @@ class App {
     try {
       if (action === 'plan-count' || action === 'plan-score' || action === 'plan-type' || action === 'plan-difficulty') {
         const field = action === 'plan-count' ? 'count' : action === 'plan-score' ? 'score_each' : action === 'plan-type' ? 'type' : 'difficulty';
-        await this.updateBlueprintPlan(id, index, field, target.value);
+        await this.enqueueBlueprint(() => this.updateBlueprintPlan(id, index, field, target.value));
       } else if (action === 'plan-duration') {
-        await this.updateBlueprintDuration(id, target.value);
+        await this.enqueueBlueprint(() => this.updateBlueprintDuration(id, target.value));
       } else if (action === 'toggle-missed-point') {
         const point = target.dataset.point;
         const selected = new Set(store.state.missedSelectedPoints || []);
@@ -1145,7 +1148,7 @@ class App {
     if (!store.activeModel() && !(def.run === 'parseBlueprint' && !args)) {
       return store.addToast('请先配置模型', 'error');
     }
-    if (def.run === 'proposeExamEdit' && !store.activeExam() && !store.activeDraft()) {
+    if (def.run === 'proposeExamEdit' && !this.reviseTarget()) {
       return store.addToast('请先选择一份草稿或试卷', 'error');
     }
     if (def.run === 'proposeDocEdit' && !store.activeAiDocument()) {
@@ -1174,15 +1177,12 @@ class App {
           {
             const blueprint = await this.parseBlueprint(args || this.defaultExamPrompt(), { useDefaults: !args });
             const title = blueprint?.title || '';
-            const usedDefaults = (blueprint?.issues || []).some((issue) => issue.code === 'BLUEPRINT_USED_DEFAULTS');
-            resultText = usedDefaults || !args
-              ? `已生成蓝图「${title || '练习卷'}」。题型题量可在组卷区直接改，确认后再组题`
-              : `已生成蓝图「${title || '未命名'}」，请在组卷区确认题型与总分`;
+            resultText = `已生成蓝图「${title || '练习卷'}」`;
           }
           break;
         case 'proposeExamEdit':
-          if (store.activeExam()) await this.proposeExamEdit(args);
-          else await this.proposeDraftEdit(args);
+          if (this.reviseTarget() === 'draft') await this.proposeDraftEdit(args);
+          else await this.proposeExamEdit(args);
           resultText = '修改预览已就绪，请应用或放弃';
           break;
         case 'createAiDocument':
@@ -1209,7 +1209,7 @@ class App {
         await this.refreshSession();
       }
     } catch (err) {
-      const failed = `${def.name}失败：${err.message || '未知错误'}`;
+      const failed = `${def.name}失败：${sanitizeErrorMessage(err.message || '未知错误')}`;
       try {
         await api.appendSessionNote(sid, { role: 'system', content: failed });
         await this.refreshSession();
@@ -1969,10 +1969,15 @@ class App {
   }
 
   async deleteBlueprint(id) {
+    const used = (store.state.drafts || []).some((item) => item.blueprint_id === id);
+    if (used) {
+      store.addToast('这份蓝图已经用于草稿，不能删除', 'error');
+      return;
+    }
     store.setState({ confirmBlueprintId: id });
     this.askConfirm({
       title: '删除蓝图',
-      message: '将删除这份蓝图。没有需要一并删除的关联对象。',
+      message: '将删除这份蓝图。',
       ok: '删除',
       action: 'delete-blueprint',
     });
@@ -2059,10 +2064,43 @@ class App {
     }
   }
 
+  reviseTarget() {
+    const onDraft = store.state.workspace === 'exam' && (store.state.examTab || 'blueprint') === 'draft';
+    if (onDraft && store.activeDraft()) return 'draft';
+    if (store.activeExam()) return 'exam';
+    if (store.activeDraft()) return 'draft';
+    return '';
+  }
+
+  enqueueBlueprint(task) {
+    const run = this.blueprintChain.then(task, task);
+    this.blueprintChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async flushBlueprintInputs(id) {
+    const root = document.getElementById('task-scroll');
+    if (!root) return;
+    const nodes = [...root.querySelectorAll('[data-id]')].filter((node) => node.dataset.id === id);
+    for (const node of nodes) {
+      const action = node.dataset.action;
+      const index = Number(node.dataset.index);
+      if (action === 'plan-count' || action === 'plan-score' || action === 'plan-type' || action === 'plan-difficulty') {
+        const field = action === 'plan-count' ? 'count' : action === 'plan-score' ? 'score_each' : action === 'plan-type' ? 'type' : 'difficulty';
+        await this.updateBlueprintPlan(id, index, field, node.value);
+      } else if (action === 'plan-duration') {
+        await this.updateBlueprintDuration(id, node.value);
+      }
+    }
+  }
+
   async confirmBlueprint(id) {
-    const blueprint = await api.confirmBlueprint(id);
-    store.setState({ blueprints: store.state.blueprints.map((item) => (item.id === id ? blueprint : item)) });
-    store.addToast('蓝图已确认', 'success');
+    await this.enqueueBlueprint(async () => {
+      await this.flushBlueprintInputs(id);
+      const blueprint = await api.confirmBlueprint(id);
+      store.setState({ blueprints: store.state.blueprints.map((item) => (item.id === id ? blueprint : item)) });
+      store.addToast('蓝图已确认', 'success');
+    });
   }
 
   async generateDraft(id) {
@@ -2478,7 +2516,7 @@ class App {
     const iframe = document.createElement('iframe');
     iframe.setAttribute('title', '打印');
     iframe.setAttribute('aria-hidden', 'true');
-    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+    iframe.style.cssText = 'position:fixed;left:0;top:0;width:800px;height:100vh;border:0;opacity:0;pointer-events:none;';
     document.body.appendChild(iframe);
     const popup = iframe.contentWindow;
     if (!popup) {
@@ -2499,12 +2537,16 @@ class App {
 </html>`);
     popup.document.close();
     let printed = false;
+    const removeFrame = () => {
+      if (iframe.isConnected) iframe.remove();
+    };
     const triggerPrint = () => {
       if (printed) return;
       printed = true;
       popup.focus();
+      popup.addEventListener('afterprint', removeFrame, { once: true });
       popup.print();
-      setTimeout(() => iframe.remove(), 1000);
+      setTimeout(removeFrame, 60000);
     };
     const links = [...popup.document.querySelectorAll('link[rel="stylesheet"]')];
     if (!links.length) {
@@ -2621,16 +2663,49 @@ class App {
     }
   }
 
+  noteAttemptAnswer(attemptId, questionId, answer) {
+    const attempt = store.state.activeAttempt;
+    if (!attempt || attempt.id !== attemptId) return;
+    const answers = [...(attempt.answers || [])];
+    const index = answers.findIndex((item) => item.question_id === questionId);
+    const next = { ...(answers[index] || {}), question_id: questionId, answer };
+    if (index >= 0) answers[index] = next;
+    else answers.push(next);
+    store.patch({ activeAttempt: { ...attempt, answers } });
+  }
+
+  async flushAttemptForm(attemptId) {
+    const form = document.getElementById('attempt-form');
+    const attempt = store.state.activeAttempt;
+    if (!form || !attempt || attempt.id !== attemptId || attempt.completion_status === 'completed') return;
+    const data = new FormData(form);
+    const jobs = [];
+    for (const question of attempt.paper?.questions || []) {
+      const payload = buildAnswerPayload(question, data);
+      if (!payload) continue;
+      const saved = answerForQuestion(attempt, question.id)?.answer;
+      if (payload.kind === 'choice' && !payload.option_ids.length) continue;
+      if (payload.kind === 'true-false' && saved == null && payload.value == null) continue;
+      if (payload.kind === 'text' && !String(payload.text || '').trim() && !saved) continue;
+      if (payload.kind === 'fill-blank' && !saved && payload.blanks.every((item) => !String(item.value || '').trim())) continue;
+      if (JSON.stringify(saved || null) === JSON.stringify(payload)) continue;
+      this.noteAttemptAnswer(attemptId, question.id, payload);
+      jobs.push(api.saveAttemptAnswer(attemptId, question.id, payload));
+    }
+    if (jobs.length) await Promise.all(jobs);
+  }
+
   async saveAnswer(attemptId, questionId, answer) {
+    this.noteAttemptAnswer(attemptId, questionId, answer);
     try {
       await api.saveAttemptAnswer(attemptId, questionId, answer);
-      await this.refreshAttempt(attemptId);
     } catch (err) {
       store.addToast(sanitizeErrorMessage(err.message), 'error');
     }
   }
 
   async completeAttempt(id, { timedOut = false } = {}) {
+    await this.flushAttemptForm(id);
     await api.completeAttempt(id);
     await this.refreshAttempt(id);
     store.addToast(timedOut ? '时间到，已完成作答' : '已完成作答', 'success');
@@ -2643,6 +2718,7 @@ class App {
   }
 
   async gradeAttempt(id) {
+    await this.flushAttemptForm(id);
     const accepted = await api.submitAttemptGrading(id, { model_id: store.state.currentModelId });
     await this.awaitOperation(accepted);
     await this.refreshAttempt(id);
@@ -2651,6 +2727,7 @@ class App {
   }
 
   async askFeedback(attemptId, questionId) {
+    await this.flushAttemptForm(attemptId);
     const accepted = await api.requestQuestionFeedback(attemptId, questionId, { model_id: store.state.currentModelId });
     await this.awaitOperation(accepted);
     await this.refreshAttempt(attemptId);

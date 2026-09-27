@@ -63,8 +63,8 @@ export function bindAttemptLeft(root, handlers) {
 export function bindAttemptRight(root, handlers, attempt) {
   const form = root.querySelector('#attempt-form');
   if (form && attempt && attempt.completion_status !== 'completed') {
-    form.onchange = () => {
-      const questionEl = document.activeElement?.closest?.('[data-question-id]');
+    form.onchange = (event) => {
+      const questionEl = event.target?.closest?.('[data-question-id]');
       const questionId = questionEl?.dataset.questionId;
       if (!questionId) return;
       const question = attempt.paper?.questions?.find((item) => item.id === questionId);

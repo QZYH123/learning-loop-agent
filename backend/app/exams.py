@@ -281,7 +281,7 @@ class ExamService:
                             "question": None,
                             "error": {
                                 "code": "QUESTION_GENERATION_FAILED",
-                                "message": str(exc) or "题目生成失败",
+                                "message": self._structure_error_message(exc),
                                 "retryable": True,
                                 "details": {},
                             },
@@ -924,7 +924,10 @@ class ExamService:
                 return resource
             except (LearningError, ModelClientError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
                 code = getattr(exc, "code", "MODEL_INVALID_RESPONSE")
-                raise OperationFailure(code, str(exc) or "无法生成题目反馈") from exc
+                message = str(exc) or "无法生成题目反馈"
+                if isinstance(exc, (json.JSONDecodeError, ValueError, KeyError, TypeError)):
+                    message = self._structure_error_message(exc)
+                raise OperationFailure(code, message) from exc
 
         operation = self.operations.start("subjective-feedback", worker, subject_id=subject["id"], resource=resource)
         return {"operation": operation, "resource": resource}
@@ -1484,7 +1487,7 @@ class ExamService:
 
     # Selection -----------------------------------------------------------
 
-    def resolve_selection(self, selection: dict, *, include_context: bool = False):
+    def resolve_selection(self, selection: dict, *, include_context: bool = False, redact_answers: bool = False):
         kind = selection["document_kind"]
         if kind == "exam":
             subject, exam = self.learning._find_owned("exams", selection["document_id"])
@@ -1561,7 +1564,14 @@ class ExamService:
 
         context = None
         if selected_question is not None:
-            context = json.dumps(selected_question, ensure_ascii=False)
+            question = selected_question
+            if redact_answers:
+                question = {
+                    key: value
+                    for key, value in selected_question.items()
+                    if key not in {"answer", "explanation", "evidence"}
+                }
+            context = json.dumps(question, ensure_ascii=False)
         elif selected_block is not None:
             context = json.dumps(selected_block, ensure_ascii=False)
         return (selection, context) if include_context else selection
@@ -2021,7 +2031,7 @@ class ExamService:
         validation_started_at = self._now()
         validation_started = time.perf_counter()
         try:
-            result = json.loads(response["text"])
+            result = self._parse_model_json(response["text"])
             status = result.get("status", "needs-review")
             if status not in {"complete", "needs-review", "unable-to-assess"}:
                 raise ValueError("feedback status is invalid")
@@ -2326,8 +2336,9 @@ class ExamService:
         groups = []
         for point, questions in grouped.items():
             ordered = sorted(questions, key=lambda item: item["missed_at"], reverse=True)
+            label = point if len(point) <= 200 else f"{point[:199]}…"
             groups.append({
-                "knowledge_point": point,
+                "knowledge_point": label,
                 "miss_count": len(questions),
                 "questions": ordered[: self.MISSED_QUESTIONS_PER_GROUP],
             })
@@ -2889,11 +2900,23 @@ class ExamService:
                         "questions": questions,
                         "updated_at": timestamp,
                     })
-                attempts = [
-                    {**item, "status": "paused", "feedback": [], "updated_at": timestamp}
-                    if item.get("status") == "grading" else item
-                    for item in current.get("attempts", [])
-                ]
+                attempts = []
+                for item in current.get("attempts", []):
+                    if item.get("status") != "grading" and item.get("grading_status") != "grading":
+                        attempts.append(item)
+                        continue
+                    attempts.append({
+                        **item,
+                        "status": "paused" if item.get("completion_status") != "completed" else "submitted",
+                        "grading_status": "failed",
+                        "grading_error": {
+                            "code": "INTERNAL_ERROR",
+                            "message": "服务重启中断了批改，请再提交",
+                            "retryable": True,
+                            "details": {},
+                        },
+                        "updated_at": timestamp,
+                    })
                 proposals = [
                     {
                         **item,

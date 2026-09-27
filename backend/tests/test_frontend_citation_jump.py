@@ -8,6 +8,24 @@ SOURCES_JS = load_js("components/sources.js")
 STYLES = (ROOT / "frontend/styles.css").read_text(encoding="utf-8")
 
 
+def test_citation_chips_collapse_repeated_locations():
+    util = load_js("util.js")
+    assert "export function visibleCitations(" in util
+    assert "visibleCitations(msg.citations)" in CHAT_JS
+    assert "visibleCitations(evidence?.citations)" in SOLUTION_JS
+    assert ".slice(0, 3)" not in CHAT_JS.split("function renderMessage", 1)[1].split("function sessionMenu", 1)[0]
+
+
+def test_command_failures_hide_internal_error_names():
+    util = load_js("util.js")
+    assert "export function sanitizeCommandNote(" in util
+    assert "internalservererror" in util
+    assert "sanitizeCommandNote(plainText)" in CHAT_JS
+    assert "msg-system.is-fail" in STYLES
+    assert "sanitizeErrorMessage(err.message" in APP_JS
+    assert "/^['\"]?[a-z_]+['\"]?$/i" not in util
+
+
 def test_citation_chips_are_buttons_with_jump_data():
     for source in (CHAT_JS, SOLUTION_JS):
         assert 'data-action="open-citation"' in source

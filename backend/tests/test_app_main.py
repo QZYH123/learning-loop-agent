@@ -74,6 +74,30 @@ def test_main_exits_when_all_ports_busy():
     assert PORTS_BUSY_MESSAGE in stdout.getvalue()
 
 
+def test_unhandled_error_stays_a_short_message(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from backend.app.main import create_app
+
+    app = create_app(data_dir=tmp_path)
+
+    def boom(_subject_id):
+        raise RuntimeError("secret traceback token")
+
+    app.state.source_library.list_sources = boom
+    client = TestClient(app, raise_server_exceptions=False)
+    with client:
+        missing = client.get("/api/subjects/missing-subject")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["message"] != "这次没有完成，请再试一次"
+        failed = client.get("/api/subjects/missing-subject/sources")
+    assert failed.status_code == 500
+    body = failed.json()["error"]
+    assert body["code"] == "INTERNAL_ERROR"
+    assert body["message"] == "这次没有完成，请再试一次"
+    assert "secret" not in failed.text
+
+
 def test_missing_dependency_message_has_no_traceback():
     stdout = io.StringIO()
 

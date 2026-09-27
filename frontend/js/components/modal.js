@@ -112,7 +112,6 @@ function runsDialog(state) {
   const obs = evalRun?.model_observations || {};
   const metrics = evalRun?.orchestration_metrics || {};
   const body = `
-    <p class="field-hint">外层耗时是软件编排，模型等待是生成时间，两者分开看。</p>
     <div class="run-list">
       ${
         runs.length
@@ -122,7 +121,7 @@ function runsDialog(state) {
         <div class="run-row">
           <div>
             <div class="item-title">${escapeHtml(RUN_LABELS[item.category] || item.category)}</div>
-            <div class="item-sub"><span>${statusLabel('run', item.status) || item.status}</span><span>外层 ${item.outer_elapsed_ms || 0} ms</span><span>模型 ${item.model_wait_ms || 0} ms</span><span>${formatTime(item.created_at)}</span></div>
+            <div class="item-sub"><span>${statusLabel('run', item.status) || item.status}</span><span>准备 ${item.outer_elapsed_ms || 0} ms</span><span>生成 ${item.model_wait_ms || 0} ms</span><span>${formatTime(item.created_at)}</span></div>
           </div>
         </div>`,
               )
@@ -153,8 +152,8 @@ function runsDialog(state) {
       evalRun
         ? `<div class="run-eval">
             <div class="item-title">最近评估</div>
-            <p class="item-sub">外层 ${metrics.outer_elapsed_ms || 0} ms · 模型 ${metrics.model_wait_ms || 0} ms</p>
-            <p class="item-sub">模型结果：正确率 ${fmtRate(obs.answer_accuracy)} · 引用 ${fmtRate(obs.citation_accuracy)} · 得分点 ${fmtRate(obs.scoring_point_coverage)} · 泄漏 ${fmtRate(obs.answer_leakage_rate)}</p>
+            <p class="item-sub">准备 ${metrics.outer_elapsed_ms || 0} ms · 生成 ${metrics.model_wait_ms || 0} ms</p>
+            <p class="item-sub">正确率 ${fmtRate(obs.answer_accuracy)} · 引用 ${fmtRate(obs.citation_accuracy)} · 得分点 ${fmtRate(obs.scoring_point_coverage)} · 答案露出 ${fmtRate(obs.answer_leakage_rate)}</p>
           </div>`
         : ''
     }

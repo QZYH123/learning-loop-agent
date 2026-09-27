@@ -204,8 +204,8 @@ class ExamRenderingService:
                 if solution["knowledge_points"]:
                     lines.extend([f"**考点：** {'、'.join(solution['knowledge_points'])}", ""])
                 citations = solution["evidence"].get("citations", [])
-                if citations:
-                    sources = "；".join(f"{item['source_name']}（{item['location']['label']}）" for item in citations)
+                sources = self.citation_line(citations)
+                if sources:
                     lines.extend([f"**依据：** {sources}", ""])
         return "\n".join(lines).rstrip() + "\n"
 
@@ -290,6 +290,36 @@ class ExamRenderingService:
         canvas.setFont("STSong-Light", 8)
         canvas.drawCentredString(document.pagesize[0] / 2, 9 * mm, str(document.page))
         canvas.restoreState()
+
+    @staticmethod
+    def visible_citations(citations: list[dict], limit: int = 3) -> list[dict]:
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for item in citations or []:
+            if not isinstance(item, dict):
+                continue
+            location = item.get("location") if isinstance(item.get("location"), dict) else {}
+            label = str(location.get("label") or "").strip()
+            leaf = label.split("/")[-1].strip() if label else ""
+            name = item.get("source_name") or item.get("source_id") or ""
+            key = f"{name}#{leaf or item.get('anchor_id') or item.get('id') or len(unique)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+            if len(unique) >= limit:
+                break
+        return unique
+
+    @classmethod
+    def citation_line(cls, citations: list[dict], limit: int = 3) -> str:
+        parts = []
+        for item in cls.visible_citations(citations, limit=limit):
+            name = item.get("source_name") or "资料"
+            location = item.get("location") if isinstance(item.get("location"), dict) else {}
+            label = str(location.get("label") or "").strip()
+            parts.append(f"{name}（{label}）" if label else name)
+        return "；".join(parts)
 
     @staticmethod
     def _answer_text(answer: dict) -> str:

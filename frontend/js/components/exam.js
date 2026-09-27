@@ -136,7 +136,7 @@ function examMoreMenu(exam, state) {
           ? `<div class="menu menu-right" role="menu">
               <button type="button" class="menu-item" role="menuitem" data-action="print-exam" data-id="${exam.id}">${icons.printer(14)}<span>打印</span></button>
               <button type="button" class="menu-item" role="menuitem" data-action="export-exam-pdf" data-id="${exam.id}">${icons.download(14)}<span>导出 PDF</span></button>
-              <button type="button" class="menu-item" role="menuitem" data-action="export-exam-markdown" data-id="${exam.id}">${icons.fileText(14)}<span>导出 Markdown</span></button>
+              <button type="button" class="menu-item" role="menuitem" data-action="export-exam-markdown" data-id="${exam.id}">${icons.fileText(14)}<span>导出 MD</span></button>
               ${exam.can_undo || exam.can_redo ? '<div class="menu-split"></div>' : ''}
               ${exam.can_undo ? `<button type="button" class="menu-item" role="menuitem" data-action="undo-exam" data-id="${exam.id}">${icons.undo(14)}<span>撤销</span></button>` : ''}
               ${exam.can_redo ? `<button type="button" class="menu-item" role="menuitem" data-action="redo-exam" data-id="${exam.id}">${icons.redo(14)}<span>重做</span></button>` : ''}

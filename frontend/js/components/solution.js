@@ -1,4 +1,4 @@
-import { blocksToText, escapeHtml, renderBlocks } from '../util.js';
+import { blocksToText, escapeHtml, renderBlocks, visibleCitations } from '../util.js';
 
 const BASIS_LABEL = {
   'general-knowledge': '常识',
@@ -57,7 +57,7 @@ export function renderReview(feedback, options = {}) {
 }
 
 function renderSources(evidence, reliability) {
-  const citations = evidence?.citations || [];
+  const citations = visibleCitations(evidence?.citations);
   const chips = citations
     .map((item) => {
       const loc = String(item.location?.label || '').split('/').pop()?.trim();

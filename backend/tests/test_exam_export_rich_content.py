@@ -123,3 +123,18 @@ def test_print_path_keeps_katex_and_block_renderers():
     assert "block.type === 'image'" in util_js
     assert "/vendor/katex/katex.min.css" in app_js
     assert "renderExamPrintDocument(doc)" in app_js
+
+
+def test_citation_line_drops_repeated_locations_and_keeps_three():
+    from backend.app.rendering import ExamRenderingService
+
+    citations = [
+        {"source_id": "s1", "source_name": "notes.md", "anchor_id": "a", "location": {"label": "流水线"}},
+        {"source_id": "s2", "source_name": "notes.md", "anchor_id": "b", "location": {"label": "章/流水线"}},
+        {"source_id": "s", "source_name": "notes.md", "anchor_id": "c", "location": {"label": "冯诺依曼"}},
+        {"source_id": "t", "source_name": "cache.txt", "anchor_id": "d", "location": {"label": "段落 1"}},
+        {"source_id": "u", "source_name": "extra.md", "anchor_id": "e", "location": {"label": "补充"}},
+    ]
+    line = ExamRenderingService.citation_line(citations)
+    assert line == "notes.md（流水线）；notes.md（冯诺依曼）；cache.txt（段落 1）"
+    assert "补充" not in line

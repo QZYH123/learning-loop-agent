@@ -451,7 +451,12 @@ class LearningService:
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
         attachment_ids = list(payload.get("attachment_ids") or [])
         attachment_inputs = self._attachment_inputs(subject_id, attachment_ids, profile)
-        selection, selection_context = self._resolve_selection(payload.get("selection"), profile)
+        workspace = self._workspace_context(payload.get("workspace_context"))
+        selection, selection_context = self._resolve_selection(
+            payload.get("selection"),
+            profile,
+            redact_answers=self._selection_should_hide_answers(workspace),
+        )
         if selection:
             payload = {**payload, "selection": selection}
         if not profile.get("capabilities", {}).get("vision"):
@@ -474,6 +479,7 @@ class LearningService:
             grounding_mode,
             selection,
             attachment_ids,
+            workspace_context=workspace,
         )
         user_message, assistant = self._chat_turn_messages(
             intent=intent,
@@ -745,7 +751,12 @@ class LearningService:
             raise LearningError(409, "SOURCE_VERSION_MISMATCH", "重点资料必须属于当前会话资料范围")
         attachment_ids = list(payload.get("attachment_ids") or [])
         attachment_inputs = self._attachment_inputs(subject["id"], attachment_ids, profile)
-        selection, selection_context = self._resolve_selection(payload.get("selection"), profile)
+        workspace = self._workspace_context(payload.get("workspace_context"))
+        selection, selection_context = self._resolve_selection(
+            payload.get("selection"),
+            profile,
+            redact_answers=self._selection_should_hide_answers(workspace),
+        )
         if selection:
             payload = {**payload, "selection": selection}
         if selected_ids:
@@ -831,7 +842,11 @@ class LearningService:
         selection = user_message.get("selection")
         selection_context = None
         if selection and self.selection_resolver is not None:
-            resolved = self.selection_resolver(selection, include_context=True)
+            resolved = self.selection_resolver(
+                selection,
+                include_context=True,
+                redact_answers=self._selection_should_hide_answers((context or {}).get("workspace_context")),
+            )
             if isinstance(resolved, tuple):
                 selection, selection_context = resolved
             else:
@@ -1291,12 +1306,22 @@ class LearningService:
             if source["subject_id"] != subject_id:
                 raise LearningError(409, "SOURCE_UNAVAILABLE", "选定资料不属于当前科目或尚不可用")
 
-    def _resolve_selection(self, selection, profile: dict) -> tuple[dict | None, dict | None]:
+    def _selection_should_hide_answers(self, workspace_context) -> bool:
+        attempt_id = (workspace_context or {}).get("attempt_id") if isinstance(workspace_context, dict) else None
+        if not attempt_id or self.exams is None:
+            return False
+        try:
+            _subject, attempt = self._find_owned("attempts", attempt_id)
+        except LearningError:
+            return False
+        return attempt.get("mode") == "exam" and attempt.get("completion_status") != "completed"
+
+    def _resolve_selection(self, selection, profile: dict, *, redact_answers: bool = False) -> tuple[dict | None, dict | None]:
         if not selection:
             return None, None
         if self.selection_resolver is None:
             raise LearningError(409, "CHAT_SELECTION_INVALID", "选区问答服务尚未就绪")
-        resolved = self.selection_resolver(selection, include_context=True)
+        resolved = self.selection_resolver(selection, include_context=True, redact_answers=redact_answers)
         if isinstance(resolved, tuple):
             selection, selection_context = resolved
         else:

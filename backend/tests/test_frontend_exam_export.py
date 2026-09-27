@@ -21,7 +21,7 @@ def test_exam_more_menu_entries():
     assert 'data-menu="exam-more"' in EXAM_JS
     assert "打印" in EXAM_JS
     assert "导出 PDF" in EXAM_JS
-    assert "导出 Markdown" in EXAM_JS
+    assert "导出 MD" in EXAM_JS
     assert "print-exam" in EXAM_JS
     assert "export-exam-pdf" in EXAM_JS
     assert "export-exam-markdown" in EXAM_JS

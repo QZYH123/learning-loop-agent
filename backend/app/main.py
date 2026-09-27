@@ -1,6 +1,7 @@
 """FastAPI application assembled from the static HTTP contract."""
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from contextlib import asynccontextmanager
@@ -37,6 +38,8 @@ from .operations import OperationFailure, OperationManager
 from .pet import PetService
 from .pet_api import create_pet_router
 from .rendering import ExamRenderingService
+
+logger = logging.getLogger(__name__)
 from .rendering_api import create_rendering_router
 from .paths import default_data_dir, frontend_dir
 from .sources import MAX_SOURCE_BYTES, SourceLibrary, SourceLibraryError
@@ -137,6 +140,11 @@ def create_app(data_dir: str | os.PathLike | None = None, model_client=None, now
 
     app.add_exception_handler(LearningError, service_error_handler)
     app.add_exception_handler(SourceLibraryError, service_error_handler)
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request, exc: Exception):
+        logger.exception("unhandled error on %s", request.url.path)
+        return _error_response(500, "INTERNAL_ERROR", "这次没有完成，请再试一次", retryable=True)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_, exc: RequestValidationError):
